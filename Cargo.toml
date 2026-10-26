@@ -1,0 +1,28 @@
+[package]
+name = "neonote"
+version = "0.1.0"
+edition = "2021"
+description = "Light, fast, clickless plain text editor"
+
+[dependencies]
+fltk = "1"
+encoding_rs = "0.8"
+pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
+lopdf = { version = "0.46.0", default-features = false }
+
+# audio: 音声ファイルの簡易再生（miniaudio の薄い包みを C でビルドして静的にリンクする。メタデータの編集と情報表示は feature なしでも使える）
+# サイズを減らしたいときは `--no-default-features` でビルドする
+[features]
+default = ["audio"]
+audio = []
+
+[build-dependencies]
+cc = "1"
+
+# 速度優先（全置換・文字コード判定・HEX 変換を速くする）。LTO と strip でサイズは抑える
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
