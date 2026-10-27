@@ -2,7 +2,7 @@
 
 <img src="assets/icon.png" width="96" alt="NeoNote">
 
-# ⚓｜NeoNote - FileEditor [v0.1.0]
+# ⚓｜NeoNote - FileEditor
 
 **説明：** 艦長が自分用に開発したコードエディタ。メモ帳替わり。<br>ファイルの構造を解析して、文字コードを自動で選ぶ（バイナリも読めます）。
 
