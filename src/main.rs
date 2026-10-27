@@ -1,4 +1,6 @@
 // NeoNote: 設計は docs/DESIGN.md を参照。
+// Windows ではダブルクリックで黒い窓が出ないよう GUI アプリとして作る（端末から起動したときは attach_parent_console でその端末へ出力する）。
+#![cfg_attr(windows, windows_subsystem = "windows")]
 mod app;
 mod audioplay;
 mod core;
@@ -33,7 +35,22 @@ fn parse_args(args: &[String]) -> (Option<String>, Vec<String>) {
     (level, paths)
 }
 
+/// 端末から起動されたときだけ、その端末にログを出す。ダブルクリックでは親の端末が無いので何もしない。
+#[cfg(windows)]
+fn attach_parent_console() {
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn AttachConsole(process_id: u32) -> i32;
+    }
+    const ATTACH_PARENT_PROCESS: u32 = u32::MAX;
+    unsafe {
+        AttachConsole(ATTACH_PARENT_PROCESS);
+    }
+}
+
 fn main() {
+    #[cfg(windows)]
+    attach_parent_console();
     let args: Vec<String> = std::env::args().skip(1).collect();
     let (level, paths) = parse_args(&args);
     log::init(level.as_deref());

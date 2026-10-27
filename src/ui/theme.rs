@@ -1,5 +1,6 @@
-// 配色。基本の 5 色（main / sub / accent / text / subtext）を 1 組のパレットにして、ダークとライトを持つ。
-// 画面の色は、必ずここの関数（color_*）から取る。色を直したいときはこのファイルの DARK / LIGHT だけを書き換える。
+// 配色。基本の 5 色（main / sub / accent / text / subtext）を 1 組のパレットにして、ダーク・ライトと見比べ用の候補を持つ（PALETTES）。
+// 画面の色は、必ずここの関数（color_*）から取る。色を直したいときはこのファイルの PALETTES だけを書き換える。
+// FLTK の標準部品（スクロールバー・ダイアログ）も skin.rs がここの色で塗る。
 //
 //   main     編集領域・ボタン・選択中のタブの背景（いちばん広い面）
 //   sub      ツールバー・タブバー・行番号欄の背景（main より一段奥）
@@ -9,7 +10,10 @@
 //
 // 上の 5 色から決まる色（タブの背景など）は、下の関数で混ぜて作る（色を足さない）。
 // 検索のハイライト（黄色の地に黒）は、どちらのモードでも読めるので固定。
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{
+    atomic::{AtomicUsize, Ordering},
+    Mutex,
+};
 
 /// (R, G, B)
 pub type Rgb = (u8, u8, u8);
@@ -41,18 +45,82 @@ pub const LIGHT: Palette = Palette {
     subtext: (105, 105, 105),
 };
 
-static LIGHT_ON: AtomicBool = AtomicBool::new(false);
-
-pub fn set_light(on: bool) {
-    LIGHT_ON.store(on, Ordering::Relaxed);
+/// 名前の付いたパレット。`light` は明るい地か（エラーの色・Toggle Theme の行き先を決める）。
+pub struct Named {
+    pub name: &'static str,
+    pub palette: Palette,
+    pub light: bool,
 }
 
+/// 使えるパレット。先頭の 2 つがダークとライト（Toggle Theme はこの 2 つを行き来する）。
+/// 3 つ目からは見比べ用の候補（起動時に環境変数 NEONOTE_THEME=名前 で選べる）。
+pub const PALETTES: &[Named] = &[
+    Named { name: "dark", palette: DARK, light: false },
+    Named { name: "light", palette: LIGHT, light: true },
+    Named { name: "nord", palette: Palette { main: (38, 42, 51), sub: (29, 32, 40), accent: (94, 129, 172), text: (229, 233, 240), subtext: (140, 150, 170) }, light: false },
+    Named { name: "abyss", palette: Palette { main: (22, 27, 34), sub: (13, 17, 23), accent: (0, 122, 112), text: (214, 222, 230), subtext: (125, 135, 148) }, light: false },
+    Named { name: "paper", palette: Palette { main: (247, 241, 227), sub: (233, 224, 204), accent: (166, 90, 30), text: (52, 44, 36), subtext: (110, 96, 80) }, light: true },
+    Named { name: "sakura", palette: Palette { main: (253, 246, 248), sub: (242, 226, 232), accent: (196, 64, 110), text: (48, 34, 40), subtext: (120, 96, 106) }, light: true },
+];
+
+static CURRENT: AtomicUsize = AtomicUsize::new(0);
+/// 自分で決めた配色（neodir/config.txt の custom_main などから作る）。CURRENT がこの番号のときに使う。
+static CUSTOM: Mutex<Option<Palette>> = Mutex::new(None);
+const CUSTOM_INDEX: usize = usize::MAX;
+pub const CUSTOM_NAME: &str = "custom";
+
+/// 自分で決めた配色を覚える（選ぶのは set_named("custom")）。
+pub fn store_custom(p: Palette) {
+    *CUSTOM.lock().unwrap_or_else(|e| e.into_inner()) = Some(p);
+}
+
+pub fn custom() -> Option<Palette> {
+    *CUSTOM.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+pub fn set_light(on: bool) {
+    CURRENT.store(usize::from(on), Ordering::Relaxed);
+}
+
+/// 名前でパレットを選ぶ（大文字小文字は区別しない）。知らない名前なら false。
+pub fn set_named(name: &str) -> bool {
+    if name.trim().eq_ignore_ascii_case(CUSTOM_NAME) {
+        if custom().is_none() {
+            return false;
+        }
+        CURRENT.store(CUSTOM_INDEX, Ordering::Relaxed);
+        return true;
+    }
+    match PALETTES.iter().position(|p| p.name.eq_ignore_ascii_case(name.trim())) {
+        Some(i) => {
+            CURRENT.store(i, Ordering::Relaxed);
+            true
+        }
+        None => false,
+    }
+}
+
+pub fn current_name() -> &'static str {
+    PALETTES.get(CURRENT.load(Ordering::Relaxed)).map_or(CUSTOM_NAME, |p| p.name)
+}
+
+/// 明るい地か。自分で決めた配色は、地が文字より明るいかで決める。
 pub fn is_light() -> bool {
-    LIGHT_ON.load(Ordering::Relaxed)
+    match PALETTES.get(CURRENT.load(Ordering::Relaxed)) {
+        Some(p) => p.light,
+        None => {
+            let p = palette();
+            let sum = |c: Rgb| c.0 as u32 + c.1 as u32 + c.2 as u32;
+            sum(p.main) > sum(p.text)
+        }
+    }
 }
 
 pub fn palette() -> Palette {
-    if is_light() { LIGHT } else { DARK }
+    match PALETTES.get(CURRENT.load(Ordering::Relaxed)) {
+        Some(p) => p.palette,
+        None => custom().unwrap_or(DARK),
+    }
 }
 
 pub fn color_main() -> Rgb {
@@ -89,9 +157,13 @@ pub fn color_selected_row() -> Rgb {
     mix(p.main, p.text, 20)
 }
 
-/// accent の上に載せる文字（押したボタン・固定ボタン）。
+/// accent の上に載せる文字（押したボタン・固定ボタン）。白で読めない明るい accent のときは黒。
 pub fn color_on_accent() -> Rgb {
-    (255, 255, 255)
+    on_accent(palette().accent)
+}
+
+fn on_accent((r, g, b): Rgb) -> Rgb {
+    if r as u32 * 299 + g as u32 * 587 + b as u32 * 114 > 150_000 { (0, 0, 0) } else { (255, 255, 255) }
 }
 
 /// 「見つからない」など、うまくいかなかったことを示す文字色（検索バーの入力欄）。
@@ -121,16 +193,19 @@ mod tests {
     }
 
     #[test]
-    fn both_palettes_are_readable() {
-        for (name, p) in [("dark", DARK), ("light", LIGHT)] {
+    fn all_palettes_are_readable() {
+        for n in PALETTES {
+            let (name, p) = (n.name, n.palette);
             assert!(contrast(p.text, p.main) >= 7.0, "{name}: text on main");
             assert!(contrast(p.text, p.sub) >= 7.0, "{name}: text on sub");
             assert!(contrast(p.subtext, p.main) >= 3.5, "{name}: subtext on main");
             assert!(contrast(p.subtext, p.sub) >= 3.5, "{name}: subtext on sub");
-            assert!(contrast(color_on_accent(), p.accent) >= 4.0, "{name}: on accent");
-        }
-        for (name, p, err) in [("dark", DARK, ERROR_DARK), ("light", LIGHT, ERROR_LIGHT)] {
+            assert!(contrast(on_accent(p.accent), p.accent) >= 4.0, "{name}: on accent");
+            let err = if n.light { ERROR_LIGHT } else { ERROR_DARK };
             assert!(contrast(err, p.main) >= 4.5, "{name}: error on main");
+            let sum = |c: Rgb| c.0 as u32 + c.1 as u32 + c.2 as u32;
+            assert_eq!(n.light, sum(p.main) > sum(p.text), "{name}: light flag");
+            assert!(sum(p.sub) < sum(p.main), "{name}: sub is one step back");
         }
     }
 

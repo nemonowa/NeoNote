@@ -12,7 +12,7 @@ pub enum View {
 impl View {
     /// 中身が実装済みで、選べるか。Preview は md・html・csv / tsv・pdf・画像・音声・フォルダ / zip。
     pub fn implemented(self, kind: Kind) -> bool {
-        !matches!(self, View::Preview) || matches!(kind, Kind::Markdown | Kind::Html | Kind::Sheet | Kind::Book | Kind::Doc | Kind::Pdf | Kind::Image | Kind::Archive | Kind::Audio)
+        !matches!(self, View::Preview) || matches!(kind, Kind::Markdown | Kind::Html | Kind::Sheet | Kind::Book | Kind::Doc | Kind::Pdf | Kind::Image | Kind::Archive | Kind::Audio | Kind::Nbt)
     }
 }
 
@@ -33,6 +33,8 @@ pub enum Kind {
     Archive,
     /// mp3 / flac / wav。情報とタグの Preview（再生・停止つき）。
     Audio,
+    /// level.dat などの NBT。Text は SNBT、Preview は階層の木（編集できる）。
+    Nbt,
     Other,
 }
 
@@ -50,14 +52,20 @@ pub fn kind_of(path: Option<&Path>) -> Kind {
         Some("pdf") => Kind::Pdf,
         Some("png" | "jpg" | "jpeg" | "gif" | "bmp") => Kind::Image,
         Some("mp3" | "flac" | "wav") => Kind::Audio,
+        _ if path.is_some_and(crate::core::nbt::is_nbt_path) => Kind::Nbt,
         _ => Kind::Other,
     }
 }
 
 /// そのファイルで選べる表示（並べる順）。pdf は文字として編集できないので Text を出さない。
+#[cfg(test)]
 pub fn available(path: Option<&Path>) -> Vec<View> {
-    match kind_of(path) {
-        Kind::Markdown | Kind::Html | Kind::Sheet => vec![View::Text, View::Preview, View::Hex],
+    available_for(kind_of(path))
+}
+
+pub fn available_for(kind: Kind) -> Vec<View> {
+    match kind {
+        Kind::Markdown | Kind::Html | Kind::Sheet | Kind::Nbt => vec![View::Text, View::Preview, View::Hex],
         Kind::Book | Kind::Doc | Kind::Pdf | Kind::Image | Kind::Audio => vec![View::Preview, View::Hex],
         Kind::Archive => vec![View::Preview],
         Kind::Other => vec![View::Text, View::Hex],

@@ -5,7 +5,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use super::{encoding::{self, Detected, Encoding}, hex};
+use super::{encoding::{self, Detected, Encoding}, hex, nbt, region};
 
 #[derive(Debug)]
 pub struct Loaded {
@@ -21,6 +21,10 @@ pub struct Loaded {
     pub truncated: bool,
     /// 読み込む直前のディスク上の状態（保存時に、外部で書き換わっていないか確かめる）。
     pub stamp: Option<Stamp>,
+    /// NBT（level.dat など）を SNBT の文字にして読んだ。保存するときは NBT に戻す。
+    pub nbt: Option<nbt::NbtFile>,
+    /// リージョンファイル（.mca）のチャンクの一覧を読んだ（text は一覧。保存はしない）。
+    pub region: bool,
 }
 
 /// ファイルの更新時刻と大きさ。開いた（保存した）時点と今を比べて、外部での書き換えを見つける。
@@ -50,7 +54,7 @@ pub enum Mode {
 fn hex_loaded(bytes: &[u8]) -> Loaded {
     let truncated = bytes.len() > hex::MAX_BYTES;
     let shown = &bytes[..bytes.len().min(hex::MAX_BYTES)];
-    Loaded { text: hex::format(shown), encoding: Encoding::Utf8, bom: false, auto: false, hex: true, truncated, stamp: None }
+    Loaded { text: hex::format(shown), encoding: Encoding::Utf8, bom: false, auto: false, hex: true, truncated, stamp: None, nbt: None, region: false }
 }
 
 fn load_hex(path: &Path) -> Result<Loaded, String> {
@@ -74,6 +78,19 @@ fn load_inner(path: &Path, forced: Option<Mode>) -> Result<Loaded, String> {
         return load_hex(path);
     }
     let bytes = fs::read(path).map_err(|e| format!("{}\n{e}", path.display()))?;
+    if forced.is_none() {
+        // NBT・リージョンとして読めなければ、ふつうのファイルとして開く（文字か HEX）
+        if region::is_region_path(path) {
+            if let Ok(entries) = region::list(&bytes) {
+                let text = region::listing(path, &entries, |t| crate::platform::local_datetime(std::time::UNIX_EPOCH + std::time::Duration::from_secs(t as u64)));
+                return Ok(Loaded { text, encoding: Encoding::Utf8, bom: false, auto: true, hex: false, truncated: false, stamp: None, nbt: None, region: true });
+            }
+        } else if nbt::is_nbt_path(path) {
+            if let Ok((file, text)) = nbt::open(&bytes) {
+                return Ok(Loaded { text, encoding: Encoding::Utf8, bom: false, auto: true, hex: false, truncated: false, stamp: None, nbt: Some(file), region: false });
+            }
+        }
+    }
     let (encoding, bom, auto) = match forced {
         Some(Mode::Text(e)) => (e, encoding::bom_len(e, &bytes) > 0, false),
         _ => match encoding::detect(&bytes) {
@@ -84,7 +101,7 @@ fn load_inner(path: &Path, forced: Option<Mode>) -> Result<Loaded, String> {
     let skip = if bom { encoding::bom_len(encoding, &bytes) } else { 0 };
     let body = &bytes[skip..];
     match encoding.decode(body) {
-        Ok(text) => Ok(Loaded { text, encoding, bom, auto, hex: false, truncated: false, stamp: None }),
+        Ok(text) => Ok(Loaded { text, encoding, bom, auto, hex: false, truncated: false, stamp: None, nbt: None, region: false }),
         Err(off) => Err(format!(
             "{}\n{} として読めません（{} バイト目で不正）。\n別の文字コードを選んでください。",
             path.display(),
@@ -144,7 +161,12 @@ pub fn same_file(a: &Path, b: &Path) -> bool {
     a == b || matches!((fs::canonicalize(a), fs::canonicalize(b)), (Ok(x), Ok(y)) if x == y)
 }
 
-/// Java 版の「Words」と同じく、文字数（Unicode スカラー値の数）を返す。
+/// タイトルの「Chars」に出す文字数（Unicode スカラー値の数）を返す。
+/// 空白で区切った語の数（旧 Java 版の Word/Character Count と同じ数え方）。
+pub fn word_count(text: &str) -> usize {
+    text.split_whitespace().count()
+}
+
 pub fn char_count(text: &str) -> usize {
     text.chars().count()
 }
@@ -152,6 +174,13 @@ pub fn char_count(text: &str) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn word_count_splits_on_any_whitespace() {
+        assert_eq!(word_count(""), 0);
+        assert_eq!(word_count("  a b\t\nc  "), 3);
+        assert_eq!(word_count("日本語 です\r\nok"), 3);
+    }
 
     fn temp_dir(name: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("neonote-test-{name}-{}", std::process::id()));

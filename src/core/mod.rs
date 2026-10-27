@@ -27,3 +27,7 @@ pub mod sheet;
 pub mod tarlist;
 pub mod viewmode;
 pub mod zoom;
+pub mod deflate;
+pub mod nbt;
+pub mod nbtedit;
+pub mod region;

@@ -8,7 +8,9 @@
 //   font=C:\Fonts\Mono.ttf        選んだフォント（空なら同梱の NeoFont）
 //   recent=C:\a\b.txt             最近開いたファイル（新しい順に 1 行ずつ。最大 recent::MAX 件）
 //   gutter_pin=true               行番号欄を常に表示（固定）する。false なら、カーソルが左端のときだけ出す
-//   theme=dark                    配色。dark（既定）か light
+//   side_pin=true                 右端の情報・縮小表示の欄を常に表示（固定）する。false なら、マウスが右端のときだけ出す
+//   theme=dark                    配色。dark（既定）・light・nord・abyss・paper・sakura・custom
+//   custom_main=#2b2b2b           theme=custom の色（custom_main・custom_sub・custom_accent・custom_text・custom_subtext）
 //   history=C:\a\b.txt            過去に読み込んだファイルのパス履歴（新しい順に 1 行ずつ。最大 pathlog::MAX 件）
 //   session=C:\a\b.txt            終了時に開いていたタブ（左から順に 1 行ずつ。最大 SESSION_MAX 件）。引数なしで起動したとき開き直す
 //   session_active=C:\a\b.txt     終了時に表示していたタブ（session のどれか）
@@ -25,15 +27,21 @@ pub const FILE_NAME: &str = "config.txt";
 /// 覚えておくタブの最大数（読み込みと書き出しの両方で切る）。
 pub const SESSION_MAX: usize = 50;
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Config {
     pub autosave: bool,
-    /// 編集領域を右端で折り返す。
+    /// 編集領域を右端で折り返す（既定は折り返す）。
     pub wrap: bool,
     /// 行番号欄を常に表示する（固定）。false なら、カーソルが左端にあるときだけ出す。
     pub gutter_pin: bool,
-    /// ライトモード（false ならダーク）。
+    /// 右端の情報・縮小表示の欄を常に表示する（固定）。
+    pub side_pin: bool,
+    /// ライトモード（false ならダーク）。theme に知らない名前が書かれていたときの行き先。
     pub light: bool,
+    /// theme= に書かれた配色の名前（無ければ light / dark だけで決める）。
+    pub theme: Option<String>,
+    /// theme=custom の色（main, sub, accent, text, subtext）。5 つそろったときだけ Some。
+    pub custom: Option<[(u8, u8, u8); 5]>,
     /// None なら既定（zoom::DEFAULT）。
     pub size: Option<i32>,
     /// None なら同梱の NeoFont。
@@ -45,6 +53,26 @@ pub struct Config {
     pub session: Vec<PathBuf>,
     /// 終了時に表示していたタブ。
     pub session_active: Option<PathBuf>,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Config {
+            autosave: false,
+            wrap: true,
+            gutter_pin: false,
+            side_pin: false,
+            light: false,
+            theme: Some("dark".into()),
+            custom: None,
+            size: None,
+            font: None,
+            recent: Vec::new(),
+            history: Vec::new(),
+            session: Vec::new(),
+            session_active: None,
+        }
+    }
 }
 
 /// 実行ファイルの隣の `neodir/config.txt`。
@@ -61,8 +89,26 @@ fn parse_bool(v: &str) -> bool {
     matches!(v.trim().to_ascii_lowercase().as_str(), "true" | "on" | "yes" | "1")
 }
 
+/// custom_* のキーの並び（Config::custom の順）。
+pub const CUSTOM_KEYS: [&str; 5] = ["custom_main", "custom_sub", "custom_accent", "custom_text", "custom_subtext"];
+
+/// `#rrggbb`（# は省略可）を色にする。
+pub fn parse_hex(v: &str) -> Option<(u8, u8, u8)> {
+    let h = v.trim().trim_start_matches('#');
+    if h.len() != 6 || !h.chars().all(|c| c.is_ascii_hexdigit()) {
+        return None;
+    }
+    let n = u32::from_str_radix(h, 16).ok()?;
+    Some(((n >> 16) as u8, (n >> 8) as u8, n as u8))
+}
+
+pub fn hex_of((r, g, b): (u8, u8, u8)) -> String {
+    format!("#{r:02x}{g:02x}{b:02x}")
+}
+
 pub fn parse(text: &str) -> Config {
     let mut cfg = Config::default();
+    let mut custom: [Option<(u8, u8, u8)>; 5] = [None; 5];
     for line in text.lines() {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') {
@@ -74,7 +120,15 @@ pub fn parse(text: &str) -> Config {
             "autosave" => cfg.autosave = parse_bool(v),
             "wrap" => cfg.wrap = parse_bool(v),
             "gutter_pin" => cfg.gutter_pin = parse_bool(v),
-            "theme" => cfg.light = v.eq_ignore_ascii_case("light"),
+            "side_pin" => cfg.side_pin = parse_bool(v),
+            "theme" => {
+                cfg.light = v.eq_ignore_ascii_case("light");
+                cfg.theme = (!v.is_empty()).then(|| v.to_ascii_lowercase());
+            }
+            k if CUSTOM_KEYS.contains(&k) => {
+                let i = CUSTOM_KEYS.iter().position(|c| *c == k).unwrap_or(0);
+                custom[i] = parse_hex(v);
+            }
             "size" => cfg.size = v.parse::<i32>().ok().map(zoom::clamp),
             "font" if !v.is_empty() => cfg.font = Some(PathBuf::from(v)),
             "recent" if !v.is_empty() && cfg.recent.len() < recent::MAX => cfg.recent.push(PathBuf::from(v)),
@@ -88,6 +142,9 @@ pub fn parse(text: &str) -> Config {
             "session_active" if !v.is_empty() => cfg.session_active = Some(PathBuf::from(v)),
             _ => {}
         }
+    }
+    if custom.iter().all(Option::is_some) {
+        cfg.custom = Some(custom.map(|c| c.unwrap_or_default()));
     }
     cfg
 }
@@ -112,7 +169,13 @@ pub fn render(existing: &str, cfg: &Config) -> String {
     let auto_line = format!("autosave={}", cfg.autosave);
     let wrap_line = format!("wrap={}", cfg.wrap);
     let pin_line = format!("gutter_pin={}", cfg.gutter_pin);
-    let theme_line = format!("theme={}", if cfg.light { "light" } else { "dark" });
+    let side_line = format!("side_pin={}", cfg.side_pin);
+    let mut seen_side = false;
+    // dark / light は light の値で決める（名前の付いた配色のときだけ、その名前を書く）
+    let named = cfg.theme.as_deref().filter(|t| !matches!(*t, "dark" | "light"));
+    let theme_line = format!("theme={}", named.unwrap_or(if cfg.light { "light" } else { "dark" }));
+    let custom_lines: Vec<String> = cfg.custom.iter().flat_map(|c| CUSTOM_KEYS.iter().zip(c.iter()).map(|(k, v)| format!("{k}={}", hex_of(*v)))).collect();
+    let mut seen_custom = false;
     let size_line = format!("size={}", cfg.size.map(|n| n.to_string()).unwrap_or_default());
 
     let mut out: Vec<String> = Vec::new();
@@ -139,6 +202,18 @@ pub fn render(existing: &str, cfg: &Config) -> String {
                     out.push(pin_line.clone());
                 }
                 seen_pin = true;
+            }
+            Some(k) if CUSTOM_KEYS.contains(&k) => {
+                if !seen_custom {
+                    out.extend(custom_lines.iter().cloned());
+                }
+                seen_custom = true;
+            }
+            Some("side_pin") => {
+                if !seen_side {
+                    out.push(side_line.clone());
+                }
+                seen_side = true;
             }
             Some("theme") => {
                 if !seen_theme {
@@ -203,6 +278,13 @@ pub fn render(existing: &str, cfg: &Config) -> String {
     if !seen_pin {
         out.push(pin_line);
     }
+    if !seen_custom {
+        out.extend(custom_lines);
+    }
+    // 既定（false）のときは行を足さない（今までの設定ファイルを増やさない）
+    if !seen_side && cfg.side_pin {
+        out.push(side_line);
+    }
     if !seen_font {
         out.push(font_line);
     }
@@ -248,7 +330,7 @@ mod tests {
     use super::*;
 
     fn cfg() -> Config {
-        Config { autosave: true, wrap: true, gutter_pin: true, light: true, size: Some(18), font: Some(PathBuf::from("/f/Mono.ttf")), recent: vec![PathBuf::from("/a/1.txt"), PathBuf::from("/a/2.txt")], history: vec![PathBuf::from("/h/1.txt"), PathBuf::from("/h/2.txt"), PathBuf::from("/h/3.txt")], session: vec![PathBuf::from("/s/1.txt"), PathBuf::from("/s/2.txt")], session_active: Some(PathBuf::from("/s/2.txt")) }
+        Config { autosave: true, wrap: true, gutter_pin: true, side_pin: false, light: true, theme: Some("light".into()), custom: None, size: Some(18), font: Some(PathBuf::from("/f/Mono.ttf")), recent: vec![PathBuf::from("/a/1.txt"), PathBuf::from("/a/2.txt")], history: vec![PathBuf::from("/h/1.txt"), PathBuf::from("/h/2.txt"), PathBuf::from("/h/3.txt")], session: vec![PathBuf::from("/s/1.txt"), PathBuf::from("/s/2.txt")], session_active: Some(PathBuf::from("/s/2.txt")) }
     }
 
     #[test]
@@ -265,12 +347,22 @@ mod tests {
     }
 
     #[test]
-    fn wrap_defaults_off_and_round_trips() {
-        assert!(!parse("").wrap);
+    fn wrap_defaults_on_and_round_trips() {
+        assert!(parse("").wrap);
+        assert!(Config::default().wrap);
         assert!(parse("wrap=true\n").wrap);
         assert!(!parse("wrap=false\n").wrap);
-        let out = render("wrap=false\n", &Config { wrap: true, ..Default::default() });
-        assert!(out.starts_with("wrap=true\n"));
+        let out = render("wrap=true\n", &Config { wrap: false, ..Default::default() });
+        assert!(out.starts_with("wrap=false\n"));
+    }
+
+    #[test]
+    fn side_pin_is_written_only_when_on_or_present() {
+        assert!(!parse("").side_pin);
+        assert!(parse("side_pin=true\n").side_pin);
+        assert!(!render("", &Config::default()).contains("side_pin"));
+        assert!(render("", &Config { side_pin: true, ..Default::default() }).contains("side_pin=true\n"));
+        assert!(render("side_pin=true\n", &Config::default()).starts_with("side_pin=false\n"));
     }
 
     #[test]
@@ -295,6 +387,20 @@ mod tests {
     #[test]
     fn path_is_next_to_the_executable() {
         assert_eq!(path_for_exe(Path::new("/opt/x/neonote")), Some(PathBuf::from("/opt/x/neodir/config.txt")));
+    }
+
+    #[test]
+    fn custom_colors_need_all_five_and_round_trip() {
+        assert_eq!(parse_hex("#2B2b2b"), Some((43, 43, 43)));
+        assert_eq!(parse_hex("2b2b2b"), Some((43, 43, 43)));
+        assert_eq!(parse_hex("#2b2b2"), None);
+        assert_eq!(parse_hex("#gggggg"), None);
+        assert!(parse("custom_main=#000000").custom.is_none()); // 5 つそろわない
+        let c = [(1, 2, 3), (4, 5, 6), (7, 8, 9), (250, 251, 252), (100, 101, 102)];
+        let cfg = Config { theme: Some("custom".into()), custom: Some(c), ..Default::default() };
+        let back = parse(&render("", &cfg));
+        assert_eq!(back.custom, Some(c));
+        assert_eq!(back.theme.as_deref(), Some("custom"));
     }
 
     #[test]

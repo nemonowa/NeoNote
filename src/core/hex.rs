@@ -48,7 +48,7 @@ fn is_hex2(t: &str) -> bool {
     t.len() == 2 && t.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
-/// HEX テキストに含まれるバイト数（タイトルの `Words:` 用）。`parse` と同じ読み方で、
+/// HEX テキストに含まれるバイト数（タイトルの `Chars:` 用）。`parse` と同じ読み方で、
 /// オフセットと ASCII 欄を数えず、不正なトークンがあっても止まらずに 2 桁の 16 進だけを数える。
 pub fn byte_count(text: &str) -> usize {
     let mut n = 0usize;

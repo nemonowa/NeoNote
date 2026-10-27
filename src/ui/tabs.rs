@@ -14,13 +14,13 @@ use fltk::{
 };
 use std::{cell::Cell, path::Path, rc::Rc};
 
-pub const HEIGHT: i32 = 26;
+pub const HEIGHT: i32 = 28;
 /// 右端の表示モードのチップの幅。
 pub const CHIP_W: i32 = 104;
-const MIN_W: i32 = 50;
+const MIN_W: i32 = 48;
 const MAX_W: i32 = 220;
-const CLOSE_W: i32 = 22;
-const PLUS_W: i32 = 30;
+const CLOSE_W: i32 = 24;
+const PLUS_W: i32 = 32;
 /// これ以上横に動かしたら、クリックではなくドラッグ（並べ替え）と見なす。
 const DRAG_PX: i32 = 6;
 
@@ -138,6 +138,10 @@ fn style(b: &mut Button, active: bool) {
     b.set_label_color(if active { rgb(color_text()) } else { rgb(color_subtext()) });
     b.clear_visible_focus(); // キーボードフォーカスは編集領域に残す
     b.super_handle_first(false);
+    if active {
+        // 選ばれているタブは、上端のアクセント色の細線で示す
+        b.draw(|b| draw::draw_rect_fill(b.x(), b.y(), b.w(), 2, rgb(color_accent())));
+    }
 }
 
 /// ドラッグ中、落とす先のタブをアクセント色にする（`target` が None なら元の色に戻す）。
@@ -315,16 +319,16 @@ mod tests {
 
     #[test]
     fn overflowing_tabs_keep_the_active_one_visible() {
-        // 800px なら (800-30)/50 = 15 個まで
+        // 800px なら (800-32)/48 = 16 個まで
         assert_eq!(visible_range(11, 3, 800), 0..11);
-        assert_eq!(visible_range(15, 14, 800), 0..15);
+        assert_eq!(visible_range(16, 15, 800), 0..16);
         for active in 0..40 {
             let r = visible_range(40, active, 800);
-            assert_eq!(r.len(), 15);
+            assert_eq!(r.len(), 16);
             assert!(r.contains(&active) && r.end <= 40, "active={active} range={r:?}");
         }
-        assert_eq!(visible_range(40, 0, 800), 0..15);
-        assert_eq!(visible_range(40, 39, 800), 25..40);
+        assert_eq!(visible_range(40, 0, 800), 0..16);
+        assert_eq!(visible_range(40, 39, 800), 24..40);
         // 極端に狭くても 1 個は出す
         assert_eq!(visible_range(5, 2, 10).len(), 1);
     }

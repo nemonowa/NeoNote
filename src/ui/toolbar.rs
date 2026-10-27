@@ -5,13 +5,14 @@ use super::{menu::{self, Action, MenuEntry}, theme::*};
 use fltk::{
     app,
     button::Button,
+    draw,
     enums::{Align, Color, Event, FrameType},
     frame::Frame,
     group::Flex,
     prelude::*,
 };
 
-pub const HEIGHT: i32 = 30;
+pub const HEIGHT: i32 = 32;
 
 thread_local! {
     /// 最後に右クリックされたボタンの、画面上の左下（x, y）。そのボタンの真下に別ウィンドウを出すのに使う。
@@ -39,7 +40,7 @@ pub fn mark_open(on: bool) {
 pub fn last_button_bottom() -> Option<(i32, i32)> {
     LAST_BUTTON_BOTTOM.with(|c| c.get())
 }
-const BUTTON_W: i32 = 50;
+const BUTTON_W: i32 = 48;
 /// 行番号欄の固定ボタン（`#`）の幅。
 const PIN_W: i32 = 24;
 
@@ -65,6 +66,11 @@ const SPECS: [Spec; 8] = [
 
 fn rgb((r, g, b): (u8, u8, u8)) -> Color {
     Color::from_rgb(r, g, b)
+}
+
+/// ボタンの右端の 1px の区切り線（上下を少し空ける）。
+fn draw_divider(b: &mut Button) {
+    draw::draw_rect_fill(b.x() + b.w() - 1, b.y() + 8, 1, b.h() - 16, rgb(mix(color_main(), color_text(), 14)));
 }
 
 /// 配色を切り替えたあと、ツールバーの色を今のパレットに合わせ直す。
@@ -93,6 +99,7 @@ pub fn build<F: Fn(Action) + Clone + 'static, T>(on_action: F, extra: impl FnOnc
     let mut bar = Flex::default().row();
     bar.set_color(rgb(color_sub()));
     bar.set_frame(FrameType::FlatBox);
+    bar.set_pad(0); // ボタンの間は隙間ではなく 1px の区切り線で分ける（draw_divider）
 
     for spec in SPECS.iter() {
         let mut b = Button::default().with_label(spec.label);
@@ -103,6 +110,7 @@ pub fn build<F: Fn(Action) + Clone + 'static, T>(on_action: F, extra: impl FnOnc
         b.set_label_color(if spec.main.is_some() { rgb(color_subtext()) } else { rgb(color_subtext()).darker() });
         b.set_tooltip(spec.tip);
         b.clear_visible_focus(); // キーボードフォーカスは編集領域に残す
+        b.draw(draw_divider);
         bar.fixed(&b, BUTTON_W);
 
         let cb = on_action.clone();
@@ -115,7 +123,14 @@ pub fn build<F: Fn(Action) + Clone + 'static, T>(on_action: F, extra: impl FnOnc
         let cb = on_action.clone();
         let menu = spec.menu;
         b.super_handle_first(false); // 右クリックでボタン標準の動作（左クリック扱い）を起こさない
+        let enabled = spec.main.is_some();
         b.handle(move |w, ev| {
+            // 文字はふだん控えめ（subtext）にして、マウスを乗せたときだけ text にする
+            if enabled && matches!(ev, Event::Enter | Event::Leave) {
+                w.set_label_color(rgb(if ev == Event::Enter { color_text() } else { color_subtext() }));
+                w.redraw();
+                return ev == Event::Enter; // Enter を受けると Leave も届く
+            }
             if ev == Event::Push && app::event_mouse_button() == app::MouseButton::Right {
                 LAST_BUTTON.with(|l| *l.borrow_mut() = Some(w.clone()));
                 LAST_BUTTON_BOTTOM.with(|c| c.set(Some((app::event_x_root() - app::event_x() + w.x(), app::event_y_root() - app::event_y() + w.y() + w.h()))));
@@ -133,6 +148,13 @@ pub fn build<F: Fn(Action) + Clone + 'static, T>(on_action: F, extra: impl FnOnc
     pin.set_frame(FrameType::FlatBox);
     pin.set_down_frame(FrameType::FlatBox);
     pin.clear_visible_focus();
+    // 固定中（value が true）はアクセント色の下線で示す。地の色は変えない
+    pin.draw(|b| {
+        draw_divider(b);
+        if b.value() {
+            draw::draw_rect_fill(b.x() + 4, b.y() + b.h() - 2, b.w() - 8, 2, rgb(color_accent()));
+        }
+    });
     bar.fixed(&pin, PIN_W);
 
     let mut gap = Frame::default();

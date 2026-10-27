@@ -1,0 +1,9 @@
+# リポジトリの中は LF にそろえる（Windows の autocrlf の設定に左右されないように）
+* text=auto eol=lf
+*.cmd text eol=crlf
+*.bat text eol=crlf
+
+*.png binary
+*.ttf binary
+*.otf binary
+*.ico binary
