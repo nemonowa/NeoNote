@@ -4,7 +4,7 @@
 // タブ: 文書ごとの状態は Doc に持ち、Ui は文書の一覧と「いま表示している文書」を持つ。
 // 検索バー（常駐）・タブの並べ替え・セッション復元: 設計書の「検索バー」「タブの並べ替え」「セッション復元」の節を参照。
 use crate::audioplay;
-use crate::core::{archive, audiometa, book, nbt, nbtedit::{self, Seg}, region, doctext, htmlview, imgmeta, imagefile, pdftext, markdown, config, document::{self, Mode}, dropped, encoding::Encoding, eol::{self, Eol}, goto, hex, history::{self, History}, indent, json, pathlog, zoom, recent, replace, selection, sheet, viewmode};
+use crate::neo::{archive, audiometa, book, nbt, nbtedit::{self, Seg}, region, doctext, htmlview, imgmeta, imagefile, pdftext, markdown, config, document::{self, Mode}, dropped, encoding::Encoding, eol::{self, Eol}, goto, hex, history::{self, History}, indent, json, pathlog, zoom, recent, replace, selection, sheet, viewmode};
 use crate::ui::{menu::{self, Action}, nbttree::NbtTree, searchbar::{self, FindCmd, SearchBar}, sidepanel::{self, SidePanel}, skin, tabs::{self, TabCmd, TabInfo}, toolbar};
 use crate::{dev, log, platform, ui::theme::{self, *}};
 use fltk::{

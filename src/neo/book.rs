@@ -4,7 +4,7 @@
 // 読むもの: シート名・セルの値（数値・文字列・共有文字列・真偽・エラー・日付）。数式は計算済みの値だけ。
 // 読まないもの: 書式（桁数・通貨・色・罫線・列幅）、結合セル、画像・グラフ、非表示シート（xlsx）、ods の数式。
 // 日付は、セルの書式が日付・時刻のものだけを `YYYY-MM-DD` / `YYYY-MM-DD HH:MM:SS` / `HH:MM:SS` にする（ods は表示用の文字をそのまま使う）。
-use crate::core::{archive, sheet};
+use crate::neo::{archive, sheet};
 use std::collections::HashMap;
 use std::path::Path;
 

@@ -23,14 +23,18 @@ cargo test --release
 | 埋め込む素材 | `assets/`（フォント・アイコン・Open README の文） | 入れる |
 | 同梱の C ライブラリ | `vendor/miniaudio/` | 入れる |
 | 設計と記録 | `docs/`（`DESIGN.md`、検証のスクリーンショット） | 入れる |
-| 移植元とゲーム側の部品 | `reference/java/`、`integration/java/` | 入れる |
+| 製作者用（移植元・ゲーム側の部品・旧版の zip） | `admin/` | 入れない（非公開） |
 | AI エージェントへの共通の指示 | `CLAUDE.md` | 入れる |
 | ビルドの出力 | `target/` | 入れない |
 | 配布物 | `dist/`（実行ファイルを OS ごとにまとめる） | 入れない |
 | 実行時の設定・ログ | 実行ファイルの隣の `neodir/` | 入れない |
-| 開発者ごとの物 | `local/`、`CLAUDE.local.md`、エディタの設定 | 入れない |
+| 開発者ごとの物 | `CLAUDE.local.md`、エディタの設定 | 入れない |
 
 ## 決まり
 
 - 設計と進捗は `docs/DESIGN.md` に書く。確かめていないことは「未検証」と書く。
 - 改行は LF（`.gitattributes` でそろえる）。
+
+## 更新履歴
+
+ビルドを出すたびに、[changelog.md](changelog.md) の「内容」の先頭へ、そのバージョンの変更を1行程度で書く。

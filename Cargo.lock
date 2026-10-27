@@ -388,7 +388,7 @@ dependencies = [
 
 [[package]]
 name = "neonote"
-version = "0.1.0"
+version = "2.1.77"
 dependencies = [
  "cc",
  "encoding_rs",

@@ -4,7 +4,7 @@
 // 名前変更の考え方: 「パス一覧」を 1 行 1 パスの文字にして編集し、同じ行数で戻す（`to_edit_text` → `parse_edit_text`）。
 // 行を足す・消すことはできない（名前の変更だけ）。zip は中身（圧縮データ）に一切触れず、名前と目録だけを書き換える。
 use std::collections::HashSet;
-use crate::core::tarlist;
+use crate::neo::tarlist;
 use std::path::{Path, PathBuf};
 
 pub const MAX_ENTRIES: usize = 50_000;
@@ -261,7 +261,7 @@ pub fn read_entry(bytes: &[u8], name: &str, max: usize) -> Result<Vec<u8>, Strin
     let data = &bytes[start..end];
     match method {
         0 => Ok(data.to_vec()),
-        8 => crate::core::inflate::inflate(data, max),
+        8 => crate::neo::inflate::inflate(data, max),
         m => Err(format!("対応していない圧縮方式です（{m}）")),
     }
 }

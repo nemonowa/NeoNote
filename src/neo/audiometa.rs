@@ -5,7 +5,7 @@
 // 編集しないもの（画像 APIC・歌詞・独自のフレーム・他のブロック・音声そのもの）は、そのまま残す。
 // 書き戻しは `Patch`（先頭と末尾の差し替え）で返す。タグが小さくなる / パディングに収まるときは、
 // 先頭だけを書き換えれば済む（`in_place`）。
-use crate::core::imgmeta::{escape, parse_lines};
+use crate::neo::imgmeta::{escape, parse_lines};
 use std::path::Path;
 
 pub fn supports(p: &Path) -> bool {

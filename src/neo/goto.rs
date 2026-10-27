@@ -92,7 +92,7 @@ mod tests {
 
     #[test]
     fn matches_json_line_col() {
-        use crate::core::json::line_col;
+        use crate::neo::json::line_col;
         let t = "{\n  \"a\": あ,\n}";
         for pos in [0, 4, 9, 12] {
             if t.is_char_boundary(pos) {
