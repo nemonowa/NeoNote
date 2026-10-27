@@ -1,2 +1,20 @@
-target/
+# ビルドの出力
+/target/
+/dist/
+
+# 実行時にできるもの（実行ファイルの隣の neodir/ と、ログ）
+neodir/
+*.log
+
+# 開発者ごとのローカルファイル（共有しない）
+/local/*
+!/local/README.md
+CLAUDE.local.md
+.claude/settings.local.json
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
 Cargo.lock.bak

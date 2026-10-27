@@ -17,12 +17,12 @@ use fltk::{
     prelude::*,
 };
 
-const OPEN_W: i32 = 26;
-const INPUT_W: i32 = 170;
+const OPEN_W: i32 = 28;
+const INPUT_W: i32 = 168;
 const STEP_W: i32 = 24;
 /// 検索欄の右、← → × を並べる幅（置換欄の右の Repl / All の幅と同じ）。
 const SIDE_W: i32 = 96;
-const REPL_W: i32 = 54;
+const REPL_W: i32 = 56;
 const ALL_W: i32 = SIDE_W - REPL_W;
 const PANEL_H: i32 = 28;
 

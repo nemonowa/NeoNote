@@ -169,7 +169,13 @@ fn make_shortcut_for(exe: &Path) -> io::Result<PathBuf> {
         exe.display().to_string().replace('\'', "''"),
         exe.parent().map(|p| p.display().to_string()).unwrap_or_default().replace('\'', "''")
     );
-    let out = Command::new("powershell").args(["-NoProfile", "-NonInteractive", "-Command", &script]).output()?;
+    let mut cmd = Command::new("powershell");
+    cmd.args(["-NoProfile", "-NonInteractive", "-Command", &script]);
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    let out = cmd.output()?;
     if !out.status.success() {
         return Err(io::Error::new(io::ErrorKind::Other, String::from_utf8_lossy(&out.stderr).trim().to_string()));
     }
@@ -279,6 +285,72 @@ fn bundled_font_in(dir: &Path) -> io::Result<PathBuf> {
         }
     }
     Ok(path)
+}
+
+/// 時刻を、この PC の時間帯で `YYYY-MM-DD HH:MM` にする（日時の部品を足さないため、OS の関数を直接呼ぶ）。
+pub fn local_datetime(t: std::time::SystemTime) -> String {
+    let secs = match t.duration_since(std::time::UNIX_EPOCH) {
+        Ok(d) => d.as_secs() as i64,
+        Err(_) => return String::new(),
+    };
+    match local_fields(secs) {
+        Some((y, mo, d, h, mi)) => format!("{y:04}-{mo:02}-{d:02} {h:02}:{mi:02}"),
+        None => String::new(),
+    }
+}
+
+#[cfg(windows)]
+fn local_fields(secs: i64) -> Option<(i32, u32, u32, u32, u32)> {
+    #[repr(C)]
+    struct FileTime {
+        low: u32,
+        high: u32,
+    }
+    #[repr(C)]
+    #[derive(Default)]
+    struct SystemTime {
+        year: u16,
+        month: u16,
+        day_of_week: u16,
+        day: u16,
+        hour: u16,
+        minute: u16,
+        second: u16,
+        millis: u16,
+    }
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn FileTimeToLocalFileTime(ft: *const FileTime, local: *mut FileTime) -> i32;
+        fn FileTimeToSystemTime(ft: *const FileTime, st: *mut SystemTime) -> i32;
+    }
+    // FILETIME は 1601-01-01 からの 100 ナノ秒単位
+    let ticks = (secs + 11_644_473_600) as u64 * 10_000_000;
+    let ft = FileTime { low: ticks as u32, high: (ticks >> 32) as u32 };
+    let mut local = FileTime { low: 0, high: 0 };
+    let mut st = SystemTime::default();
+    let ok = unsafe { FileTimeToLocalFileTime(&ft, &mut local) != 0 && FileTimeToSystemTime(&local, &mut st) != 0 };
+    ok.then(|| (st.year as i32, st.month as u32, st.day as u32, st.hour as u32, st.minute as u32))
+}
+
+#[cfg(unix)]
+fn local_fields(secs: i64) -> Option<(i32, u32, u32, u32, u32)> {
+    // struct tm の先頭 6 項目（秒・分・時・日・月・年）は どの OS でもこの並び。残りは余裕を持って確保する
+    #[repr(C)]
+    struct Tm {
+        sec: i32,
+        min: i32,
+        hour: i32,
+        mday: i32,
+        mon: i32,
+        year: i32,
+        rest: [i64; 8],
+    }
+    extern "C" {
+        fn localtime_r(t: *const i64, out: *mut Tm) -> *mut Tm;
+    }
+    let mut tm = Tm { sec: 0, min: 0, hour: 0, mday: 0, mon: 0, year: 0, rest: [0; 8] };
+    let r = unsafe { localtime_r(&secs, &mut tm) };
+    (!r.is_null()).then(|| (tm.year + 1900, (tm.mon + 1) as u32, tm.mday as u32, tm.hour as u32, tm.min as u32))
 }
 
 #[cfg(test)]

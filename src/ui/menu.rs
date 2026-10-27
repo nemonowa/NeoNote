@@ -44,6 +44,12 @@ pub enum Action {
     RunCmd,
     ChangeEncoding,
     CopyPath,
+    CopyFileName,
+    CutLine,
+    ChangeSize,
+    ToggleFullScreen,
+    CountText,
+    ChooseTheme,
     ChooseFont,
     ResetFont,
     OpenReadme,
@@ -115,7 +121,7 @@ pub const LOAD: &[MenuEntry] = &[
     e("Open Folder...", Action::OpenFolder),
     ed("Close Tab", Action::CloseTab),
     e("Open Recent", Action::OpenRecent),
-    e("Open README", Action::OpenReadme), // 中身は assets/README.txt（今は仮）
+    e("Open README", Action::OpenReadme), // 中身は assets/README.txt
     e("Open HomePage", Action::OpenHomePage),
     e("Open Settings", Action::ChooseFont), // フォント選択（Java 版と同じ）
     e("Open Config", Action::OpenConfig),   // neodir/config.txt をタブで開く
@@ -150,6 +156,8 @@ pub const EDIT: &[MenuEntry] = &[
 pub const COPY: &[MenuEntry] = &[
     ed("Copy", Action::Copy),
     e("Copy Line", Action::CopyLine),
+    e("Cut Line", Action::CutLine),
+    e("Copy File Name", Action::CopyFileName),
     e("Copy to Clipboard History", Action::CopyToHistory),
 ];
 pub const PASTE: &[MenuEntry] = &[
@@ -164,7 +172,11 @@ pub const RUN: &[MenuEntry] = &[
     e("Change Encoding", Action::ChangeEncoding),
     e("Choose Font", Action::ChooseFont),
     e("Default Font", Action::ResetFont),
+    e("Change Size", Action::ChangeSize),
+    e("Toggle Full Screen", Action::ToggleFullScreen),
+    e("Word Character Count", Action::CountText),
     e("Toggle Theme", Action::ToggleTheme),
+    e("Choose Theme", Action::ChooseTheme),
 ];
 
 /// ポップアップの 1 行分。ラベルはそのまま表示される（`/` `&` などは中で退避するので、パスを含んでいてもよい）。

@@ -307,8 +307,8 @@ neonote [--log-level <DEBUG|INFO|WARN|ERROR>] [パス...]
 
 ### 第6段階の積み残し
 
-- **アイコン**: 本物の `icon.png` が無いため、仮のアイコンを `assets/icon.png` に置いて埋め込み、`Window::set_icon` で付けた。本物は同名で置き換えてビルドし直すだけでよい。
-- **README 表示**（`Open README`）: 本物の README が無いため、仮の `assets/README.txt` を埋め込み、別ウィンドウ（読み取り専用）で表示する。本物は同名で置き換えてビルドし直す。
+- **アイコン**: `assets/icon.png` を埋め込み、`Window::set_icon` で付ける。旧 Java 版のリポジトリの `source/icon.png`（本物）に置き換えた。
+- **README 表示**（`Open README`）: `assets/README.txt` を埋め込み、別ウィンドウ（読み取り専用）で表示する。旧 Java 版のリポジトリの `source/README`（Java 版の Open README が表示していた文）に置き換えた。
 - ~~同梱フォント~~: 解決済み。「同梱フォント（NeoFont）」の節を参照。
 - Windows / macOS での動作は未確認（`platform.rs` の分岐と、Java 側の `.exe` 判定は書いてあるが実行していない）。
 
@@ -390,8 +390,8 @@ Java 版には名前だけで動作の無いメニュー項目があった。名
 
 作者の指示（2026-10-25）で、行番号欄は**普通は隠し、必要なときだけ出す**。
 
-- **出す条件**（どれか 1 つでよい）: ① 「固定」されている ② マウスが編集領域の左端にある（隠れているときは左端 10 px の帯、出ているときは行番号欄の幅まで。0.1 秒ごとに座標で見る） ③ 文字カーソルが行頭（桁 1）にある。どれも満たさなければ隠す。
-- **隠れている間は本文を左へ詰める**（行番号欄の幅を 0 にする）。出ると本文が行番号欄の幅だけ右へずれる。文字カーソルが行頭に来る・離れるたびに本文が横に動くので、気になるなら固定する。
+- **出す条件**（どれか 1 つでよい）: ① 「固定」されている ② マウスが編集領域の左端にある（隠れているときは左端 10 px の帯、出ているときは行番号欄の幅まで。0.1 秒ごとに座標で見る）。どちらも満たさなければ隠す。文字カーソルの位置では出さない（改行のたびに出たり消えたりしてちらつくため、2026-10-27 に外した）。
+- **隠れている間は本文を左へ詰める**（行番号欄の幅を 0 にする）。出ると本文が行番号欄の幅だけ右へずれる。
 - **固定ボタン**: ツールバーの `#`（`Pin` の帯は廃止。下の「UI の無駄を削る」参照）。押すたびに 固定 / 解除 を切り替え、固定中はアクセント色。状態の説明はツールチップに出す。
 - **保存**: 固定の状態は `gutter_pin=true|false` に保存し、次の起動でも引き継ぐ。既定は false（自動表示）。
 - 検証済み（Xvfb + xdotool）: 隠れた状態（本文が左へ詰まる）、マウスを左端へ移すと出る、文字カーソルが行頭だと出る、`Pin` を押すと固定され `gutter_pin=true` が書かれる。未検証: 固定を解除する操作、文字サイズを変えたときの幅、Windows / macOS。
@@ -997,3 +997,56 @@ View History / Restore From History、Magic Select・Copy Line・Paste Before/Af
 - CRLF と LF が混在する文書（Mixed）は、元のバイトを保つため今まで通り `\r` を持つ（印が出る）。
 - 新しい文書（Windows では CRLF）と、pdf・文書から取り出した写しは、保存すると CRLF になる。
 - 検証済み（Windows 11）: CRLF の UTF-8 で印が出ない、行末への追記・行の途中での Enter・末尾への追記を `Ctrl+S` で保存して、全行が `\r\n` のまま。ユニットテスト 255 件。未検証: CRLF 文書への CRLF を含む貼り付け、Windows-31J の CRLF の保存、macOS。
+
+## Windows で GUI アプリとして起動する
+
+- ダブルクリックで黒い窓（コンソール）が一緒に開いていた。`windows_subsystem = "windows"` にし、起動時に親の端末へつなぐ（`AttachConsole`）。端末から起動したときはログがその端末に出る。デスクトップのショートカットを作る PowerShell も窓を出さないようにした。
+- 検証済み（Windows 11）: 実行ファイルが GUI 用（subsystem 2）、エクスプローラーから起動してコンソールが付かない、`--log-level debug` のログが出る。未検証: cmd・PowerShell の窓から起動したときの表示（GUI アプリなので、プロンプトが先に戻る）、Make Shortcut。
+
+## 旧 Java 版のリポジトリ資料
+
+- 旧リポジトリの zip は `local/archive/NeoNote_legacy_java.zip` に置いた（git に入れない。改版ごとのコピー・.class・同梱の JSON-java・Oracle のライセンス文を含むため）。
+- 取り出したもの: `source/icon.png` → `assets/icon.png`、`source/README` → `assets/README.txt`（改行を LF に）。
+- 取り出さなかったもの: `source/font.ttf`（今の `assets/NeoFont.ttf` と中身が違う。どちらが新しいかは未確認）、`source/LICENSE`（JDK の Oracle NFTC で、NeoNote のライセンスではない）、`neo.java`（664 行。`reference/java/SwingNeoNote.java` の方が新しい）と改版のコピー、`admin/` の JsonFormatter・SilverNBT（別のツール）。
+- 旧資料との突き合わせ（2026-10-27）で、引き継いでいないと分かったもの:
+  - 機能: 全画面の切り替え（最初の版の `Toggle Full Screen`）、文字数・単語数のダイアログ（今はタイトルに文字数だけ）、`Copy File Name`、`Cut Line`、`Change Size`（文字の大きさ。ズームの `Ctrl+ホイール` はある）。
+  - ツールバーのツールチップの英語版・HTML 版の文（memo.txt と旧版にある）。
+  - 中間の版にだけあった名前のメニュー（`New File...` `Open File in PC...` `Open Info` `Open in GitHub` `Copy Full Path` `Cut After Deselect` `Redo Multiple` `Choose File...` `Auto Load Settings` `Encode`）。どれも動作は無く、名前だけ。
+  - 引き継ぐ必要が無いもの: `neo.old.java`（NEXUS のランチャーで NeoNote ではない）、開発記録の Discord のリンク（同じファイル）、実行用の `.bat`（Java 用）。
+- 上のうち判断の要らない 5 つを追加した: Run に `Change Size`（大きさを数字で入力）・`Toggle Full Screen`（`F11` でも切り替え）・`Word Character Count`（文字数・単語数・行数。選択があれば選択範囲）、Copy に `Cut Line`・`Copy File Name`。ラベルに `/` が使えないので `Word/Character Count` は `Word Character Count` にした。
+  - 検証済み（Windows 11）: メニューに出る、`F11` で全画面と戻す、数のダイアログ、`Copy File Name` でファイル名だけが入る、`Cut Line` で 1 行（改行まで）が切り取られて未保存の印が付く。ユニットテスト 256 件。未検証: `Change Size` の入力ダイアログの操作、macOS・Linux の全画面。
+- 判断を受けて（2026-10-27）: Open README は旧版の文の後ろに操作の説明を足した。フォントは今の NeoFont のまま。タイトルの `Words:` は `Chars:` にし、実行ファイルのフォルダの中のファイルはそのフォルダの部分を省いて出す。CRLF と LF の混在は今のまま印を出す。
+
+## 右端の情報・縮小表示の欄と、左右の欄の開き方（2026-10-27）
+
+- 右端に欄を作った（`ui/sidepanel.rs`）。上はファイルの情報（Name・Folder・Size・Modified・Chars・Words・Lines、選択があれば Selected、画像は大きさ、音声は長さなど）、下は本文全体の縮小表示（空白でない文字を小さな四角で描く。見えている範囲を帯で示し、クリック・ドラッグでその行が真ん中に来るようにスクロールする。文字カーソルは動かさない）。縮小表示は 5 万行・1 行 150 桁まで。
+- 出す条件は 固定（欄の右上の `Pin`。`neodir/config.txt` の `side_pin`）・マウスが右端・Alt で開いている のどれか。隠れている間は情報を作らない。大きな文書（`LIVE_COUNT_LIMIT` 超え）は編集のたびには数え直さない。
+- 左右の欄は、本文の端から幅の 5%（最低 10 px）にマウスが来たら出す。出ている間は欄の幅まで（右は縦スクロールバーの分も含める。スクロールバーへ移ったときに欄が消えて、また出るのを防ぐ）。
+- Alt だけを押して離すと、左右の欄をまとめて開く・閉じる（保存しない）。Alt と一緒にほかのキーやクリックがあれば何もしない。今まで Alt は使っていなかった。
+- 時刻は日時の部品を足さず、Windows は `FileTimeToLocalFileTime`、Linux / macOS は `localtime_r` で、この PC の時間帯に直す。
+- 検証済み（Windows 11）: 右端へのホバーで欄が出る、Alt で左右がまとめて開き、もう一度で閉じる、縮小表示のクリックでスクロールする（文字カーソルは 1 行目のまま）、情報の値。ユニットテスト 261 件。未検証: `Pin` の押下、ドラッグ、折り返し中のスクロール位置、画像・音声の情報の行、ライトテーマ、Linux / macOS（`localtime_r` の構造体は先頭の項目だけを使う）。
+- 折り返し（Word Wrap）の既定を on にした（設定ファイルに `wrap=` が無いとき）。折り返し中は横スクロールバーを出さない（`update_hscroll`）。検証済み（Windows 11）: 設定ファイルが無い状態で起動すると折り返し、横スクロールバーが出ない、`wrap=true` が書かれる。
+
+## 標準部品の色と、配色の候補（2026-10-27）
+
+- FLTK の標準部品が既定の灰色の立体で描かれ、画面の中で浮いていた。`ui/skin.rs` で、スクロールバー（編集領域・プレビュー・README・履歴の一覧）を平らにしてパレットの色で塗り、ダイアログ・メッセージの地・文字・選択の色もパレットに合わせた。立体の枠（UpBox・DownBox など）は平らな枠に差し替えた。角の丸い scheme（gtk など）は使わない（丸い部品は使わない方針）。
+- 見比べ用の配色の候補を 5 つ足した（`theme.rs` の PALETTES: nord・abyss・paper・sakura。midnight はコントラストが強すぎて目が疲れるので外した）。起動時に環境変数 `NEONOTE_THEME=名前` で選べる（保存はしない。メニューにはまだ出していない）。どの候補も、文字と地のコントラスト（本文 7:1 以上など）をテストで確かめる。accent の上の文字は、accent が明るいときは黒にした。
+- 数のダイアログの行数を、行番号・右端の欄と同じ数え方にそろえた（末尾の改行の後ろの空の行も 1 行）。
+- 検証済み（Windows 11）: 7 つの配色で起動し、左右の欄・スクロールバー・数のダイアログの色。ユニットテスト 261 件。未検証: ファイルを選ぶ窓（OS の標準の窓なので色は変えない）、Linux / macOS。
+
+## 見た目の整理と配色の選択（2026-10-27）
+
+- 選ばれているタブは上端の 2px のアクセント線、行番号の固定（`#`）と右端の欄の `Pinned` は下線で示す（地の色は変えない）。
+- ツールバーのボタンの間の隙間をやめて 1px の区切り線にした。文字はふだん subtext で、マウスを乗せたときだけ text。
+- 高さ・幅・余白を 4px の倍数にそろえた（ツールバー 32、タブ 28、閉じる 24、+ 32、検索の開くボタン 28 など。右端の欄の余白は 8）。ツールチップも配色に合わせ、余白を 8 x 4 にした。
+- Run の右クリックに `Choose Theme`: dark・light・nord・abyss・paper・sakura・custom から選ぶ（`theme=` に保存）。`Edit custom colors...` は custom の色が無ければ今の配色を写して作り、設定ファイルを開く。`custom_main`〜`custom_subtext` を `#rrggbb` で書いて保存すると反映される（5 つそろったときだけ使う）。
+- 検証済み（Windows 11）: 区切り線・ホバー・タブの線・ツールチップの色、Choose Theme の一覧と paper の選択（`theme=paper` が書かれる）、custom の色で起動。ユニットテスト 262 件。未検証: Edit custom colors の操作、設定ファイルを保存したときの再反映。
+
+## NBT（level.dat・.mca）の編集（2026-10-27）
+
+- `.dat`・`.dat_old`・`.nbt`・`.schematic`・`.schem`・`.litematic` は、NBT として読めれば SNBT（/data と同じ書き方）の文字で開く。保存すると開いたときと同じ包み方（gzip・zlib・なし）と根の名前で NBT に戻す。SNBT の書き間違いは保存せず、行・列を示してそこへカーソルを移す。NBT として読めなければ今まで通り（文字か HEX）。
+- `.mca`（`.mcc`・`.mcr`）はチャンクの一覧で開く（保存しない）。行で Enter かダブルクリックで、そのチャンクを SNBT のタブで開き、保存するとそのチャンクだけを書き換える（ほかのチャンクの中身はそのまま、ファイルは詰め直す。更新時刻はそのチャンクだけ今にする）。LZ4（種類 4）と別ファイル（.mcc 送り）のチャンクは開けない。
+- Preview（右上のチップ）は NBT Explorer のような木。`名前: 値` で並べ、ダブルクリック・Enter で値を書き換える（型は変えない）。右クリックで Edit Value・Add Child（Insert）・Rename（F2）・Delete（Delete）。編集は本文の SNBT を書き換える（元に戻すで 1 回で戻る。Text と同じ中身）。項目は 2 万個まで（超えた分は Text で編集）。
+- 圧縮は自前（`core/deflate.rs`: LZ77 + 固定ハフマン、gzip・zlib の包み、CRC32・Adler32）。依存は増やしていない。Minecraft の圧縮より少し大きくなる（level.dat 2,162 → 2,515 バイト）。
+- 部品: `core/nbt.rs`（バイナリ・修正 UTF-8・SNBT）、`core/nbtedit.rs`（木の編集）、`core/region.rs`（.mca）、`ui/nbttree.rs`（木）。
+- 検証済み（Windows 11、手元のワールドの写し）: level.dat を開いて保存すると解凍後の NBT が元と 1 バイトも違わない。木で Difficulty を 2 → 3 にして保存すると、その 1 バイトだけが変わる。r.0.-1.mca の 564 チャンクの一覧、1 チャンクを開いて保存すると全チャンクの中身が元と同じで、時刻はそのチャンクだけ変わる。SNBT の書き間違いで保存を止める知らせ。ユニットテスト 278 件。未検証: 書き換えたワールドを Minecraft で読み込むこと、Add Child・Rename・Delete の画面での操作、.nbt（構造物）・.schem・.litematic の実物、とても大きなチャンク（木の 2 万個の上限）。

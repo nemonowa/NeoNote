@@ -4,8 +4,8 @@
 // タブ: 文書ごとの状態は Doc に持ち、Ui は文書の一覧と「いま表示している文書」を持つ。
 // 検索バー（常駐）・タブの並べ替え・セッション復元: 設計書の「検索バー」「タブの並べ替え」「セッション復元」の節を参照。
 use crate::audioplay;
-use crate::core::{archive, audiometa, book, doctext, htmlview, imgmeta, imagefile, pdftext, markdown, config, document::{self, Mode}, dropped, encoding::Encoding, eol::{self, Eol}, goto, hex, history::{self, History}, indent, json, pathlog, zoom, recent, replace, selection, sheet, viewmode};
-use crate::ui::{menu::{self, Action}, searchbar::{self, FindCmd, SearchBar}, tabs::{self, TabCmd, TabInfo}, toolbar};
+use crate::core::{archive, audiometa, book, nbt, nbtedit::{self, Seg}, region, doctext, htmlview, imgmeta, imagefile, pdftext, markdown, config, document::{self, Mode}, dropped, encoding::Encoding, eol::{self, Eol}, goto, hex, history::{self, History}, indent, json, pathlog, zoom, recent, replace, selection, sheet, viewmode};
+use crate::ui::{menu::{self, Action}, nbttree::NbtTree, searchbar::{self, FindCmd, SearchBar}, sidepanel::{self, SidePanel}, skin, tabs::{self, TabCmd, TabInfo}, toolbar};
 use crate::{dev, log, platform, ui::theme::{self, *}};
 use fltk::{
     app,
@@ -19,7 +19,7 @@ use fltk::{
     image::{PngImage, RgbImage},
     enums::ColorDepth,
     prelude::*,
-    text::{StyleTableEntryExt, TextAttr, TextBuffer, TextDisplay, TextEditor},
+    text::{PositionType, StyleTableEntryExt, TextAttr, TextBuffer, TextDisplay, TextEditor},
     window::Window,
     misc::Tooltip,
 };
@@ -55,6 +55,8 @@ const HISTORY_STEP_LIMIT: usize = 100_000;
 const FIND_TEXT_SIZE: i32 = 14;
 /// 行番号欄が隠れているとき、マウスが左端と見なされる幅。
 const GUTTER_EDGE: i32 = 10;
+/// 左右の欄を出す、本文の端からの範囲（本文の幅に対する割合）。
+const EDGE_RATIO: f64 = 0.05;
 
 /// これより大きな文書は、横スクロールバーを出すかどうかを測らない（全文を走査するため）。
 const HSCROLL_SCAN_LIMIT: i32 = 512 * 1024;
@@ -76,13 +78,23 @@ fn longest_line_px(text: &str, font: Font, size: i32) -> i32 {
     best.ceil() as i32
 }
 
+/// タイトルに出すパス。実行ファイルのフォルダの中なら、そのフォルダの部分を省く。
+fn title_path(path: &Path, exe_dir: Option<&Path>) -> String {
+    match exe_dir.and_then(|d| path.strip_prefix(d).ok()) {
+        Some(rel) if !rel.as_os_str().is_empty() => rel.display().to_string(),
+        _ => path.display().to_string(),
+    }
+}
+
 pub fn window_title(path: Option<&Path>, pos: Option<(usize, usize)>, chars: usize, encoding: &str, eol: &str, dirty: bool) -> String {
-    let file = path.map(|p| p.display().to_string()).unwrap_or_else(|| "Unsaved File".into());
+    let exe = std::env::current_exe().ok();
+    let exe_dir = exe.as_deref().and_then(Path::parent);
+    let file = path.map(|p| title_path(p, exe_dir)).unwrap_or_else(|| "Unsaved File".into());
     let mark = if dirty { "*" } else { "" };
     let at = pos.map(|(l, c)| format!(" | Ln {l}, Col {c}")).unwrap_or_default();
     let eol = if eol.is_empty() { String::new() } else { format!(" | EOL: {eol}") };
     format!(
-        "{mark}[{}] {TITLE} - by nemo | Path: {file}{at} | Words: {chars} | Encoding: {encoding}{eol}",
+        "{mark}[{}] {TITLE} - by nemo | Path: {file}{at} | Chars: {chars} | Encoding: {encoding}{eol}",
         dev::version()
     )
 }
@@ -114,6 +126,10 @@ enum Msg {
     Archive(u64, PathBuf, Result<Vec<archive::Entry>, String>),
     /// 音声の情報とタグの読込結果（文書の id）。
     Audio(u64, Result<AudioData, String>),
+    /// 右端の縮小表示で行が選ばれた（0 始まり）。
+    SideJump(i32),
+    /// 右端の欄の `Pin` が押された。
+    SidePin,
 }
 
 /// 音声の Preview に出す内容（別スレッドでファイルを読んで作る）。
@@ -152,6 +168,12 @@ struct State {
     meta_of: Option<PathBuf>,
     /// フォルダ・zip の名前の一覧を編集している文書か（値は対象のフォルダ / zip。保存すると名前を変更する）。
     arch_of: Option<PathBuf>,
+    /// NBT（level.dat など）を SNBT の文字にして編集している。保存するときは NBT に戻す。
+    nbt: Option<nbt::NbtFile>,
+    /// リージョンファイル（.mca）のチャンクの一覧（保存しない。行で Enter かダブルクリックでチャンクを開く）。
+    region_list: bool,
+    /// リージョンのチャンクを編集している（リージョンファイル, チャンクの番号）。保存するとそのチャンクだけ書き換える。
+    chunk_of: Option<(PathBuf, usize)>,
 }
 
 impl Default for State {
@@ -172,6 +194,9 @@ impl Default for State {
             eol: Eol::platform_default(),
             meta_of: None,
             arch_of: None,
+            nbt: None,
+            region_list: false,
+            chunk_of: None,
         }
     }
 }
@@ -212,6 +237,8 @@ struct Doc {
     player: RefCell<Option<audioplay::Player>>,
     /// Preview に出している再生位置（秒）。変わったときだけ描き直す。
     audio_secs: Cell<i64>,
+    /// NBT の Preview の木で開いていた項目（Text と行き来しても開いたままにする）。
+    tree_open: RefCell<Option<std::collections::HashSet<Vec<Seg>>>>,
 }
 
 impl Doc {
@@ -228,6 +255,8 @@ struct Ui {
     editor: TextEditor,
     /// md の Preview 用の表示部品（編集領域と同じ場所に出し入れする。使うまでは隠す）。
     preview: HelpView,
+    /// NBT の Preview の木（編集領域と同じ場所に出し入れする）。
+    nbt_tree: NbtTree,
     /// 編集領域とプレビューを出し入れしたときに並べ直すための、本文を含む縦の列。
     col: Flex,
     /// ツールバー右の余白。短い通知（パスをコピーした等）を出す。
@@ -259,7 +288,7 @@ struct Ui {
     size: Cell<i32>,
     /// 行番号欄の「固定」（常に表示。neodir/config.txt の gutter_pin に保存する）。
     gutter_pinned: Cell<bool>,
-    /// いま行番号欄を出しているか。固定・マウスが左端・文字カーソルが行頭、のどれかで出す。
+    /// いま行番号欄を出しているか。固定・マウスが左端、のどちらかで出す。
     gutter_shown: Cell<bool>,
     /// 行番号欄を出すときの幅（行数の桁数と文字の幅から決める）と、それを数えたときの (文書の id, 文字数)。
     gutter_w: Cell<i32>,
@@ -269,6 +298,20 @@ struct Ui {
     hscroll_key: Cell<(u64, i32, i32, i32, i32, bool, i32)>,
     /// マウスが編集領域の左端（行番号欄の上）にある。
     mouse_left: Cell<bool>,
+    /// 編集領域・プレビューと右端の欄を横に並べる行。
+    body: Flex,
+    /// 右端の情報・縮小表示の欄。
+    side: SidePanel,
+    /// 右端の欄の「固定」（neodir/config.txt の side_pin に保存する）。
+    side_pinned: Cell<bool>,
+    /// マウスが右端（右端の欄の上）にある。
+    mouse_right: Cell<bool>,
+    /// Alt で両端の欄を開いている（もう一度 Alt で閉じる。保存しない）。
+    alt_open: Cell<bool>,
+    /// Alt を押してから、ほかのキー・クリックが無い（離したときに開閉する）。
+    alt_armed: Cell<bool>,
+    /// 右端の欄の情報を最後に作ったときの (文書の id, 文字数, 未保存, 選択の長さ)。変わらなければ作り直さない。
+    side_key: Cell<(u64, i32, bool, i32)>,
     /// ツールバーの行番号の固定ボタン（`#`）。
     pin: Button,
     /// 配色の切り替えで色を直すための、ツールバー。
@@ -302,6 +345,31 @@ fn image_size(p: &Path) -> Option<(i32, i32)> {
     use fltk::image::SharedImage;
     let img = SharedImage::load(p).ok()?;
     Some((img.w(), img.h()))
+}
+
+/// 設定ファイルの配色（theme= と custom_*）を選ぶ。知らない名前・色のそろっていない custom は light / dark にする。
+fn apply_theme_config(cfg: &config::Config) {
+    if let Some([main, sub, accent, text, subtext]) = cfg.custom {
+        theme::store_custom(theme::Palette { main, sub, accent, text, subtext });
+    }
+    if !cfg.theme.as_deref().is_some_and(theme::set_named) {
+        theme::set_light(cfg.light);
+    }
+}
+
+/// 右端の欄に出す、画像・音声の情報（その種類のファイルのときだけ）。
+fn file_meta_rows(p: &Path) -> Vec<(String, String)> {
+    let mut rows = Vec::new();
+    if imagefile::is_image_path(p) {
+        if let Some((w, h)) = image_size(p) {
+            rows.push(("Image".into(), format!("{w} x {h} px")));
+        }
+    } else if audiometa::supports(p) && std::fs::metadata(p).is_ok_and(|m| m.len() <= AUDIO_INFO_MAX) {
+        if let Ok(info) = std::fs::read(p).map_err(|e| e.to_string()).and_then(|b| audiometa::info(&b)) {
+            rows.extend(audiometa::info_rows(&info).into_iter().map(|(k, v)| (k.to_string(), v)));
+        }
+    }
+    rows
 }
 
 /// URL の画像を一時ファイルに保存して、そのパスを返す。中身が画像でなければ失敗にして消す。
@@ -375,7 +443,20 @@ fn arch_label(root: &Path) -> PathBuf {
     root.with_file_name(n)
 }
 
+/// リージョンのチャンクの編集のタブ名（`r.0.0.mca [x,z]`）。
+fn chunk_label((region, index): &(PathBuf, usize)) -> PathBuf {
+    let mut n = region.file_name().unwrap_or_default().to_os_string();
+    n.push(format!(" [{},{}]", index % 32, index / 32));
+    region.with_file_name(n)
+}
+
 fn encoding_label(st: &State) -> String {
+    if let Some(f) = &st.nbt {
+        return format!("NBT ({})", f.compression.label());
+    }
+    if st.region_list {
+        return "Region".to_string();
+    }
     if st.hex {
         if st.hex_truncated { "HEX (read-only, truncated)".to_string() } else { "HEX".to_string() }
     } else if st.bom && !st.encoding.bom_bytes().is_empty() {
@@ -432,6 +513,7 @@ impl Ui {
             audio_busy: Cell::new(false),
             player: RefCell::new(None),
             audio_secs: Cell::new(-1),
+            tree_open: RefCell::new(None),
         });
         let u = Rc::clone(self);
         let mut b = buf;
@@ -649,7 +731,7 @@ impl Ui {
         let title = if st.loading {
             format!("Loading... {}", st.loading_path.as_deref().map(|p| log::file_name(&p.to_string_lossy()).to_string()).unwrap_or_default())
         } else {
-            window_title(st.path.clone().or(st.meta_of.as_deref().map(meta_label)).or(st.arch_of.as_deref().map(arch_label)).as_deref(), pos, st.chars, &encoding_label(&st), if st.hex { "" } else { st.eol.label() }, st.dirty)
+            window_title(st.path.clone().or(st.meta_of.as_deref().map(meta_label)).or(st.arch_of.as_deref().map(arch_label)).or(st.chunk_of.as_ref().map(chunk_label)).as_deref(), pos, st.chars, &encoding_label(&st), if st.hex { "" } else { st.eol.label() }, st.dirty)
         };
         let chip_label = if st.loading { "…".to_string() } else if d.preview.get() { "Preview".to_string() } else if st.hex { "HEX".to_string() } else { encoding_label(&st) };
         let chip_tip = if st.loading {
@@ -659,7 +741,7 @@ impl Ui {
             let eol = if st.hex { "-" } else { st.eol.label() };
             let file = st.path.as_deref().map(|p| p.display().to_string()).unwrap_or_else(|| "Unsaved File".into());
             format!(
-                "{file}\nEncoding: {}\nEOL: {eol}\n{at}\nWords: {}\nクリックで 表示・文字コード・改行コードを切り替え",
+                "{file}\nEncoding: {}\nEOL: {eol}\n{at}\nChars: {}\nクリックで 表示・文字コード・改行コードを切り替え",
                 encoding_label(&st),
                 st.chars
             )
@@ -675,7 +757,8 @@ impl Ui {
         }
         self.pos_shown.set(pos);
         self.win.clone().set_label(&title);
-        self.update_gutter(); // 文字カーソルが行頭に来た・離れた（タブの切替・読込の後も）
+        self.update_gutter(); // 行数の桁が変わった（タブの切替・読込の後も）
+        self.refresh_side();
     }
 
     /// タブバーを、いまの文書の一覧に合わせる（内容と幅が変わっていなければ何もしない）。
@@ -687,7 +770,7 @@ impl Ui {
             .iter()
             .map(|d| {
                 let st = d.st.borrow();
-                let meta = st.meta_of.as_deref().map(meta_label).or_else(|| st.arch_of.as_deref().map(arch_label));
+                let meta = st.meta_of.as_deref().map(meta_label).or_else(|| st.arch_of.as_deref().map(arch_label)).or_else(|| st.chunk_of.as_ref().map(chunk_label));
                 let shown = st.path.as_deref().or(st.loading_path.as_deref()).or(meta.as_deref());
                 TabInfo {
                     id: d.id,
@@ -695,6 +778,7 @@ impl Ui {
                     tip: match (&st.meta_of, &st.arch_of, shown) {
                         (Some(img), _, _) => format!("Metadata of {}", img.display()),
                         (None, Some(root), _) => format!("Rename list of {}", root.display()),
+                        (None, None, _) if st.chunk_of.is_some() => format!("Chunk of {}", st.chunk_of.as_ref().map(|c| c.0.display().to_string()).unwrap_or_default()),
                         (None, None, Some(p)) => p.display().to_string(),
                         (None, None, None) => "Unsaved File".into(),
                     },
@@ -793,6 +877,8 @@ impl Ui {
                     hex: false,
                     truncated: false,
                     stamp: document::stamp(&path),
+                    nbt: None,
+                    region: false,
                 });
                 tx.send(Msg::Loaded(id, path, result));
             } else if as_archive {
@@ -885,7 +971,7 @@ impl Ui {
         match result {
             Ok(loaded) => {
                 let path_for_view = path.clone();
-                // CRLF だけの文書は LF にして持つ（FLTK は  を印として描くため）。保存のときに CRLF へ戻す
+                // CRLF だけの文書は LF にして持つ（FLTK は \r を印として描くため）。保存のときに CRLF へ戻す
                 let eol = if loaded.hex { Eol::platform_default() } else { eol::detect(&loaded.text, Eol::platform_default()) };
                 let text = if !loaded.hex && eol == Eol::Crlf { eol::convert(&loaded.text, Eol::Lf) } else { loaded.text };
                 self.set_text_quiet(&d, &text);
@@ -902,6 +988,9 @@ impl Ui {
                 st.bom = loaded.bom;
                 st.hex = loaded.hex;
                 st.hex_truncated = loaded.truncated;
+                st.nbt = loaded.nbt;
+                st.region_list = loaded.region;
+                st.chunk_of = None;
                 st.auto = loaded.auto;
                 st.chars = if loaded.hex { hex::byte_count(&text) } else { document::char_count(&text) };
                 st.eol = eol;
@@ -1181,6 +1270,115 @@ impl Ui {
         self.activate(n.id);
     }
 
+    /// SNBT の文字を NBT に戻す。書き間違いなら、その場所へカーソルを移して知らせる（None）。
+    fn snbt_to_raw(&self, d: &Rc<Doc>) -> Option<Vec<u8>> {
+        let file = d.st.borrow().nbt.clone()?;
+        let text = d.buf.text();
+        match nbt::save_raw(&file, &text) {
+            Ok(raw) => Some(raw),
+            Err(e) => {
+                let at = goto::offset(&text, e.line, Some(e.col)) as i32;
+                let mut ed = self.editor.clone();
+                ed.set_insert_position(at);
+                ed.show_insert_position();
+                dialog::alert_default(&format!("SNBT の書き方が違うため、保存しませんでした。\n{e}"));
+                None
+            }
+        }
+    }
+
+    /// NBT のファイル（level.dat など）を、開いたときと同じ包み方（gzip など）で書く。
+    fn save_nbt(&self, d: &Rc<Doc>, target: PathBuf) -> bool {
+        let Some(raw) = self.snbt_to_raw(d) else { return false };
+        let compression = d.st.borrow().nbt.as_ref().map_or(nbt::Compression::Gzip, |f| f.compression);
+        match document::write_atomic(&target, &nbt::pack(compression, &raw)) {
+            Ok(()) => {
+                log::info(TAG, &format!("saved NBT: {} ({})", log::file_name(&target.to_string_lossy()), compression.label()));
+                self.remember_recent(target.clone());
+                {
+                    let stamp = document::stamp(&target);
+                    let mut st = d.st.borrow_mut();
+                    st.path = Some(target);
+                    st.dirty = false;
+                    st.stamp = stamp;
+                    st.conflict_noted = false;
+                }
+                self.refresh_tabs();
+                self.recount();
+                self.persist();
+                true
+            }
+            Err(e) => {
+                dialog::alert_default(&format!("保存できませんでした。\n{}\n{e}", target.display()));
+                false
+            }
+        }
+    }
+
+    /// リージョンのチャンク 1 つを書き換える（ほかのチャンクはそのまま。ファイルは読み直してから書く）。
+    fn save_chunk(&self, d: &Rc<Doc>, region_path: &Path, index: usize) -> bool {
+        let Some(raw) = self.snbt_to_raw(d) else { return false };
+        let compression = d.st.borrow().nbt.as_ref().map_or(nbt::Compression::Zlib, |f| f.compression);
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |t| t.as_secs() as u32);
+        let r = std::fs::read(region_path)
+            .map_err(|e| e.to_string())
+            .and_then(|b| region::replace_chunk(&b, index, compression, &raw, now))
+            .and_then(|out| document::write_atomic(region_path, &out).map_err(|e| e.to_string()));
+        match r {
+            Ok(()) => {
+                log::info(TAG, &format!("saved chunk {},{} of {}", index % 32, index / 32, log::file_name(&region_path.to_string_lossy())));
+                d.st.borrow_mut().dirty = false;
+                self.refresh_tabs();
+                self.recount();
+                self.flash("Chunk saved");
+                true
+            }
+            Err(e) => {
+                dialog::alert_default(&format!("チャンクを保存できませんでした。\n{}\n{e}", region_path.display()));
+                false
+            }
+        }
+    }
+
+    /// チャンクの一覧の今の行のチャンクを、新しいタブで開く（もう開いていれば、そのタブへ）。一覧でなければ false。
+    fn open_chunk_at_cursor(self: &Rc<Self>) -> bool {
+        let d = self.doc();
+        let (is_list, path) = {
+            let st = d.st.borrow();
+            (st.region_list, st.path.clone())
+        };
+        let (true, Some(path)) = (is_list, path) else { return false };
+        let line = d.buf.line_text(self.editor.insert_position());
+        let Some((x, z)) = region::parse_listing_line(&line) else { return true };
+        let index = (z * 32 + x) as usize;
+        let existing = self.docs.borrow().iter().find(|o| o.st.borrow().chunk_of.as_ref() == Some(&(path.clone(), index))).map(|o| o.id);
+        if let Some(id) = existing {
+            self.activate(id);
+            return true;
+        }
+        let opened = std::fs::read(&path).map_err(|e| e.to_string()).and_then(|b| {
+            let e = region::list(&b)?.into_iter().find(|e| e.index() == index).ok_or("チャンクがありません")?;
+            let (c, raw) = region::read_chunk(&b, &e)?;
+            nbt::open_raw(c, &raw)
+        });
+        match opened {
+            Ok((file, text)) => {
+                let n = self.new_doc();
+                self.set_text_quiet(&n, &text);
+                {
+                    let mut st = n.st.borrow_mut();
+                    st.nbt = Some(file);
+                    st.chunk_of = Some((path, index));
+                    st.eol = Eol::Lf;
+                    st.chars = document::char_count(&text);
+                }
+                self.activate(n.id);
+            }
+            Err(e) => dialog::alert_default(&format!("チャンク {x},{z} を開けませんでした。\n{e}")),
+        }
+        true
+    }
+
     fn save(&self, as_new: bool) -> bool {
         let d = self.doc();
         if d.st.borrow().loading {
@@ -1212,6 +1410,20 @@ impl Ui {
         if let Some(img) = meta {
             return self.save_meta(&d, img);
         }
+        let chunk = d.st.borrow().chunk_of.clone();
+        if let Some((region, index)) = chunk {
+            if !as_new {
+                return self.save_chunk(&d, &region, index);
+            }
+            d.st.borrow_mut().chunk_of = None; // 名前を付けて保存は、チャンクを 1 つの NBT ファイルとして書く
+        }
+        if d.st.borrow().region_list {
+            if !as_new {
+                self.flash("チャンクの一覧は保存しません（行で Enter かダブルクリックで、チャンクを開いて編集）");
+                return false;
+            }
+            d.st.borrow_mut().region_list = false;
+        }
         let current = d.st.borrow().path.clone();
         let target = match current {
             Some(p) if !as_new => p,
@@ -1232,6 +1444,9 @@ impl Ui {
         }
         if d.st.borrow().hex {
             return self.save_hex(&d, target);
+        }
+        if d.st.borrow().nbt.is_some() {
+            return self.save_nbt(&d, target);
         }
         let (enc, bom, eol) = {
             let st = d.st.borrow();
@@ -1420,10 +1635,161 @@ impl Ui {
     }
 
     /// 表示中の文書の Preview の有無に合わせて、編集領域とプレビューのどちらかを出す。
+    /// SNBT として編集している NBT の文書か（HEX で開き直したものは違う）。
+    fn is_nbt_doc(&self, d: &Rc<Doc>) -> bool {
+        let st = d.st.borrow();
+        st.nbt.is_some() && !st.hex
+    }
+
+    /// NBT の木を本文（SNBT）から作り直す。書き間違いがあれば、その知らせを出す。
+    fn render_nbt_tree(&self, d: &Rc<Doc>, select: Option<&[Seg]>) {
+        self.nbt_tree.restyle(self.font.get(), self.size.get());
+        match nbt::from_snbt(&d.buf.text()) {
+            Ok(root) => self.nbt_tree.show(&root, d.tree_open.borrow().as_ref(), select),
+            Err(e) => self.nbt_tree.show_message(&format!("SNBT の書き方が違うため、木で表示できません（Text で直してください）: {e}")),
+        }
+    }
+
+    /// 木での編集: 本文の SNBT を読み、`f` で書き換えて、本文を置き換える（元に戻すで 1 回で戻る）。
+    /// `f` は選び直す項目の道筋か、書き換えられなかった理由を返す。
+    fn edit_nbt(&self, f: impl FnOnce(&mut nbt::Tag) -> Result<Option<Vec<Seg>>, String>) {
+        let d = self.doc();
+        let Ok(mut root) = nbt::from_snbt(&d.buf.text()) else { return };
+        match f(&mut root) {
+            Ok(select) => {
+                *d.tree_open.borrow_mut() = Some(self.nbt_tree.open_paths());
+                let text = nbt::to_snbt(&root);
+                let mut b = d.buf.clone();
+                b.replace(0, b.length(), &text);
+                self.render_nbt_tree(&d, select.as_deref());
+                self.recount();
+            }
+            Err(e) if e.is_empty() => {} // 取り消した
+            Err(e) => dialog::alert_default(&e),
+        }
+    }
+
+    /// 選んでいる項目の値を書き換える（複合タグ・リストは開閉する）。
+    fn nbt_edit_value(&self) {
+        let Some(path) = self.nbt_tree.selected_path() else { return };
+        self.edit_nbt(|root| {
+            let t = nbtedit::get_mut(root, &path).ok_or("項目が見つかりません")?;
+            let Some(cur) = nbtedit::edit_text(t) else { return Err(String::new()) };
+            let name = match path.last() {
+                Some(Seg::Key(k)) => k.clone(),
+                Some(Seg::Index(i)) => format!("[{i}]"),
+                None => String::new(),
+            };
+            let prompt = format!("{name}（{}）の値", nbtedit::type_name(t.id()));
+            let Some(input) = dialog::input_default(&prompt, &cur) else { return Err(String::new()) };
+            *t = nbtedit::parse_edit(t, &input)?;
+            Ok(Some(path.clone()))
+        });
+    }
+
+    fn nbt_rename(&self) {
+        let Some(path) = self.nbt_tree.selected_path() else { return };
+        let Some(Seg::Key(old)) = path.last().cloned() else {
+            self.flash("名前を変えられるのは、複合タグの中の項目だけです");
+            return;
+        };
+        self.edit_nbt(|root| {
+            let Some(name) = dialog::input_default("新しい名前", &old) else { return Err(String::new()) };
+            nbtedit::rename(root, &path, name.trim())?;
+            let mut p = path.clone();
+            p.pop();
+            p.push(Seg::Key(name.trim().to_string()));
+            Ok(Some(p))
+        });
+    }
+
+    fn nbt_delete(&self) {
+        let Some(path) = self.nbt_tree.selected_path() else { return };
+        let label = match path.last() {
+            Some(Seg::Key(k)) => k.clone(),
+            Some(Seg::Index(i)) => format!("[{i}]"),
+            None => return,
+        };
+        if dialog::choice2_default(&format!("「{label}」を消しますか？（元に戻すで戻せます）"), "キャンセル", "消す", "") != Some(1) {
+            return;
+        }
+        self.edit_nbt(|root| {
+            nbtedit::remove(root, &path);
+            let mut parent = path.clone();
+            parent.pop();
+            Ok(Some(parent))
+        });
+    }
+
+    /// 選んでいる複合タグ・リストに子を足す（項目を選んでいなければ根に足す。値の項目なら、その親に足す）。
+    fn nbt_add(&self) {
+        let mut parent = self.nbt_tree.selected_path().unwrap_or_default();
+        self.edit_nbt(|root| {
+            if !matches!(nbtedit::get(root, &parent), Some(nbt::Tag::Compound(_) | nbt::Tag::List(..))) {
+                parent.pop();
+            }
+            let p = nbtedit::get(root, &parent).ok_or("項目が見つかりません")?;
+            let in_list = matches!(p, nbt::Tag::List(..));
+            let id = match nbtedit::fixed_child_type(p) {
+                Some(id) => id,
+                None => {
+                    let rows: Vec<menu::Row> = nbtedit::TYPES.iter().map(|(n, _)| menu::Row::plain(n)).collect();
+                    let Some(i) = menu::pick(&rows, app::event_x(), app::event_y()) else { return Err(String::new()) };
+                    nbtedit::TYPES[i].1
+                }
+            };
+            let name = if in_list {
+                String::new()
+            } else {
+                let Some(n) = dialog::input_default(&format!("足す {} の名前", nbtedit::type_name(id)), "") else { return Err(String::new()) };
+                n.trim().to_string()
+            };
+            let child = nbtedit::default_of(id).ok_or("知らない型です")?;
+            let path = nbtedit::add_child(root, &parent, &name, child)?;
+            Ok(Some(path))
+        });
+    }
+
+    /// 木の右クリックのメニュー。
+    fn nbt_menu(&self) {
+        let path = self.nbt_tree.selected_path();
+        let on_key = matches!(path.as_ref().and_then(|p| p.last()), Some(Seg::Key(_)));
+        let mut rows = vec![menu::Row::plain("Edit Value (Enter)"), menu::Row::plain("Add Child (Insert)"), menu::Row::plain("Rename (F2)"), menu::Row::plain("Delete (Delete)")];
+        // 値を書き換えられるのは、数・文字列・配列だけ（複合タグ・リストは中の項目を書き換える）
+        let editable = path.as_ref().is_some_and(|p| {
+            nbt::from_snbt(&self.doc().buf.text()).ok().as_ref().and_then(|r| nbtedit::get(r, p)).and_then(nbtedit::edit_text).is_some()
+        });
+        rows[0].active = editable;
+        rows[2].active = on_key;
+        rows[3].active = path.is_some();
+        match menu::pick(&rows, app::event_x(), app::event_y()) {
+            Some(0) => self.nbt_edit_value(),
+            Some(1) => self.nbt_add(),
+            Some(2) => self.nbt_rename(),
+            Some(3) => self.nbt_delete(),
+            _ => {}
+        }
+    }
+
     fn apply_view(&self, d: &Rc<Doc>) {
         let mut ed = self.editor.clone();
         let mut pv = self.preview.clone();
-        if d.preview.get() {
+        let mut tree = self.nbt_tree.tree.clone();
+        let nbt_view = d.preview.get() && self.is_nbt_doc(d);
+        if nbt_view {
+            self.render_nbt_tree(d, None);
+            tree.show();
+            let _ = tree.take_focus();
+            ed.hide();
+            pv.hide();
+        } else if tree.visible() {
+            if self.is_nbt_doc(d) {
+                *d.tree_open.borrow_mut() = Some(self.nbt_tree.open_paths());
+            }
+            tree.hide();
+        }
+        if nbt_view {
+        } else if d.preview.get() {
             self.render_preview(d);
             // 編集領域を隠す前にフォーカスを移す（先に隠すと、フォーカスが検索欄へ移って検索バーが開く）
             pv.show();
@@ -1435,6 +1801,7 @@ impl Ui {
             pv.hide();
         }
         self.col.clone().layout();
+        self.body.clone().layout();
         self.win.clone().redraw();
     }
 
@@ -1506,7 +1873,10 @@ impl Ui {
     /// 表示中の文書が Preview なら描き直す（配色・文字サイズ・フォントを変えたあと）。
     fn refresh_preview(&self) {
         let d = self.doc();
-        if d.preview.get() {
+        if d.preview.get() && self.is_nbt_doc(&d) {
+            *d.tree_open.borrow_mut() = Some(self.nbt_tree.open_paths());
+            self.render_nbt_tree(&d, None);
+        } else if d.preview.get() {
             self.render_preview(&d);
         }
     }
@@ -1526,9 +1896,10 @@ impl Ui {
                 let st = d.st.borrow();
                 (st.loading, st.hex, st.path.clone())
             };
-            let kind = viewmode::kind_of(path.as_deref());
+            let kind = if self.is_nbt_doc(d) { viewmode::Kind::Nbt } else { viewmode::kind_of(path.as_deref()) };
             // pdf は HEX で開かれているのが普通。md は文字として開いているときだけ
             let ok = match kind {
+                viewmode::Kind::Nbt => self.is_nbt_doc(d),
                 viewmode::Kind::Markdown | viewmode::Kind::Html | viewmode::Kind::Sheet => !hex,
                 viewmode::Kind::Book | viewmode::Kind::Doc | viewmode::Kind::Pdf | viewmode::Kind::Image | viewmode::Kind::Audio => path.is_some(),
                 viewmode::Kind::Archive => d.archive.borrow().is_some(),
@@ -1907,12 +2278,17 @@ impl Ui {
         // 一覧を読めていない .zip（壊れている等）は、ふつうのファイルとして扱う
         let is_arch = self.doc().archive.borrow().is_some();
         let kind = match viewmode::kind_of(path.as_deref()) {
+            _ if self.is_nbt_doc(&self.doc()) => viewmode::Kind::Nbt,
             viewmode::Kind::Archive if !is_arch => viewmode::Kind::Other,
+            viewmode::Kind::Nbt if !in_preview => viewmode::Kind::Other, // NBT として読めなかった .dat
             k => k,
         };
         // (選択, 表示名, 選ばれている, 選べる, この行の後に区切りを入れる)
         let mut rows: Vec<(Pick, String, bool, bool, bool)> = Vec::new();
-        let views = viewmode::available(if kind == viewmode::Kind::Other { None } else { path.as_deref() });
+        let mut views = viewmode::available_for(kind);
+        if path.is_none() {
+            views.retain(|v| *v != viewmode::View::Hex); // リージョンのチャンクは、HEX で開き直す元のファイルが無い
+        }
         // Preview があるファイルは、Preview から戻る道として Text の行も出す
         let has_preview = views.contains(&viewmode::View::Preview) && viewmode::View::Preview.implemented(kind);
         for v in views {
@@ -2053,6 +2429,7 @@ impl Ui {
             Action::ToggleWrap => self.set_wrap(!self.wrap.get()),
             Action::GotoLine => self.goto_line(),
             Action::ConvertEol => self.convert_eol(),
+            Action::ChooseTheme => self.choose_theme(),
             Action::ToggleTheme => {
                 theme::set_light(!theme::is_light());
                 self.apply_theme();
@@ -2066,6 +2443,11 @@ impl Ui {
             Action::Deselect => self.doc().buf.clone().unselect(),
             Action::CopySelection => self.copy_selection(),
             Action::CopyLine => self.copy_line(),
+            Action::CutLine => self.cut_line(),
+            Action::CopyFileName => self.copy_file_name(),
+            Action::ChangeSize => self.ask_size(),
+            Action::ToggleFullScreen => self.toggle_fullscreen(),
+            Action::CountText => self.show_counts(),
             Action::PasteBefore => self.paste_beside(true),
             Action::PasteAfter => self.paste_beside(false),
         }
@@ -2097,6 +2479,49 @@ impl Ui {
                 self.flash("Path copied");
             }
             None => self.flash("Unsaved File"),
+        }
+    }
+
+    fn copy_file_name(&self) {
+        match self.doc().st.borrow().path.as_ref().and_then(|p| p.file_name()) {
+            Some(n) => {
+                app::copy(&n.to_string_lossy());
+                self.flash("File name copied");
+            }
+            None => self.flash("Unsaved File"),
+        }
+    }
+
+    fn toggle_fullscreen(&self) {
+        let mut win = self.win.clone();
+        let on = !win.fullscreen_active();
+        win.fullscreen(on);
+    }
+
+    fn show_counts(&self) {
+        let d = self.doc();
+        if d.st.borrow().hex {
+            return;
+        }
+        let text = d.buf.selection_text();
+        let whole = text.is_empty();
+        let (text, scope) = if whole { (d.buf.text(), "") } else { (text, "（選択範囲）") };
+        // 全体の行数は行番号と同じ数え方（末尾の改行の後ろの空の行も 1 行）。右端の欄の Lines と合わせる
+        let lines = if whole { d.buf.count_lines(0, d.buf.length()) as usize + 1 } else { text.lines().count() };
+        dialog::message_default(&format!(
+            "文字数{scope}: {}\n単語数{scope}: {}\n行数{scope}: {}",
+            document::char_count(&text),
+            document::word_count(&text),
+            lines
+        ));
+    }
+
+    fn ask_size(&self) {
+        let prompt = format!("文字の大きさ（{}〜{}、既定 {}）", zoom::MIN, zoom::MAX, zoom::DEFAULT);
+        let Some(input) = dialog::input_default(&prompt, &self.size.get().to_string()) else { return };
+        match input.trim().parse::<i32>() {
+            Ok(n) => self.set_size(n),
+            Err(_) => self.flash("数字を入れてください"),
         }
     }
 
@@ -2290,6 +2715,7 @@ impl Ui {
         view.set_text_font(self.font.get());
         view.set_text_size(self.size.get());
         view.wrap_mode(fltk::text::WrapMode::AtBounds, 0);
+        skin::style_scrollbars(&view);
         win.end();
         win.resizable(&view);
         win.show();
@@ -2297,6 +2723,9 @@ impl Ui {
 
     /// 今のパレットに合わせて、画面の色を全部塗り直す（モードの切替・設定ファイルの反映のとき）。
     fn apply_theme(&self) {
+        skin::apply_globals();
+        skin::style_scrollbars(&self.editor);
+        skin::style_scrollbars(&self.preview);
         let mut ed = self.editor.clone();
         ed.set_color(rgb(color_main()));
         ed.set_text_color(rgb(color_text()));
@@ -2322,7 +2751,7 @@ impl Ui {
         *self.tabs_shown.borrow_mut() = (Vec::new(), 0);
         self.refresh_tabs();
         self.win.clone().redraw();
-        log::info(TAG, &format!("theme: {}", if theme::is_light() { "light" } else { "dark" }));
+        log::info(TAG, &format!("theme: {}", theme::current_name()));
     }
 
     fn apply_font(&self, font: Font) {
@@ -2803,7 +3232,10 @@ impl Ui {
             autosave: self.autosave.get(),
             wrap: self.wrap.get(),
             gutter_pin: self.gutter_pinned.get(),
+            side_pin: self.side_pinned.get(),
             light: theme::is_light(),
+            theme: Some(theme::current_name().to_string()),
+            custom: theme::custom().map(|p| [p.main, p.sub, p.accent, p.text, p.subtext]),
             size: (self.size.get() != zoom::DEFAULT).then(|| self.size.get()),
             font: self.font_path.borrow().clone(),
             recent: self.recent.borrow().clone(),
@@ -2877,8 +3309,9 @@ impl Ui {
         }
 
         // 配色
-        if cfg.light != theme::is_light() {
-            theme::set_light(cfg.light);
+        let before = (theme::current_name(), theme::palette());
+        apply_theme_config(&cfg);
+        if before != (theme::current_name(), theme::palette()) {
             self.apply_theme();
         }
 
@@ -2886,6 +3319,11 @@ impl Ui {
         if cfg.gutter_pin != self.gutter_pinned.get() {
             self.gutter_pinned.set(cfg.gutter_pin);
             self.update_gutter();
+        }
+        if cfg.side_pin != self.side_pinned.get() {
+            self.side_pinned.set(cfg.side_pin);
+            self.side.state.borrow_mut().pinned = cfg.side_pin;
+            self.update_side();
         }
 
         // 文字サイズ
@@ -2929,6 +3367,33 @@ impl Ui {
         let rows: Vec<menu::Row> = labels.iter().map(|l| menu::Row::plain(l)).collect();
         if let Some(i) = menu::pick(&rows, app::event_x(), app::event_y()) {
             self.open_paths(vec![list[i].clone()]);
+        }
+    }
+
+    /// Choose Theme: 配色の一覧（今の配色に印）から選ぶ。最後の行は自分の配色（custom）を設定ファイルで編集する。
+    /// custom の色がまだ無ければ、今の配色を写して作る（そこから色を変えればよい）。
+    fn choose_theme(self: &Rc<Self>) {
+        let cur = theme::current_name();
+        let mut names: Vec<&str> = theme::PALETTES.iter().map(|p| p.name).collect();
+        names.push(theme::CUSTOM_NAME);
+        let mut rows: Vec<menu::Row> = names.iter().map(|n| menu::Row { check: Some(*n == cur), ..menu::Row::plain(n) }).collect();
+        if let Some(last) = rows.last_mut() {
+            last.divider = true;
+        }
+        rows.push(menu::Row::plain("Edit custom colors..."));
+        let Some(i) = menu::pick(&rows, app::event_x(), app::event_y()) else { return };
+        if theme::custom().is_none() && i >= names.len() - 1 {
+            theme::store_custom(theme::palette());
+        }
+        if i < names.len() {
+            theme::set_named(names[i]);
+            self.apply_theme();
+            self.persist();
+            self.flash(&format!("Theme: {}", names[i]));
+        } else {
+            self.persist(); // custom_* を書いてから開く
+            self.open_config();
+            self.flash("custom_* を書き換えて保存すると反映されます（theme=custom で使う）");
         }
     }
 
@@ -3033,16 +3498,18 @@ impl Ui {
     fn style_pin(&self) {
         let mut pin = self.pin.clone();
         let pinned = self.gutter_pinned.get();
-        pin.set_color(if pinned { rgb(color_accent()) } else { rgb(color_main()) });
-        pin.set_label_color(if pinned { rgb(color_on_accent()) } else { rgb(color_subtext()) });
+        // 固定中は文字を text にして、アクセント色の下線を引く（下線は toolbar.rs が value を見て描く）
+        pin.set_color(rgb(color_main()));
+        pin.set_selection_color(rgb(color_main()));
+        pin.set_label_color(if pinned { rgb(color_text()) } else { rgb(color_subtext()) });
+        pin.set_value(pinned);
         pin.set_tooltip(if pinned { "行番号: 常に表示中（クリックで自動表示に戻す）" } else { "行番号: 自動表示（クリックで常に表示に固定）" });
         pin.redraw();
     }
 
-    /// 出すか隠すかを決め直す。出す条件は 固定 / マウスが左端 / 文字カーソルが行頭（桁 1）のどれか。
+    /// 出すか隠すかを決め直す。出す条件は 固定 / マウスが左端 / Alt で開いている のどれか（文字カーソルでは出さない。改行のたびにちらつくため）。
     fn update_gutter(&self) {
-        let caret_at_line_start = self.cursor_pos().is_some_and(|(_, col)| col == 1);
-        let want = self.gutter_pinned.get() || self.mouse_left.get() || caret_at_line_start;
+        let want = self.gutter_pinned.get() || self.mouse_left.get() || self.alt_open.get();
         let resized = self.refresh_gutter_width() && self.gutter_shown.get();
         if resized && want == self.gutter_shown.get() {
             self.apply_gutter(); // 行数の桁が増減した
@@ -3096,25 +3563,170 @@ impl Ui {
         }
     }
 
-    /// マウスが編集領域の左端にあるかを 0.1 秒ごとに見る（ボタンの上に乗っても離れたことにならないよう、座標で判定する）。
+    /// マウスが本文の左端・右端にあるかを 0.1 秒ごとに見る（ボタンの上に乗っても離れたことにならないよう、座標で判定する）。
+    /// 隠れているときは端から幅の 5%（最低 GUTTER_EDGE）、出ているときは欄の幅まで（右は縦スクロールバーの分も含めて、出たり消えたりを防ぐ）。
     fn poll_mouse(self: &Rc<Self>) {
         let u = Rc::clone(self);
         app::add_timeout3(0.1, move |_| {
-            let inside = {
+            let (left, right) = {
                 let (mx, my) = app::get_mouse();
-                let (x0, y0) = (u.win.x_root() + u.editor.x(), u.win.y_root() + u.editor.y());
-                let y1 = u.win.y_root() + u.editor.y() + u.editor.h();
-                // 隠れているときは左端の細い帯、出ているときは行番号欄の幅まで
-                let zone = if u.gutter_shown.get() { u.gutter_w.get() } else { GUTTER_EDGE };
-                u.win.visible() && mx >= x0 && mx < x0 + zone && my >= y0 && my < y1
+                let b = &u.body;
+                let (x0, y0) = (u.win.x_root() + b.x(), u.win.y_root() + b.y());
+                let in_y = u.win.visible() && my >= y0 && my < y0 + b.h();
+                let edge = ((b.w() as f64 * EDGE_RATIO) as i32).max(GUTTER_EDGE);
+                let left_zone = if u.gutter_shown.get() { u.gutter_w.get().max(edge) } else { edge };
+                let right_zone = if u.side.widget.visible() { sidepanel::WIDTH + edge.max(app::scrollbar_size() + 4) } else { edge };
+                (in_y && mx >= x0 && mx < x0 + left_zone, in_y && mx < x0 + b.w() && mx >= x0 + b.w() - right_zone)
             };
-            if inside != u.mouse_left.get() {
-                u.mouse_left.set(inside);
+            if left != u.mouse_left.get() {
+                u.mouse_left.set(left);
                 u.update_gutter();
             }
+            if right != u.mouse_right.get() {
+                u.mouse_right.set(right);
+                u.update_side();
+            }
+            u.update_side_view();
             u.update_hscroll();
             u.poll_mouse();
         });
+    }
+
+    // ---- 右端の欄（マウスが右端・固定・Alt のどれかで出す）----
+
+    fn update_side(&self) {
+        let want = self.side_pinned.get() || self.mouse_right.get() || self.alt_open.get();
+        let mut w = self.side.widget.clone();
+        if want == w.visible() {
+            return;
+        }
+        if want {
+            w.show();
+            self.side_key.set((0, -1, false, 0)); // 隠れている間は作り直していないので、必ず作る
+        } else {
+            w.hide();
+        }
+        self.body.clone().layout();
+        self.refresh_side();
+        self.update_side_view();
+        self.win.clone().redraw();
+    }
+
+    fn toggle_side_pin(&self) {
+        let on = !self.side_pinned.get();
+        self.side_pinned.set(on);
+        self.side.state.borrow_mut().pinned = on;
+        self.update_side();
+        self.side.widget.clone().redraw();
+        self.persist();
+        self.flash(if on { "Side panel: pinned" } else { "Side panel: auto" });
+    }
+
+    /// Alt だけを押して離したとき: 左右の欄をまとめて開く・閉じる。
+    fn toggle_panels(&self) {
+        self.alt_open.set(!self.alt_open.get());
+        self.update_gutter();
+        self.update_side();
+    }
+
+    /// 右端の欄の情報と縮小表示を作り直す。隠れている間と、文書・文字数・未保存・選択が変わっていないときは何もしない。
+    fn refresh_side(&self) {
+        if !self.side.widget.visible() {
+            return;
+        }
+        let d = self.doc();
+        let len = d.buf.length();
+        let sel = d.buf.selection_position().map_or(0, |(a, b)| (b - a).abs());
+        let (dirty, hex, path) = {
+            let st = d.st.borrow();
+            (st.dirty, st.hex, st.path.clone())
+        };
+        let key = (d.id, len, dirty, sel);
+        let old = self.side_key.get();
+        if key == old || (old.0 == d.id && old.2 == dirty && len > LIVE_COUNT_LIMIT) {
+            return; // 大きな文書は、編集のたびには数え直さない（保存・切替のときに数える）
+        }
+        self.side_key.set(key);
+        let mut rows: Vec<(String, String)> = Vec::new();
+        let name = path.as_deref().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().to_string());
+        rows.push(("Name".into(), name.unwrap_or_else(|| "Unsaved File".into())));
+        if let Some(p) = path.as_deref() {
+            if let Some(dir) = p.parent() {
+                rows.push(("Folder".into(), dir.display().to_string()));
+            }
+            if let Ok(m) = std::fs::metadata(p) {
+                rows.push(("Size".into(), archive::human_size(m.len())));
+                if let Ok(t) = m.modified() {
+                    rows.push(("Modified".into(), platform::local_datetime(t)));
+                }
+            }
+            rows.extend(file_meta_rows(p));
+        }
+        let text = d.buf.text();
+        if hex {
+            rows.push(("Bytes".into(), hex::byte_count(&text).to_string()));
+        } else {
+            rows.push(("Chars".into(), document::char_count(&text).to_string()));
+            rows.push(("Words".into(), document::word_count(&text).to_string()));
+            rows.push(("Lines".into(), (d.buf.count_lines(0, len) + 1).to_string()));
+            if sel > 0 {
+                let s = d.buf.selection_text();
+                rows.push(("Selected".into(), format!("{} chars, {} words", document::char_count(&s), document::word_count(&s))));
+            }
+        }
+        let (lines, truncated) = if hex { (Vec::new(), false) } else { sidepanel::runs_of(&text) };
+        {
+            let mut st = self.side.state.borrow_mut();
+            st.rows = rows;
+            st.lines = lines;
+            st.truncated = truncated;
+            st.font = Some(self.font.get());
+        }
+        self.side.widget.clone().redraw();
+    }
+
+    /// 縮小表示の「見えている範囲」を、本文のスクロールに合わせる（0.1 秒のタイマーから呼ぶ。変わったときだけ描き直す）。
+    fn update_side_view(&self) {
+        if !self.side.widget.visible() || !self.editor.visible() {
+            return;
+        }
+        let ed = &self.editor;
+        let d = self.doc();
+        let x = ed.x() + self.gutter_width() + 4;
+        let top_pos = ed.xy_to_position(x, ed.y() + 2, PositionType::Cursor);
+        let bottom_pos = ed.xy_to_position(x, ed.y() + ed.h() - app::scrollbar_size() - 2, PositionType::Cursor);
+        let top = d.buf.count_lines(0, top_pos);
+        let visible = d.buf.count_lines(top_pos, bottom_pos) + 1;
+        let changed = {
+            let mut st = self.side.state.borrow_mut();
+            let changed = (st.top, st.visible) != (top, visible);
+            st.top = top;
+            st.visible = visible;
+            changed
+        };
+        if changed {
+            self.side.widget.clone().redraw();
+        }
+    }
+
+    /// 縮小表示で選んだ行が、本文の真ん中あたりに来るようにスクロールする（文字カーソルは動かさない）。
+    fn side_jump(&self, line: i32) {
+        let d = self.doc();
+        let half = self.side.state.borrow().visible.max(1) / 2;
+        let target = (line - half).max(0);
+        let mut pos = 0;
+        for _ in 0..target {
+            let next = d.buf.line_end(pos) + 1;
+            if next > d.buf.length() {
+                break;
+            }
+            pos = next;
+        }
+        let mut ed = self.editor.clone();
+        // 折り返し中は表示上の行で数える
+        let row = ed.count_lines(0, pos, true);
+        ed.scroll(row + 1, 0);
+        self.update_side_view();
     }
 
     /// Ctrl+G: 行（`12`）か 行:桁（`12:5`）を聞いて、そこへカーソルを移す。
@@ -3295,6 +3907,7 @@ impl Ui {
         strip.set_frame(FrameType::FlatBox);
         strip.set_color(rgb(color_accent()));
         let mut browser = HoldBrowser::new(0, STRIP, w, h - STRIP, None);
+        skin::style_scrollbars(&browser);
         browser.set_color(rgb(color_main()));
         browser.set_selection_color(rgb(color_selected_row()));
         browser.set_text_size(self.size.get());
@@ -3432,6 +4045,23 @@ impl Ui {
         }
     }
 
+    /// 今の行（改行まで）を切り取る。元に戻すで戻せる。
+    fn cut_line(&self) {
+        let d = self.doc();
+        if d.st.borrow().hex {
+            return;
+        }
+        let pos = self.editor.insert_position();
+        let start = d.buf.line_start(pos);
+        let end = (d.buf.line_end(pos) + 1).min(d.buf.length());
+        if let Some(line) = d.buf.text_range(start, end) {
+            app::copy(&line);
+            d.buf.clone().remove(start, end);
+            self.editor.clone().set_insert_position(start);
+            self.flash("Line cut");
+        }
+    }
+
     /// 選択を置き換えずに、選択の前（または後ろ）へ貼り付ける。
     fn paste_beside(&self, before: bool) {
         let d = self.doc();
@@ -3545,13 +4175,16 @@ impl Ui {
 
     /// 編集領域でだけ受けるキー: Tab / Shift+Tab（まとめてインデント）と Enter（オートインデント）。
     /// HEX・読込中は触らない（HEX の本文にインデントを入れると保存できなくなる）。
-    fn editor_key(&self, ev: Event) -> bool {
+    fn editor_key(self: &Rc<Self>, ev: Event) -> bool {
         if ev != Event::KeyDown || app::is_event_command() || app::is_event_ctrl() || app::is_event_alt() {
             return false;
         }
         let key = app::event_key();
         if key != Key::Tab && key != Key::Enter && key != Key::KPEnter {
             return false;
+        }
+        if key != Key::Tab && self.open_chunk_at_cursor() {
+            return true;
         }
         let d = self.doc();
         {
@@ -3604,6 +4237,18 @@ impl Ui {
     }
 
     fn handle(self: &Rc<Self>, ev: Event) -> bool {
+        // Alt だけを押して離したら、左右の欄を開く・閉じる（Alt と一緒にほかのキーやクリックがあれば何もしない）
+        let alt_key = matches!(app::event_key(), Key::AltL | Key::AltR);
+        match ev {
+            // 編集領域が受けなかったキーは、ウィンドウへ Shortcut として回ってくる
+            Event::KeyDown | Event::Shortcut if alt_key => self.alt_armed.set(true),
+            Event::KeyDown | Event::Shortcut | Event::Push | Event::Unfocus => self.alt_armed.set(false),
+            _ => {}
+        }
+        if ev == Event::KeyUp && alt_key && self.alt_armed.replace(false) {
+            self.toggle_panels();
+            return true;
+        }
         match ev {
             Event::DndEnter | Event::DndDrag | Event::DndLeave => true,
             Event::DndRelease => {
@@ -3617,6 +4262,10 @@ impl Ui {
             }
             Event::KeyDown | Event::Shortcut if app::event_key() == Key::from_i32(Key::F1.bits() + 2) => {
                 self.find_move(!app::is_event_shift(), false); // F3 / Shift+F3
+                true
+            }
+            Event::KeyDown | Event::Shortcut if app::event_key() == Key::from_i32(Key::F1.bits() + 10) => {
+                self.toggle_fullscreen(); // F11
                 true
             }
             Event::MouseWheel if app::is_event_command() => {
@@ -3732,7 +4381,14 @@ pub fn run(paths: Vec<String>) -> Result<(), FltkError> {
     // 設定ファイル（実行ファイルの隣の neodir/config.txt）。無ければ既定で始める。
     let config_path = config::path();
     let cfg = config_path.as_deref().map(config::load).unwrap_or_default();
-    theme::set_light(cfg.light); // ウィンドウを作る前に決める
+    apply_theme_config(&cfg); // ウィンドウを作る前に決める
+    if let Ok(name) = std::env::var("NEONOTE_THEME") {
+        // 見比べ用の候補のパレット（theme.rs の PALETTES）。保存はしない
+        if !theme::set_named(&name) {
+            log::warn(TAG, &format!("NEONOTE_THEME: 知らない名前です: {name}"));
+        }
+    }
+    skin::apply_globals();
     let (start_font, start_font_path) = load_configured_font(&app, &cfg, default_font);
     let start_size = cfg.size.unwrap_or(zoom::DEFAULT);
     let (tx, rx) = app::channel::<Msg>();
@@ -3770,6 +4426,10 @@ pub fn run(paths: Vec<String>) -> Result<(), FltkError> {
     tabrow.fixed(&chip, tabs::CHIP_W);
     tabrow.end();
     col.fixed(&tabrow, tabs::HEIGHT);
+    // 本文の行: 編集領域（またはプレビュー）と、右端の情報・縮小表示の欄
+    let mut body = Flex::default().row();
+    body.set_pad(0);
+    body.set_margin(0);
     let mut editor = TextEditor::default();
     editor.set_frame(FrameType::FlatBox); // 既定の枠（2px の縁）は本文を狭めるだけ
     editor.set_buffer(TextBuffer::default()); // 最初の文書が来るまでの仮（activate で差し替わる）
@@ -3791,6 +4451,24 @@ pub fn run(paths: Vec<String>) -> Result<(), FltkError> {
     preview.set_text_font(start_font);
     preview.set_text_size(start_size);
     preview.hide();
+    let nbt_tree = NbtTree::new();
+    skin::style_scrollbars(&editor);
+    skin::style_scrollbars(&preview);
+    let tx_jump = tx_bar2.clone();
+    let tx_side_pin = tx_bar2.clone();
+    let side = sidepanel::build(
+        move |line| {
+            tx_jump.send(Msg::SideJump(line));
+            app::awake();
+        },
+        move || {
+            tx_side_pin.send(Msg::SidePin);
+            app::awake();
+        },
+    );
+    body.fixed(&side.widget, sidepanel::WIDTH);
+    side.widget.clone().hide();
+    body.end();
     col.end();
     win.end();
     win.resizable(&col);
@@ -3805,6 +4483,7 @@ pub fn run(paths: Vec<String>) -> Result<(), FltkError> {
         win: win.clone(),
         editor: editor.clone(),
         preview: preview.clone(),
+        nbt_tree: nbt_tree.clone(),
         col: col.clone(),
         gap,
         tabbar: RefCell::new(tabbar),
@@ -3829,6 +4508,13 @@ pub fn run(paths: Vec<String>) -> Result<(), FltkError> {
         gutter_digits: Cell::new(2),
         hscroll_key: Cell::new((0, -1, 0, 0, 0, false, 0)),
         mouse_left: Cell::new(false),
+        body: body.clone(),
+        side,
+        side_pinned: Cell::new(cfg.side_pin),
+        mouse_right: Cell::new(false),
+        alt_open: Cell::new(false),
+        alt_armed: Cell::new(false),
+        side_key: Cell::new((0, -1, false, 0)),
         pin: pin.clone(),
         bar: bar.clone(),
         audio_timer: Cell::new(false),
@@ -3858,6 +4544,8 @@ pub fn run(paths: Vec<String>) -> Result<(), FltkError> {
         pin.set_callback(move |_| u.toggle_gutter_pin());
     }
     ui.apply_gutter();
+    ui.side.state.borrow_mut().pinned = ui.side_pinned.get();
+    ui.update_side();
     ui.poll_mouse();
 
     let first = ui.new_doc();
@@ -3887,6 +4575,9 @@ pub fn run(paths: Vec<String>) -> Result<(), FltkError> {
         if ev == Event::Push && app::event_mouse_button() == app::MouseButton::Right {
             u.context_menu();
             true
+        } else if ev == Event::Released && app::event_clicks() && u.doc().st.borrow().region_list {
+            // チャンクの一覧のダブルクリック: 押した位置へカーソルが移った後に開く
+            u.open_chunk_at_cursor()
         } else {
             let handled = u.editor_key(ev) || u.handle(ev);
             if matches!(ev, Event::KeyDown | Event::KeyUp | Event::Push | Event::Released | Event::Drag) {
@@ -3895,6 +4586,47 @@ pub fn run(paths: Vec<String>) -> Result<(), FltkError> {
             handled
         }
     });
+    // NBT の木: ダブルクリック・Enter で値を書き換え、右クリックでメニュー、F2 で名前、Delete で削除、Insert で子を足す
+    {
+        let u = Rc::clone(&ui);
+        let mut tree = nbt_tree.tree.clone();
+        tree.handle(move |t, ev| match ev {
+            Event::Push if app::event_mouse_button() == app::MouseButton::Right => {
+                if let Some(it) = t.find_clicked(true) {
+                    let _ = t.select_only(&it, false);
+                }
+                u.nbt_menu();
+                true
+            }
+            Event::Released if app::event_clicks() && app::event_mouse_button() == app::MouseButton::Left => {
+                let leaf = t.first_selected_item().is_some_and(|it| !it.has_children());
+                if leaf {
+                    u.nbt_edit_value();
+                }
+                leaf
+            }
+            Event::KeyDown => match app::event_key() {
+                Key::Enter | Key::KPEnter => {
+                    u.nbt_edit_value();
+                    true
+                }
+                Key::F2 => {
+                    u.nbt_rename();
+                    true
+                }
+                Key::Delete => {
+                    u.nbt_delete();
+                    true
+                }
+                Key::Insert => {
+                    u.nbt_add();
+                    true
+                }
+                _ => false,
+            },
+            _ => false,
+        });
+    }
     // 検索バーの置換の段は編集領域に重ねてあるので、編集領域が描き直されるたびに描き直す
     let sb = find_bar.clone();
     editor.super_draw_first(true);
@@ -3944,6 +4676,8 @@ pub fn run(paths: Vec<String>) -> Result<(), FltkError> {
             match msg {
                 Msg::Loaded(id, p, r) => ui.on_loaded(id, p, r),
                 Msg::Do(a) => ui.perform(a),
+                Msg::SideJump(line) => ui.side_jump(line),
+                Msg::SidePin => ui.toggle_side_pin(),
                 Msg::Tab(TabCmd::Activate(id)) => ui.activate(id),
                 Msg::Tab(TabCmd::Close(id)) => ui.close_tab(id),
                 Msg::Tab(TabCmd::New) => ui.new_tab(),
@@ -3977,4 +4711,18 @@ pub fn run(paths: Vec<String>) -> Result<(), FltkError> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn title_path_hides_the_exe_folder() {
+        let dir = Path::new("/opt/neonote");
+        assert_eq!(title_path(Path::new("/opt/neonote/neodir/config.txt"), Some(dir)), Path::new("neodir/config.txt").display().to_string());
+        assert_eq!(title_path(Path::new("/home/a/b.txt"), Some(dir)), "/home/a/b.txt");
+        assert_eq!(title_path(dir, Some(dir)), "/opt/neonote");
+        assert_eq!(title_path(Path::new("/home/a/b.txt"), None), "/home/a/b.txt");
+    }
 }
