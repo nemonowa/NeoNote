@@ -7,8 +7,6 @@ neodir/
 *.log
 
 # 開発者ごとのローカルファイル（共有しない）
-/local/*
-!/local/README.md
 CLAUDE.local.md
 .claude/settings.local.json
 .vscode/
@@ -18,3 +16,7 @@ CLAUDE.local.md
 Thumbs.db
 
 Cargo.lock.bak
+CLAUDE.md
+
+# 製作者用の非公開フォルダ（移植元の資料など）
+/admin/

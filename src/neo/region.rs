@@ -146,7 +146,7 @@ pub fn parse_listing_line(line: &str) -> Option<(u32, u32)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::nbt::Tag;
+    use crate::neo::nbt::Tag;
 
     fn chunk(n: i32) -> Vec<u8> {
         nbt::write("", &Tag::Compound(vec![("xPos".into(), Tag::Int(n)), ("pad".into(), Tag::ByteArray(vec![7; 6000]))]))

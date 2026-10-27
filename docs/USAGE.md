@@ -23,9 +23,9 @@
 | `assets/` | 実行ファイルに埋め込むフォント・アイコン・README の文 |
 | `vendor/miniaudio/` | 音声の簡易再生に使う C ライブラリ |
 | `docs/DESIGN.md` | 設計書（確定した設計判断と未確認事項） |
-| `reference/java/` | 移植元の Java ソース（SwingNeoNote / Log / FileDropHandler） |
-| `reference/README_original.md` | 受け取った元の資料の README |
-| `integration/java/` | ゲーム側に入れる置換版 `FileDropHandler.java`（`neonote <パス>` を別プロセスで起動） |
+| `admin/java/` | 移植元の Java ソース（SwingNeoNote / Log / FileDropHandler） |
+| `admin/README_original.md` | 受け取った元の資料の README |
+| `admin/integration/java/` | ゲーム側に入れる置換版 `FileDropHandler.java`（`neonote <パス>` を別プロセスで起動） |
 
 ## ビルド
 

@@ -2,7 +2,7 @@
 // 判定条件は設計書以外の配布物には記載しない。
 const DEV_USER_NAME: &str = "nemo";
 
-pub const VERSION: &str = "v1.1.47";
+pub const VERSION: &str = "v2.1.77";
 pub const DEV_VERSION: &str = "v999.99.9";
 
 pub fn is_dev_user() -> bool {

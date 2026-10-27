@@ -39,7 +39,7 @@ pub enum Kind {
 }
 
 pub fn kind_of(path: Option<&Path>) -> Kind {
-    if path.is_some_and(crate::core::archive::is_archive_path) {
+    if path.is_some_and(crate::neo::archive::is_archive_path) {
         return Kind::Archive;
     }
     let ext = path.and_then(|p| p.extension()).map(|e| e.to_string_lossy().to_lowercase());
@@ -52,7 +52,7 @@ pub fn kind_of(path: Option<&Path>) -> Kind {
         Some("pdf") => Kind::Pdf,
         Some("png" | "jpg" | "jpeg" | "gif" | "bmp") => Kind::Image,
         Some("mp3" | "flac" | "wav") => Kind::Audio,
-        _ if path.is_some_and(crate::core::nbt::is_nbt_path) => Kind::Nbt,
+        _ if path.is_some_and(crate::neo::nbt::is_nbt_path) => Kind::Nbt,
         _ => Kind::Other,
     }
 }
@@ -104,7 +104,7 @@ mod tests {
         for ext in ["docx", "DOCM", "odt", "pptx", "pptm", "odp", "EPUB"] {
             let p = format!("a.{ext}");
             assert_eq!(kind_of(Some(Path::new(&p))), Kind::Doc, "{ext}");
-            assert!(crate::core::doctext::format_of(Path::new(&p)).is_some(), "{ext}");
+            assert!(crate::neo::doctext::format_of(Path::new(&p)).is_some(), "{ext}");
             assert_eq!(available(Some(Path::new(&p))), vec![View::Preview, View::Hex]);
         }
         for ext in ["html", "HTM", "xhtml"] {

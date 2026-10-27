@@ -27,7 +27,7 @@
 
 ```text
 App      : NeoNote
-Version  : 0.1.0
+Version  : 2.1.77
 Language : Rust (fltk-rs)
 Tested   : Windows 11（Linux・macOS）
 Author   : argonaute_nemo
@@ -138,6 +138,14 @@ cargo build --release
 | `Ctrl+ホイール` | 文字サイズ | `Ctrl+Tab` | タブの切り替え |
 
 その他の操作は [docs/USAGE.md](docs/USAGE.md) を参照。
+
+---
+
+## ❱ 更新履歴【ChangeLog】
+
+- **最新（v2.1.77）：** Minecraft の NBT をテキストとツリー形式で編集できるようにし、配色の追加と右パネルを加えた。
+- **すべての履歴：** [changelog.md](changelog.md)
+- **Discord：** [更新履歴チャンネル](https://discord.com/channels/1233036571243188296/1363604094895521944)
 
 ---
 

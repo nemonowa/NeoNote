@@ -1,7 +1,7 @@
 // NBT の Preview: NBT Explorer のような階層の木。項目は「名前: 値」で、開閉できる。
 // 木は表示だけを受け持ち、編集の操作（ダブルクリック・右クリック・キー）は呼び出し側が受けて、本文（SNBT）を書き換えてから作り直す。
 use super::theme::*;
-use crate::core::{
+use crate::neo::{
     nbt::Tag,
     nbtedit::{self, Seg},
 };

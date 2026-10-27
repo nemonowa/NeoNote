@@ -3,7 +3,7 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 mod app;
 mod audioplay;
-mod core;
+mod neo;
 mod dev;
 mod log;
 mod platform;

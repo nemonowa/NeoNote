@@ -6,8 +6,8 @@
 //   そうでなければ 1 ファイルとして出す（元の名前は gzip のヘッダー、無ければ拡張子を外した名前）。
 // 読まないもの: リンク（シンボリック・ハード）・デバイス・FIFO（`list_dir` がシンボリックリンクを出さないのと同じ）、
 //   bz2 / xz / zstd（デコーダーが重い）、複数ボリューム・スパース（`S`）の実際の大きさ、gzip の CRC の検査。
-use crate::core::archive::{Entry, MAX_ENTRIES};
-use crate::core::inflate::inflate;
+use crate::neo::archive::{Entry, MAX_ENTRIES};
+use crate::neo::inflate::inflate;
 use std::path::Path;
 
 /// 読むファイルの大きさの上限（丸ごとメモリに載せるため）。

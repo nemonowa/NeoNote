@@ -36,7 +36,7 @@
 - **採用**: OS ネイティブ寄りの軽量ツールキット（fltk-rs）で UI を描く。依存は `fltk`・`encoding_rs`・`pulldown-cmark`（md の Preview 用）のみ、単一バイナリ、ランタイム同梱なし。
 - **プレビュー**: アプリ内にブラウザエンジンを持たない。fltk の HelpView で足りる簡易表示か、OS の既定ブラウザへ渡すかのどちらかにする。
 - **速度の基準**: 起動が体感で即時であること。大きなファイルでも読込でウィンドウが固まらない（非同期読込）こと。編集・検索・置換・エンコーディング判定・HEX 変換は GUI スレッドを長く塞がないこと。
-- **コードの置き方**: 重い処理（文字コード判定、HEX 変換、全置換）は `core/` に置き、1パスで済ませる。不要なコピーや全文の再取得を避ける。
+- **コードの置き方**: 重い処理（文字コード判定、HEX 変換、全置換）は `neo/` に置き、1パスで済ませる。不要なコピーや全文の再取得を避ける。
 - **新しい依存を足す条件**: 上の禁止事項に当たらず、起動時間とバイナリサイズへの影響を確認できること。
 
 ### プロダクト説明（作者の原文を記録）
@@ -95,7 +95,7 @@ SwingNeoNote（Java/Swing、847行の単体メモアプリ）を、依存を最�
 | 文字コード変換 | `encoding_rs` を1つだけ追加（Shift_JIS 等のため） |
 | macOS | Java 版は非対応だったが、Rust 版は対応する |
 
-仕様の出典は `reference/java/SwingNeoNote.java`（本体）、`reference/java/Log.java`（ログ）、`reference/java/FileDropHandler.java`（呼び出し側）の3ファイル。
+仕様の出典は `admin/java/SwingNeoNote.java`（本体）、`admin/java/Log.java`（ログ）、`admin/java/FileDropHandler.java`（呼び出し側）の3ファイル。
 
 ## クレート構成とモジュール分割
 
@@ -112,7 +112,7 @@ neonote/
    │  ├─ toolbar.rs      ツールバー8ボタンと右クリックメニュー
    │  ├─ editor.rs       TextEditor、行番号、検索ハイライト
    │  └─ context_menu.rs 編集領域の右クリックメニュー
-   ├─ core/
+   ├─ neo/
    │  ├─ document.rs     読込・保存・未保存変更の管理
    │  ├─ encoding.rs     UTF-8 / Windows-31J / ISO-8859-1 / US-ASCII
    │  ├─ hex.rs          バイト列↔HEXテキストの変換とパース
@@ -124,7 +124,7 @@ neonote/
 
 分割の考え方は次の3点。
 
-- `core/` は fltk を一切 import しない。文字コードや HEX のバグを GUI 抜きでテストできる。
+- `neo/` は fltk を一切 import しない。文字コードや HEX のバグを GUI 抜きでテストできる。
 - `platform.rs` に OS 分岐を集める。Java 版で `os.name` を複数箇所で判定していたものを一箇所にまとめる。
 - 依存は `fltk`・`encoding_rs`・`pulldown-cmark`（stage 17 で追加）のみ。ログ・起動引数・プロパティ読込は自前で書く（数十行で済む）。
 
@@ -262,7 +262,7 @@ neonote [--log-level <DEBUG|INFO|WARN|ERROR>] [パス...]
 - [ ] 「作り直す項目」の Edit / Run ボタンの行き先、未保存確認の「キャンセル」追加は、私が置いた仮案。このままでよいか。
 - [x] 決定済み: 実際の方式（encoding_rs の SHIFT_JIS ＝ Windows-31J / CP932）に合わせて、表示名を「Windows-31J」にした。
   - 第3段階では `encoding_rs` の SHIFT_JIS（Windows-31J 互換の拡張を含む）を使っている。機種依存文字（①、㈱ など）も読み書きできる。JIS 標準だけに限定する必要があれば変更する。
-- [x] 決定済み（順序はこのままでよい）: 自動判定の方針は第3段階で実装した（`core/encoding.rs`）。順序は BOM → バイナリ判定（先頭 8KiB に NUL や制御文字）→ UTF-8 として妥当 → Windows-31J として妥当 → ISO-8859-1。バイナリは今は開かずエラー表示（HEX は第5段階）。この順序と基準でよいか。判定を誤ったときは `Ctrl+E` の切替で直せる。
+- [x] 決定済み（順序はこのままでよい）: 自動判定の方針は第3段階で実装した（`neo/encoding.rs`）。順序は BOM → バイナリ判定（先頭 8KiB に NUL や制御文字）→ UTF-8 として妥当 → Windows-31J として妥当 → ISO-8859-1。バイナリは今は開かずエラー表示（HEX は第5段階）。この順序と基準でよいか。判定を誤ったときは `Ctrl+E` の切替で直せる。
 - [x] JSON 整形: 右クリックメニューと Run の右クリックに置き、自前の整形器にした（依存を足さない方針。「JSON 整形」の節）。
 - [ ] プレビューの描画範囲。fltk の HelpView で足りる簡易表示にするか、既定ブラウザに渡すだけにするか。依存と起動の軽さを優先するなら、後者が有力。
 - [x] 決定済み: `opt-level = 3`（速度優先）に変更した。LTO・strip・panic=abort は維持。
@@ -283,7 +283,7 @@ neonote [--log-level <DEBUG|INFO|WARN|ERROR>] [パス...]
 
 ### 第5段階で決めたこと（実装メモ）
 
-- `core/hex.rs`: `format`（バイト列→表示）と `parse`（表示→バイト列、不正なら行・列・位置を返す）。往復と不正位置をテストした。
+- `neo/hex.rs`: `format`（バイト列→表示）と `parse`（表示→バイト列、不正なら行・列・位置を返す）。往復と不正位置をテストした。
 - 1 行は `オフセット(8桁)  HEX×16  |ASCII|`。行頭がオフセットとして読めない行（8 桁の 16 進でない）はエラーにする。オフセットを消した行を黙って捨てて、データを失わないため。
 - オフセットは行番号欄ではなく本文に出した（fltk の行番号欄は行番号しか出せない）。
 - バイナリ判定されたファイルは、エラーではなく HEX で開く。`Ctrl+E` のメニューに HEX を追加し、切り替えるとディスクから読み直す（未保存の編集があれば確認する）。保存先の無い文書は HEX にできない。
@@ -298,7 +298,7 @@ neonote [--log-level <DEBUG|INFO|WARN|ERROR>] [パス...]
 - 読み込めないファイルは、原因を含むエラーを出して元のフォントのまま。キャンセルは何も起きない。
 - fltk-rs の `App::load_font` は読んだフォントを固定の枠（番号 16）に入れるため、一度に使えるのは選んだ 1 つだけ。選び直すと置き換わる。`Font::load_font`（enums 版）は名前の一覧に登録しないので使わない（`by_name` が既定フォントに黙って落ちる）。
 - 選んだフォントは設定ファイル（後述「設定ファイル」節）の `font=` に保存し、次の起動でも使う。読めないときは警告して同梱の NeoFont で起動する。
-- **Java 側の置換**: `integration/java/FileDropHandler.java`。`open()` を `ProcessBuilder` で `neonote <絶対パス>` の起動に置き換え、`SwingNeoNote` / `SwingUtilities` の import、`IS_MAC` ガード、`invokeLater` を削除した。`reference/java/` の元ファイルは触っていない。
+- **Java 側の置換**: `admin/integration/java/FileDropHandler.java`。`open()` を `ProcessBuilder` で `neonote <絶対パス>` の起動に置き換え、`SwingNeoNote` / `SwingUtilities` の import、`IS_MAC` ガード、`invokeLater` を削除した。`admin/java/` の元ファイルは触っていない。
   - 実行ファイルの探索順: `-Dneo.neonote.path` → 環境変数 `NEONOTE_PATH` → `mod/neonote(.exe)` → PATH 上の `neonote(.exe)`。**`mod/` に置く前提は仮置き**（ゲーム側の配置が未確認）。
   - パスは必ず絶対パスにして渡す（先頭が `-` のファイル名をオプションと誤認させないため）。
   - NeoNote の標準出力・標準エラーはゲームの出力へそのまま流す（「デバッグしてほしい」要件）。作業フォルダと環境変数を引き継ぐので、`mod/log.properties` と `NEO_LOG_LEVEL` はそのまま効く。
@@ -365,7 +365,7 @@ Java 版には名前だけで動作の無いメニュー項目があった。名
 | Check Update | 配布ページ（連携情報の Download）をブラウザで開く | 通信はしない。Java 版は何も確認せず「Latest」と出すだけだったが、確認していないものを「最新」と表示するのは不正確なので、配布ページを開く形にした |
 | Deselect | 選択を解除する | |
 | Select | カーソル位置の単語を選ぶ（英数字・`_`・かな・漢字の連続を 1 語とみなす） | |
-| Magic Select | 選択を 単語 → 行 → 段落（空行で区切られた範囲）→ 全体 の順に 1 段広げる。Edit ボタンの左クリックもこれ | 計算は `core/selection.rs`（GUI なしでテスト済み）。CRLF の `\r` は選択に含めない |
+| Magic Select | 選択を 単語 → 行 → 段落（空行で区切られた範囲）→ 全体 の順に 1 段広げる。Edit ボタンの左クリックもこれ | 計算は `neo/selection.rs`（GUI なしでテスト済み）。CRLF の `\r` は選択に含めない |
 | Copy Selection | 選択範囲をクリップボードへ。何も選んでいなければ余白に「No selection」 | Copy と同じ結果だが、結果を余白に出す |
 | Copy Line | カーソルのある行を、改行ごとクリップボードへ | 貼り付けると 1 行丸ごと入る |
 | Paste Before / Paste After | 選択範囲を**置き換えずに**、その前 / 後ろへ貼り付ける（選択が無ければカーソル位置） | 通常の Paste は選択を置き換える |
@@ -377,14 +377,14 @@ Java 版には名前だけで動作の無いメニュー項目があった。名
 
 ### 履歴（View History / Restore From History）
 
-「履歴」は**過去に読み込んだファイルのパス**の履歴（作者の判断 2026-10-25）。以前の「保存のたびの内容のスナップショット」は廃止した。`core/pathlog.rs`。
+「履歴」は**過去に読み込んだファイルのパス**の履歴（作者の判断 2026-10-25）。以前の「保存のたびの内容のスナップショット」は廃止した。`neo/pathlog.rs`。
 
 - 記録するタイミングは Open Recent と同じ（ファイルを開いた・保存したとき）。新しい順、同じパスは先頭へ移す、**最大 100 件**。設定ファイル自身は入れない。
 - **終了後も残す**: `neodir/config.txt` の `history=パス` に 1 行ずつ保存する（設定ファイルの節を参照）。Open Recent（`recent=`、最大 10 件）とは別の一覧。
 - **View History**: 別ウィンドウに `1  ファイル名` の形で一覧し（ファイル名のみ。60 文字を超えるものは先頭 40 文字 + `…` + 末尾 19 文字に省略して拡張子を残す）、行をダブルクリック（または Enter）するとそのファイルをタブで開く（すでに開いていればそのタブへ移る）。100 件はポップアップメニューに収まらないので、スクロールできる一覧ウィンドウにした。ウィンドウの大きさは中身に合わせる（幅は一番長い行に合わせて 240〜560 px、高さは行数に合わせて最大 12 行で、超えたら縦スクロール。横スクロールは出さない）。開いている間、元のボタン（Undo）はアクセント色で強調し、ウィンドウの上端にも同じ色の帯を付けて「どこから開いたか」が分かるようにする（選ぶ・Esc・× のどれで閉じても元の色に戻る）。ウィンドウは**右クリックしたボタン（Undo）の真下**に出す（画面からはみ出さないよう収める）。行の高さは全行そろえ、余白も少し広げている（透明な 1px 幅のアイコンで高さを指定。日本語の行だけ高くなるのを防ぐ）。行にマウスを乗せると**ツールチップでフルパス**を出す。同名のファイルは一覧では見分けにくい（作者の選択）。
 - **Restore From History**: 履歴の新しい方から見て、**いま開いていない最初の 1 件**を一覧なしでタブに開く（閉じたタブの開き直し）。全部開いていれば余白に出すだけ。
 - **存在確認**: どちらも実行のたびに存在確認して、無いファイルは履歴から消し、`history=` に書き戻す。
-- 検証済み: ユニットテスト（`core/pathlog.rs` の件数・重複・並び・表示の省略・存在しないパスの除去、`core/config.rs` の `history=` の読み書き・100 件上限）。未検証: 一覧ウィンドウの操作そのもの（Xvfb での操作は未実施）。
+- 検証済み: ユニットテスト（`neo/pathlog.rs` の件数・重複・並び・表示の省略・存在しないパスの除去、`neo/config.rs` の `history=` の読み書き・100 件上限）。未検証: 一覧ウィンドウの操作そのもの（Xvfb での操作は未実施）。
 
 ### 行番号欄の自動表示と固定（Pin）
 
@@ -409,7 +409,7 @@ Java 版には名前だけで動作の無いメニュー項目があった。名
 
 右クリックメニューと Run の右クリックにある。選択範囲を JSON として整形する。選択が無ければ全文。
 
-- 自前の整形器（`core/json.rs`、依存は足さない）。インデントは 2 スペース、空の `{}` と `[]` は 1 行。数値と文字列は入力のまま出す（桁・`\u` 表記・キーの順を変えない）。
+- 自前の整形器（`neo/json.rs`、依存は足さない）。インデントは 2 スペース、空の `{}` と `[]` は 1 行。数値と文字列は入力のまま出す（桁・`\u` 表記・キーの順を変えない）。
 - 厳密な JSON だけを受ける。末尾カンマ・コメント・単引用符・先頭 0 の数値はエラー。入れ子は 256 段まで。
 - 不正なときは書き換えず、問題の位置へカーソルを移し、余白に `JSON error 行:桁 理由` を出す。
 - 整形は全文の置き換え 1 回なので、元に戻すで戻せる。すでに整形済みなら `Already formatted`。HEX・読込中は対象外。
@@ -421,7 +421,7 @@ Java 版には名前だけで動作の無いメニュー項目があった。名
 - チェック表示は Enable Auto Save と Word Wrap。状態は `menu::set_autosave_checked` / `set_wrap_checked` で表に渡す（メニューは毎回作り直すため）。
 - メニューの文字列は `'static` が必要なので、Open Recent の表示名は `static_label` で使い回して保持する（最大でも開いたファイルの種類数だけ）。ラベルは `/` `&` `@` を `_` に置き換えて、FLTK の特殊文字として解釈されないようにしている。
 - Undo All / Redo All は `TextBuffer` の undo / redo を繰り返す。文書ごとにバッファを持つので、表示中のタブだけが対象。
-- 検証済み（Xvfb + xdotool）: Magic Select の 5 クリック（単語→行→段落→全体→変化なし）、Copy Line と Paste Before、選択ありの Paste After、Deselect、Undo All / Redo All（保存した内容で往復を確認）、Open Recent の一覧表示と選択、Make Shortcut（`.desktop` の内容と権限）、Auto Save（2 秒に縮めたビルドで、表示中でないタブも保存され `*` が消えること）、Open HomePage / Check Update（`xdg-open` に渡る URL）、メニューのチェック表示。`core/selection.rs` `core/recent.rs` `platform.rs` のショートカット生成はユニットテスト。
+- 検証済み（Xvfb + xdotool）: Magic Select の 5 クリック（単語→行→段落→全体→変化なし）、Copy Line と Paste Before、選択ありの Paste After、Deselect、Undo All / Redo All（保存した内容で往復を確認）、Open Recent の一覧表示と選択、Make Shortcut（`.desktop` の内容と権限）、Auto Save（2 秒に縮めたビルドで、表示中でないタブも保存され `*` が消えること）、Open HomePage / Check Update（`xdg-open` に渡る URL）、メニューのチェック表示。`neo/selection.rs` `neo/recent.rs` `platform.rs` のショートカット生成はユニットテスト。
 - Open Recent は、閉じたタブのファイルを一覧から選ぶと新しいタブで開き直せることまで確認した。
 - 未検証: Windows の `.lnk` 作成（PowerShell）、macOS 全般。
 
@@ -429,11 +429,11 @@ Java 版には名前だけで動作の無いメニュー項目があった。名
 
 作者の判断（2026-10-25）で、状態を保存する設定ファイルを持つことにした。設定画面は作らず、**普通のテキストを NeoNote 自身で編集する**形にする（ノンゴールの「設定画面やダイアログを増やさない」とは両立する）。
 
-- **場所**: 実行ファイルと同じ階層の `neodir/config.txt`。フォルダ名を `neonote` にしないのは、Linux / macOS では実行ファイル自身が `neonote` という名前で、同名のフォルダを作れないため（`core/config.rs` の `path_for_exe`）。フォルダは最初に保存するときに作る。
+- **場所**: 実行ファイルと同じ階層の `neodir/config.txt`。フォルダ名を `neonote` にしないのは、Linux / macOS では実行ファイル自身が `neonote` という名前で、同名のフォルダを作れないため（`neo/config.rs` の `path_for_exe`）。フォルダは最初に保存するときに作る。
 - **形式**: `キー=値` を 1 行ずつ。`#` の行と空行は無視。
   - `autosave=true|false`: Enable Auto Save の状態。
   - `wrap=true|false`: Word Wrap の状態。
-  - `size=数値`: 文字サイズ。空なら既定の 14。範囲は 8〜48（`core/zoom.rs`）。
+  - `size=数値`: 文字サイズ。空なら既定の 14。範囲は 8〜48（`neo/zoom.rs`）。
   - `font=パス`: 選んだフォントファイル。空なら同梱の NeoFont。
   - `gutter_pin=true|false`: 行番号欄を常に表示（固定）する。false なら、カーソルが左端のときだけ出す。
   - `recent=パス`: 最近開いたファイル。1 行に 1 件、新しい順、最大 10 件。
@@ -441,7 +441,7 @@ Java 版には名前だけで動作の無いメニュー項目があった。名
 - **保存のタイミング**: 状態が変わったとき（Auto Save の切替、フォント選択、ファイルを開く・保存する）に書く。終了時にまとめて書かない（強制終了で失わない／エディタで編集中の内容を上書きしない）。書くのは**キーの行だけ**で、コメントや知らない行、キーの位置はそのまま残す。中身が変わらないときは書かない。書けない場所（書込禁止のインストール先など）でも編集は止めず、警告をログに出すだけ。
 - **編集**: Load の右クリック → **Open Config** でタブに開く（無ければ今の状態で作る）。普通のタブなので、保存すると（`Ctrl+S`）読み直して即座に反映する（Auto Save・フォント・最近開いたファイル）。開いたまま状態が変わったときは、未編集のタブなら読み直す（編集中のタブには触らない）。`font=` が読めないときは警告して今のフォントのままにする。
 - 設定ファイル自身は Open Recent に入れない（開くたびに書き換わって、開いているタブと食い違うため）。
-- 検証済み（Xvfb + xdotool）: 初回起動で作成、手で書いたコメント・未知のキーを残したまま更新、`autosave=true` で起動、存在しない `font=` で警告のうえ起動、NeoNote 上で config.txt を編集して `Ctrl+S` すると反映（ログ `config: applied`）。`core/config.rs` の解析・書き戻し・保存先はユニットテスト。未検証: Windows / macOS、Open Config のメニュー操作そのもの。
+- 検証済み（Xvfb + xdotool）: 初回起動で作成、手で書いたコメント・未知のキーを残したまま更新、`autosave=true` で起動、存在しない `font=` で警告のうえ起動、NeoNote 上で config.txt を編集して `Ctrl+S` すると反映（ログ `config: applied`）。`neo/config.rs` の解析・書き戻し・保存先はユニットテスト。未検証: Windows / macOS、Open Config のメニュー操作そのもの。
 
 ## 文字コードの切替メニュー（`Ctrl+E` / Change Encoding）
 
@@ -494,7 +494,7 @@ macOS は Ctrl を Cmd に読み替える。置換は「選択した文字列」
 ### Go To Line（Ctrl+G）
 - 右クリックメニューの **Go To Line** か `Ctrl+G`（macOS は Cmd）。入力欄 1 つに `12`（行）か `12:5`（行:桁）。`12,5` と `12 5` も可。行・桁とも 1 始まり。桁は文字単位で、`JSON error 12:5` の表示をそのまま入れられる。
 - 入力欄に今の位置と全行数を出す。行が多すぎれば最終行、桁が多すぎれば行末（CRLF の `\r` の手前）に移す。選択は解除する。形が違う入力は余白に出して何もしない。
-- 計算は `core/goto.rs`（GUI なしでテスト済み。全角・絵文字の桁、CRLF、丸め、`json::line_col` との往復）。
+- 計算は `neo/goto.rs`（GUI なしでテスト済み。全角・絵文字の桁、CRLF、丸め、`json::line_col` との往復）。
 - 検証済み（Xvfb + xdotool）: `Ctrl+G` で入力欄が出て、`50:3` で 50 行目が表示される。
 
 ### 文字サイズ
@@ -511,7 +511,7 @@ macOS は Ctrl を Cmd に読み替える。置換は「選択した文字列」
 - 検証済み（Xvfb）: 末尾へ移動・矢印キーで行・桁が変わる。全角の桁は文字単位。
 
 ### 外部変更の検知
-- ファイルを開いた（保存した）時点の更新時刻と大きさを覚えておき、**同じファイルへ保存する直前**に今と比べる。違えば、書く前に確認する（`core/document.rs` の `Stamp` / `changed_on_disk`）。
+- ファイルを開いた（保存した）時点の更新時刻と大きさを覚えておき、**同じファイルへ保存する直前**に今と比べる。違えば、書く前に確認する（`neo/document.rs` の `Stamp` / `changed_on_disk`）。
 - 確認の選択肢: **キャンセル**（Esc）/ **別名で保存**（Enter。相手の変更を消さない）/ **上書き保存**。Enter で選ばれる既定を破壊的でないものにしてある。
 - 保存し直した直後は取り直すので、自分の保存で警告は出ない。ファイルが消されていたら警告せずそのまま保存する（作り直すだけ）。別名で保存・新規ファイルは対象外。
 - Auto Save は、外部で書き換えられたファイルを**黙って上書きしない**。見送って、余白とログに 1 回だけ知らせる（手動の保存で確認する）。
@@ -528,7 +528,7 @@ macOS は Ctrl を Cmd に読み替える。置換は「選択した文字列」
 
 ### 検索の大文字小文字（スマートケース）
 - `Ctrl+F` / `F3` / `Shift+F3`: 探す文字列に **ASCII の大文字が 1 つでもあれば区別、無ければ無視**。小文字で打てば `abc` が `ABC` にも当たり、`ABC` と打てば厳密になる。オプションの切替は置かない。
-- 無視するのは ASCII のみ（`core/replace.rs` の `find_all_smart`）。`É` と `é`、全角英字は区別する。ASCII だけ畳むので文字のバイト長が変わらず、位置をそのまま使える。
+- 無視するのは ASCII のみ（`neo/replace.rs` の `find_all_smart`）。`É` と `é`、全角英字は区別する。ASCII だけ畳むので文字のバイト長が変わらず、位置をそのまま使える。
 - 右クリックの **Search** と **Replace** は従来どおり厳密（「選んだ文字列と同じ箇所」という意味を保つため。選択が `abc` のとき、Search は `ABC` を黄色にせず、Replace も `ABC` を置換しない）。
 
 ### Tab / Shift+Tab
@@ -536,7 +536,7 @@ macOS は Ctrl を Cmd に読み替える。置換は「選択した文字列」
 - `Shift+Tab`: カーソルだけでも、その行の先頭のタブ 1 つ（無ければ空白を最大 4 つ）を外す。選択があれば全行。カーソルだけのときはカーソルが同じ文字の上に残る。外す・足す行が無ければ余白に `Nothing to unindent` / `Nothing to indent`。
 - 選択は「にかかる行全体」を選び直す。選択が次の行の行頭ちょうどで終わるときは、その行を含めない。1 回の編集なので元に戻すで 1 回で戻る。
 - 空白ではなくタブ文字を足すのは、既存ファイルの見た目を勝手に変えないため。幅の設定は持たない。
-- 計算は `core/indent.rs`（GUI なしでテスト済み）。`Ctrl+Tab`（タブ切替）とは別。
+- 計算は `neo/indent.rs`（GUI なしでテスト済み）。`Ctrl+Tab`（タブ切替）とは別。
 
 ### オートインデント（Enter）
 - Enter で、**カーソルより左の**行頭の空白とタブを次の行へ引き継ぐ（字下げの途中で押せば、その手前までの分だけ）。選択があれば置き換える。
@@ -546,7 +546,7 @@ macOS は Ctrl を Cmd に読み替える。置換は「選択した文字列」
 - HEX・読込中は Tab / Enter に触らない（HEX の本文にインデントを入れると保存できなくなる）。Ctrl / Alt / Cmd を押しているときも触らない。
 
 ### 検証
-- ユニットテスト（100 件）: `core/indent.rs`（複数行・空行・CRLF・日本語・選択が行頭で終わる・カーソルだけの Shift+Tab・改行コードの判定・`\r` と `\n` の間）、`core/replace.rs` の `find_all_smart`（大文字小文字・マルチバイトの後の位置・非 ASCII）。
+- ユニットテスト（100 件）: `neo/indent.rs`（複数行・空行・CRLF・日本語・選択が行頭で終わる・カーソルだけの Shift+Tab・改行コードの判定・`\r` と `\n` の間）、`neo/replace.rs` の `find_all_smart`（大文字小文字・マルチバイトの後の位置・非 ASCII）。
 - Xvfb + xdotool で保存後のバイト列を確認: LF の Enter（`\tab` → `\tab\n\tx`）、CRLF の Enter（End の位置・その 1 つ左のどちらも `\r\n` のまま）、全選択 Tab / Shift+Tab、選択なしの Tab（タブ文字 1 つ）、カーソルだけの Shift+Tab、元に戻す 1 回で戻る、CRLF の Shift+Tab、日本語の行の Enter、Ctrl+F の小文字（`abc` が `ABC` `aBc` にも当たる）と大文字入り（`ABC` のみ）。
 - 未検証: IME で変換を確定する Enter（XIM ではキーはアプリに届かない想定だが実機未確認）、Windows / macOS。
 
@@ -554,12 +554,12 @@ macOS は Ctrl を Cmd に読み替える。置換は「選択した文字列」
 
 必要最低限だけ。設定項目・ダイアログの追加は 1 つだけ。
 
-- **表示**: タイトルの末尾に `| EOL: CRLF`（`LF` / `Mixed`）。HEX では出さない。判定は `core/eol.rs`。CRLF と LF が両方あれば `Mixed`。単独の CR は改行として数えない。
+- **表示**: タイトルの末尾に `| EOL: CRLF`（`LF` / `Mixed`）。HEX では出さない。判定は `neo/eol.rs`。CRLF と LF が両方あれば `Mixed`。単独の CR は改行として数えない。
 - **いつ判定するか**: 開いたとき（読込完了）と、変換したときだけ。打鍵のたびには数え直さない（大きいファイルで遅くなるため）。そのため、`Mixed` の文書は、Enter で打っても `Mixed` のまま表示が変わらない（変換すれば変わる）。
 - **新規文書（保存先なし）**: 改行の既定は OS に合わせる（Windows は CRLF、他は LF）。Enter は、今の行・前の行に改行の手がかりがあればそれに従い、無いときだけこの既定を使う。
 - **変換**: 右クリック → **Convert Line Ending**。`キャンセル / LF / CRLF`（Enter は LF）から選ぶと、全文の改行をそろえる。全文の置き換え 1 回なので、元に戻すで戻せる。HEX・読込中は対象外。
 - **文字コード**: 新規文書の文字コードは、今も UTF-8 で始まり、`Ctrl+E` で変えられる（保存先が無い文書は読み直さず、印だけ切り替わる）ので、追加は無い。
-- 検証済み: ユニットテスト（`core/eol.rs` の判定・変換、手がかりが無いときの Enter）。Xvfb + xdotool で、タイトルの `CRLF` / `LF` / `Mixed` 表示、メニューからの CRLF→LF、Mixed→CRLF（日本語を含む）、キャンセルで何も変わらないことを、保存後のバイト列で確認。
+- 検証済み: ユニットテスト（`neo/eol.rs` の判定・変換、手がかりが無いときの Enter）。Xvfb + xdotool で、タイトルの `CRLF` / `LF` / `Mixed` 表示、メニューからの CRLF→LF、Mixed→CRLF（日本語を含む）、キャンセルで何も変わらないことを、保存後のバイト列で確認。
 - 未検証: Windows / macOS（Windows の既定 CRLF は `cfg!(windows)` で分岐しただけ）。
 
 ## 第11段階: 配色の統一とダーク / ライト（2026-10-25）
@@ -590,7 +590,7 @@ macOS は Ctrl を Cmd に読み替える。置換は「選択した文字列」
 ### 検索バー（常駐）
 
 - **ツールバーの右端**に置く。ふだんは `Find` ボタン 1 つだけで、使うときに開いて `[検索欄] 件数 ← → [置換欄] All ×` を出す（下の「UI の無駄を削る」参照）。専用の行は持たない（縦を食わない）。ツールバーの余白（パスのコピー・短い通知）が残りの幅を使う。実装は `ui/searchbar.rs`（部品。`toolbar::build` の最後に足す）と `app.rs`（`find_*`）。
-- 入力するたびに、全ての一致を黄色にして、**いまのカーソル（選択）の位置から先の最初の 1 件**を選ぶ（打ち足しても先へ飛ばない）。大文字小文字はスマートケース（小文字だけで探すときは区別しない。`core/replace.rs` の `find_all_smart`）。件数欄は `1/4`（位置/総数）・`4 found`・`Not found`。
+- 入力するたびに、全ての一致を黄色にして、**いまのカーソル（選択）の位置から先の最初の 1 件**を選ぶ（打ち足しても先へ飛ばない）。大文字小文字はスマートケース（小文字だけで探すときは区別しない。`neo/replace.rs` の `find_all_smart`）。件数欄は `1/4`（位置/総数）・`4 found`・`Not found`。
 - キー: `Ctrl+F` で検索バーへ移って全選択（編集領域で 1 行の文字列を選んでいればそれを検索。ただし検索中の文字列と大文字小文字違いだけなら置き換えない）。検索バーの中で `Enter` / `Shift+Enter` が次 / 前、`Esc` と `Tab` が編集領域へ戻る。`F3` / `Shift+F3` は編集領域でも検索バーでも使える。検索バーの中でも `Ctrl+S`・`Ctrl+T`・`Ctrl+Tab` などの全体ショートカットは効く（`Ctrl+Y` だけは編集領域のやり直しにしない）。
 - `<` / `>` ボタンは `Shift+F3` / `F3` と同じ。`×` は文字列と強調を消して編集領域へ戻る。ボタンを押してもキーボードフォーカスは編集領域に残る。
 - **タブを切り替えても、読込が終わっても、検索中なら新しい文書にも強調を付け直す**（選択は動かさない）。強調は文書ごとのスタイルバッファなので、これをしないと切り替えた先に強調が無い。8 MiB（`LIVE_COUNT_LIMIT`）を超える文書では省く。編集で文字が増減しても強調の位置は更新しない（従来の Search と同じ。打ち直すか `×` で消す）。
@@ -630,7 +630,7 @@ macOS は Ctrl を Cmd に読み替える。置換は「選択した文字列」
 
 - **タブの下の帯を廃止**: 行番号欄の固定ボタン `Pin` のために、編集領域の上へ高さ 16 px の帯を置いていた。この帯が本文の表示域を縦に削っていたので、**固定ボタンをツールバーの `#`（幅 24 px、`Run` の右）へ移して帯ごと消した**。編集領域はタブバーの直下から始まる。固定中はアクセント色、説明（自動表示 / 常に表示）はツールチップ。マウスが「行番号欄の上」にあるかの判定は、帯ではなく編集領域の上端から行う。
 - **検索バーは使うときだけ開く**: 閉じているときは `Find` ボタン（幅 44 px）だけ。開くと `[検索欄 120] 件数 70 [←] [→] [置換欄 90] [All] [×]`（ツールバーの 1 行の中で出し入れするので、縦は増えない）。開くのは `Find` ボタン・`Ctrl+F`・`Ctrl+H`・右クリックの Search / Replace。`Esc` は閉じるだけ（文字列と強調は残るので `F3` で続けられる）。`×` は文字列と強調を消して閉じる。閉じている間の `F3` は、件数（`2/5`・`Not found`）を余白に一瞬だけ出す。
-- **置換**: 置換欄で `Enter`（か `All`）を押すと、検索中の文字列（強調している箇所）を全て置換欄の文字列にする。全文を 1 回だけ読み、1 回の編集として書き戻す（元に戻す 1 回で全て戻る）。Ctrl+H / 右クリックの Replace で選んだ文字列は、これまでどおり**厳密**（大文字小文字を区別）で探す。検索欄を打ち直すとスマートケースに戻る。複数行の選択だけは検索欄に入らないので、従来の入力ダイアログを残した。実装の純粋な部分は `core/replace.rs` の `apply_replace`（テストあり）。
+- **置換**: 置換欄で `Enter`（か `All`）を押すと、検索中の文字列（強調している箇所）を全て置換欄の文字列にする。全文を 1 回だけ読み、1 回の編集として書き戻す（元に戻す 1 回で全て戻る）。Ctrl+H / 右クリックの Replace で選んだ文字列は、これまでどおり**厳密**（大文字小文字を区別）で探す。検索欄を打ち直すとスマートケースに戻る。複数行の選択だけは検索欄に入らないので、従来の入力ダイアログを残した。実装の純粋な部分は `neo/replace.rs` の `apply_replace`（テストあり）。
 - **ツールチップに寄せた情報**: `#` の状態、`Find` ボタン（検索中の文字列の件数つき）、検索欄（件数 + キー操作）、`←` `→` `All` `×`、置換欄の使い方。件数の欄は、入力しながら見えないと困るので開いている間だけ検索バーに残した（ツールチップは、マウスを乗せないと出ないため）。
 - **幅**: 開いたときに入りきるよう、ツールバーのボタンを 64 → 50 px、ウィンドウの既定の幅を 960 → 1000 にした。狭くすると余白（通知）から先に縮み、検索バーは縮まない。
 - 検証済み（Xvfb + xdotool）: 帯が無くなりタブの直下から本文が始まる、`Find` ボタンで開く → 入力して強調と `1/3` → `Tab` で置換欄 → `Enter` で `Replaced 3`、`Esc` で閉じる、閉じたまま `F3` で `1/3` が余白に出る。ユニットテスト 111 件。未検証: ツールチップの見た目（マウスを乗せる操作は自動化していない）、`#` の固定 / 解除の押下、ライトテーマ、Windows / macOS。
@@ -641,13 +641,13 @@ macOS は Ctrl を Cmd に読み替える。置換は「選択した文字列」
   行・桁・文字数・改行コード・パスはチップのツールチップに出す（`refresh_title`）。
 - チップを押すと `Action::ChangeEncoding` と同じ一覧（`encoding_menu`）が、チップの真下に出る。
   上から 表示（Preview・HEX）、文字コード、Auto、Line Ending（改行コードの変換）。
-- 「どのファイルで何の表示を選べるか」は `core/viewmode.rs`（GUI なし）: md は Text / Preview / HEX、pdf は Preview / HEX、それ以外は Text / HEX。
+- 「どのファイルで何の表示を選べるか」は `neo/viewmode.rs`（GUI なし）: md は Text / Preview / HEX、pdf は Preview / HEX、それ以外は Text / HEX。
 - Preview は md と pdf が実装済み（`View::implemented(kind)`。md は stage 17、pdf は stage 18）。
 
 ### md の Preview（stage 17、2026-10-26）
 
 - 依存に `pulldown-cmark`（`default-features = false, features = ["html"]`）を 1 つ足した。禁止事項（WebView・GPU 描画など）には当たらない。表示は fltk の `HelpView` で、ブラウザエンジンは持たない。
-- `core/markdown.rs`（GUI なし・テストあり）の `to_html(md, bg, fg, link)` が、md を HelpView 向けの HTML にする。表・取り消し線を有効にする。HelpView が描けない／描くと困るものは文字で出す: **生の HTML** は文字のまま（タグとして解釈させない）、**画像** は読み込まず alt テキストだけ、**リンク** は辿らせず「文字 (URL)」にする（`#` だけのリンクは URL を添えない）。配色は `<body bgcolor text link>` に、現在のテーマの色を入れる。
+- `neo/markdown.rs`（GUI なし・テストあり）の `to_html(md, bg, fg, link)` が、md を HelpView 向けの HTML にする。表・取り消し線を有効にする。HelpView が描けない／描くと困るものは文字で出す: **生の HTML** は文字のまま（タグとして解釈させない）、**画像** は読み込まず alt テキストだけ、**リンク** は辿らせず「文字 (URL)」にする（`#` だけのリンクは URL を添えない）。配色は `<body bgcolor text link>` に、現在のテーマの色を入れる。
 - 画面: `HelpView` を編集領域と同じ縦の列（`col`）に置き、普段は隠す。切り替えは `Ui::apply_view`（編集領域とプレビューの出し入れ、`col.layout()`）。**先にフォーカスをプレビューへ移してから編集領域を隠す**（先に隠すとフォーカスが検索欄へ移り、検索バーが勝手に開いた）。
 - 文書ごとの状態は `Doc::preview`。切り替えたタブへは `activate` の中で `apply_view` が反映する。バッファはそのまま持つので、Text に戻れば元の位置から編集できる。HEX・読込中・md 以外では Preview にしない。読み直し（`load_into`）は Preview を解除する。
 - メニュー（チップ / Change Encoding）: md のときだけ `Text` の行を出し、Preview から戻れるようにした（`Text` / `Preview` / `HEX`）。文字コードや Auto を選ぶと Preview は解除される。
@@ -659,7 +659,7 @@ macOS は Ctrl を Cmd に読み替える。置換は「選択した文字列」
 ### pdf の Preview（stage 18、2026-10-26）
 
 - 依存に `lopdf`（`default-features = false`）を足した。文字の取り出し専用で、描画はしない（HelpView に文字だけを出す）。
-- `core/pdftext.rs`（GUI なし・テストあり）: `extract(bytes)` が **ページごとの文字**を返す（`Document::load_mem` → `extract_text` をページ単位で。取れなかったページだけ空にして続ける）。64 MiB を超える PDF・読めない PDF・暗号化 PDF はエラー。`to_html` はページ番号つきの区切り（`── 1 / 2 ──`）と、1 行 1 段落の HTML。`<` `&` などは必ず退避する。文字が 1 つも取れなければ、その旨を 1 行で出す。
+- `neo/pdftext.rs`（GUI なし・テストあり）: `extract(bytes)` が **ページごとの文字**を返す（`Document::load_mem` → `extract_text` をページ単位で。取れなかったページだけ空にして続ける）。64 MiB を超える PDF・読めない PDF・暗号化 PDF はエラー。`to_html` はページ番号つきの区切り（`── 1 / 2 ──`）と、1 行 1 段落の HTML。`<` `&` などは必ず退避する。文字が 1 つも取れなければ、その旨を 1 行で出す。
 - 取り出しは**別スレッド**（`Msg::PdfText`）。ファイルはディスクから読み直す（HEX・文字化けした本文のバッファは使わない）。取り出すまでは `Loading...` を出す。結果は `Doc::pdf_text` に持ち、Preview ↔ 他の表示を行き来しても取り直さない。ファイルを読み直す（`load_into`）と捨てる。
 - **開いたとき**: 拡張子が pdf で、自動判定で開いた場合は、HEX や文字化けのテキストではなく **Preview で始める**（クリック数を増やさないため）。HEX で見たいときはチップ → HEX。文字コードや Auto を選ぶと Preview は解除される。
 - チップのラベルは Preview 中は `Preview`。Preview は読み取り専用で、pdf を保存し直す操作は変えていない（HEX / 文字として開いた本文を保存する従来の挙動のまま）。
@@ -674,7 +674,7 @@ macOS は Ctrl を Cmd に読み替える。置換は「選択した文字列」
 - **画像ファイルを開く**: `png / jpg / jpeg / gif / bmp` は `Kind::Image`（`viewmode`）。自動判定で開いたら HEX ではなく **Preview で始める**（pdf と同じ）。HEX はチップのメニューから。svg はテキストなので画像にしない（文字として編集できるまま）。描画は FLTK の画像デコーダー（すでにリンク済み）で、`HelpView` に `<img>` を 1 つ出す。幅が表示領域を超える画像は縦横比を保って縮める（`imagefile::fit`）。
 - **md の中の画像**: `![alt](path)` の参照先がローカルの画像ファイルなら画像として出す。相対パスは md のあるフォルダが基準（保存前の文書は出さない）。`%20` などは戻して探す。見つからない・画像でない・32 MiB 超・URL（`://` / `//` / `data:`）は読まず、`alt (参照先)` の文字で出す。**開いただけでは外部へ通信しない**。
 - **URL を画像として開く**: テキストの中で URL を選んで右クリック → `Open Image URL`（`Action::OpenImageUrl`）。別スレッドで `platform::download`（`curl -fsSL --max-time 20 --max-filesize 32MiB --proto =http,https`、シェルを通さない）が一時ファイルに保存 → 先頭のバイト列で png / jpg / gif / bmp か確認（`imagefile::sniff`。違えば捨ててエラー）→ 画像だけの小さなウィンドウに出す。Esc か × で閉じて一時ファイルを消す。curl が無い環境では「curl が見つかりません」と出す（本体に HTTP / TLS の部品は持たない）。
-- 実装の置き場: `core/imagefile.rs`（GUI なし・テストあり。種類の判定・パス解決・縮小・`<img>` の生成）、`core/markdown.rs`（`Images` で md の画像を解決）、`platform.rs`（`download`）、`app.rs`（`render_preview` の画像分岐、`open_image_url`、`show_image_window`）。
+- 実装の置き場: `neo/imagefile.rs`（GUI なし・テストあり。種類の判定・パス解決・縮小・`<img>` の生成）、`neo/markdown.rs`（`Images` で md の画像を解決）、`platform.rs`（`download`）、`app.rs`（`render_preview` の画像分岐、`open_image_url`、`show_image_window`）。
 - 検証: ユニットテスト 132 件。Xvfb で、png を開く → 自動で Preview、md のローカル画像が元の大きさで出てリモート画像が `remote (URL)` の文字になること、URL を選んで `Open Image URL` → 手元の HTTP サーバーから取得した画像のウィンドウが出て、Esc で閉じると一時ファイルが消えること。
 - 未検証・既知の制限: 画像の URL を md の中から直接開く操作は無い（テキストモードで URL を選ぶ）。リダイレクトを多用する URL・認証が要る URL・https の証明書エラー（curl 任せ）。Windows / macOS の curl、アニメーション GIF（動かない）、EXIF の向き（回転しない）、非常に大きな画像の縮小時の速度、HelpView の拡大縮小は倍率の表示だけでなく画像の再読み込みを伴う点、リリースビルドのサイズ・起動時間。
 - 次にやること: リリースビルドのサイズ・起動時間の確認（依存は `pulldown-cmark` と `lopdf`）。
@@ -700,7 +700,7 @@ macOS は Ctrl を Cmd に読み替える。置換は「選択した文字列」
 - **画像のメタデータ（実装）**: チップのメニュー（画像の Preview 中）の `Edit Metadata (text)` で、メタデータを `キー=値` の行として **新しいタブ**（`pic.png.meta`）に開く。編集して `Ctrl+S` すると、画像の本体（ピクセル）には触れず、メタデータの部分だけ差し替えて画像へ書き戻す（`write_atomic`）。`Save As` を選ぶと、ふつうの文字として別ファイルに保存する。
   - 対象は **PNG の tEXt と圧縮なしの iTXt**（Title / Author / Comment など。行の追加・削除・修正が自由）と **JPEG のコメント（COM）**（キーは `comment` のみ、複数行 = 複数コメント）。Latin-1 に収まらない値（日本語など）の PNG は iTXt（UTF-8）で書く。値の改行は `\n`、`\` は `\\`。キーが `=` を含む・空・80 文字以上などは保存前にエラーにする。
   - **編集しないもの**: EXIF（撮影日時・GPS・カメラ）、zTXt・圧縮 iTXt、ICC プロファイルなど。書き戻しでそのまま残す。EXIF は 2 進の構造（IFD・オフセット）で、壊さず編集するには専用の部品が要るため、軽量の方針に合わないと判断した。
-  - 実装: `core/imgmeta.rs`（GUI なし・依存なし。PNG のチャンク・CRC32・JPEG のセグメントを自前で扱う。テストあり）。`State::meta_of`（この文書が編集している画像）、`Ui::save_meta` / `open_meta`。JFIF は SOI の直後に残し、コメントはその後ろへ置く。
+  - 実装: `neo/imgmeta.rs`（GUI なし・依存なし。PNG のチャンク・CRC32・JPEG のセグメントを自前で扱う。テストあり）。`State::meta_of`（この文書が編集している画像）、`Ui::save_meta` / `open_meta`。JFIF は SOI の直後に残し、コメントはその後ろへ置く。
 - **pdf（本体の編集は実装しない）**: pdf の中の文字を直接書き換える機能は入れない。pdf の文字は、フォントの部分集合・字送り・レイアウトと結びついた命令列で、文字を差し替えるとレイアウトや文字化けが壊れやすく、まともにやるには PDF の描画・フォント処理が要り、軽量の方針（依存最小・単一バイナリ）に反する。代わりに、チップのメニューの `Text in New Tab` で **取り出した文字を編集用の新しいタブ**に開く。コピー・修正・`Save As` で .txt や .md にできる。元の pdf は変えない。
 - 検証: ユニットテスト 141 件（既存 132 + `imgmeta` 9）。Xvfb で、tEXt 入りの PNG を開く → Edit Metadata → 行を足して Ctrl+S → **PIL で読み直して追加が反映され、画像サイズ・既存の項目が変わらないこと**を確認。pdf の `Text in New Tab` で 2 ページ分の文字が新しいタブに出ること。
 - 未検証・既知の制限: JPEG の実ファイル（テストは自作のバイト列のみ）、EXIF が大きい JPEG、巨大な PNG（読んで書き直すので、画像全体をメモリに載せる）、他のソフトが付けた独自のチャンク（そのまま残す）、Windows / macOS、メタデータを書き戻した直後に元画像のタブがディスクの変化を検知する挙動。
@@ -719,7 +719,7 @@ macOS は Ctrl を Cmd に読み替える。置換は「選択した文字列」
   - **zip**: 圧縮データは 1 バイトも変えず、名前と目録だけを書き直す（`write_atomic`）。変えた名前は UTF-8（フラグ付き）で書き、Info-ZIP の Unicode Path（0x7075）は外す。変えない項目は名前のバイトもそのまま。変えなければ全体がバイト単位で同じ。
   - **フォルダ**: 一時の置き場を経由して動かす（入れ替えも可）。途中で失敗したら動かしたものを戻す。行き先がすでにある・リンクの中に入る場合は、動かす前に止める。空になった元のフォルダは消す。
   - 開いたあとに中身が変わっていたら（一覧が食い違う）、何もせずエラーにする。成功したら、開いている Preview と編集中の一覧を新しい状態にそろえる。
-- 実装: `core/archive.rs`（GUI なし・テスト 15）、`core/viewmode.rs`（`Kind::Archive`）、`app.rs`（`on_archive`・`open_archive_edit`・`save_archive`）、`ui/menu.rs`（`Open Folder...`）。
+- 実装: `neo/archive.rs`（GUI なし・テスト 15）、`neo/viewmode.rs`（`Kind::Archive`）、`app.rs`（`on_archive`・`open_archive_edit`・`save_archive`）、`ui/menu.rs`（`Open Folder...`）。
 - 検証: ユニットテスト 156 件。実物の zip（Python の deflate・データ記述子つき・このプロジェクトの zip）で、名前変更後に `unzip -t` と Python の `zipfile` で全項目の中身が一致。Xvfb で、フォルダと zip を同時に開く → 階層ツリー → チップ → `Rename (text)` → 行を直して `Ctrl+S` → ディスク上の変更と Preview の更新、行数違いのときのエラーを確認。
 - 未検証・既知の制限: Windows / macOS（パスの大文字小文字・予約名）、巨大なフォルダ（5 万件まで、一覧は UI スレッドの外だが名前変更の再読込は UI スレッド）、ZIP64・分割 zip・先頭に余分なデータがある zip（読み書きともエラー）、暗号化 zip（名前の変更はできるが中身は開けない）、tar / 7z / rar、他のタブで開いているフォルダ内のファイル（名前を変えても追従しない）、zip を書き換えた直後に他のタブが検知する挙動、リリースビルドのサイズ（依存は増やしていない）。
 - 次にやること: 行の削除（＝ zip / フォルダからの削除）を入れるか、作者が判断する。tar への対応が必要かも。
@@ -730,7 +730,7 @@ macOS は Ctrl を Cmd に読み替える。置換は「選択した文字列」
 
 **範囲（作者が決めた）**: (1) MP3 / FLAC / WAV の情報表示とメタデータ編集（依存なし）、(2) 簡易再生は **小さな C 製のオーディオ部品（miniaudio 系）を使う**（作者が選んだ。OS のコマンドを呼ぶ案は採らない）。**やらない**: `rodio` / `symphonia`（依存が重い）、M4A・Ogg の編集。
 
-- **メタデータ編集**（stage 20 の `imgmeta` と同じ流れ）: チップのメニューの `Edit Metadata (text)` で `キー=値` の行を新しいタブに開き、`Ctrl+S` で音声へ書き戻す。`Save As` はふつうの文字として別ファイル。実装は `core/audiometa.rs`（GUI なし・依存なし・テストあり）。
+- **メタデータ編集**（stage 20 の `imgmeta` と同じ流れ）: チップのメニューの `Edit Metadata (text)` で `キー=値` の行を新しいタブに開き、`Ctrl+S` で音声へ書き戻す。`Save As` はふつうの文字として別ファイル。実装は `neo/audiometa.rs`（GUI なし・依存なし・テストあり）。
   - **MP3**: ID3v2.3 / 2.4（題名・歌手・アルバム・年・トラック・ジャンル・コメント。文字コードは ISO-8859-1 / UTF-16 / UTF-8 を読み、書くのは UTF-8 か UTF-16）と ID3v1。**編集しないもの**（画像 APIC・歌詞・独自のフレームなど）は、そのまま残す。タグが大きくなるときはファイル全体を `write_atomic` で書き直す（パディングの範囲に収まれば先頭だけ差し替える）。
   - **FLAC**: Vorbis コメントのブロックだけを差し替える（他のブロック・音声のフレームは触らない）。
   - **WAV**: LIST/INFO チャンクを差し替える。
@@ -749,7 +749,7 @@ macOS は Ctrl を Cmd に読み替える。置換は「選択した文字列」
 作者の指示で、環境構築・ビルド・検証は行っていない（`CLAUDE.md` に残した）。以下は「書いたこと」と「計画から変えたこと」で、動作の確認は全て未実施。
 
 - **作った順番の ①②③④**（⑤ 実ファイルでの検証と ⑥ サイズ・起動の実測は未実施）。
-- `core/audiometa.rs`（GUI なし・依存なし。テストを書いた）
+- `neo/audiometa.rs`（GUI なし・依存なし。テストを書いた）
   - 読む: `info`（長さ・ビットレート・周波数・チャンネル・ビット数）、`items`（タグ）、`read`（編集用の文字）。MP3 は ID3v2.3 / 2.4（非同期化・拡張ヘッダー・フッターも読む）と ID3v1、情報は先頭の Layer III フレームと Xing / Info / VBRI。FLAC は STREAMINFO と Vorbis コメント。WAV は fmt / data と LIST/INFO。
   - 書く: `write(bytes, text) -> Patch`。結果は「先頭の差し替え + 元の中間 + 末尾の差し替え」。MP3 はタグがパディングに収まれば先頭だけ（`in_place`）、収まらなければ余白 1 KiB 付きで全体を書き直す。FLAC は Vorbis コメント以外のブロックを順序ごと残し、パディングで大きさの差を吸収できればその場で上書きする。WAV は LIST/INFO を作り直し、他のチャンクは残して RIFF の大きさを直す。
   - MP3 のキーは `title / artist / album / year / track / genre / comment`。`year` は v2.3 では TYER（4 桁の数字のみ）、v2.4 では TDRC。ID3v1 が元からあるファイルは v1 も同じ値で更新する（30 字・Latin-1 に切り詰め、ジャンルは表にあれば番号）。ID3v1 しか無いファイルは、保存すると v2.3 を先頭に足す。タグが無いファイルも v2.3 を足す。書く文字コードは ASCII なら ISO-8859-1、それ以外は v2.4 は UTF-8、v2.3 は UTF-16（BOM つき）。
@@ -831,7 +831,7 @@ View History / Restore From History、Magic Select・Copy Line・Paste Before/Af
 
 **状態: `cargo build` は警告 0、`cargo test` は 177 件すべて成功（`byte_count` のテストを 1 件追加）。Xvfb で 1 と 3 を目視確認。**
 
-1. **HEX のタイトルの `Words:`**: 16 進テキストの文字数（300 バイトで 1547）を出していた。`core/hex.rs` に `byte_count`（`parse` と同じ読み方でオフセットと ASCII 欄を数えず、不正なトークンがあっても止まらない）を足し、HEX のときは読み込み時と `recount` でバイト数を使う。`bin2.dat`（307 バイト）で `Words: 307` を確認。
+1. **HEX のタイトルの `Words:`**: 16 進テキストの文字数（300 バイトで 1547）を出していた。`neo/hex.rs` に `byte_count`（`parse` と同じ読み方でオフセットと ASCII 欄を数えず、不正なトークンがあっても止まらない）を足し、HEX のときは読み込み時と `recount` でバイト数を使う。`bin2.dat`（307 バイト）で `Words: 307` を確認。
 2. **モードチップのメニューがウィンドウの右端を超える**: `menu::pick_width`（ラベルの最大幅 + 余白 30px）を足し、チップのメニューを開く位置を `ウィンドウ幅 - メニュー幅` までに寄せる。幅は見積もりなので、フォントが大きく違う環境では数 px ずれうる（未確認）。
 3. **検索バーの「Not found」の赤が固定色（235, 90, 90）**: テーマ別の `color_error()`（ライトは濃い赤）が使われていなかった。`color_error()` を使うように変更。ライトで確認。
 4. **未使用コードの警告 12 件 + テストの警告 1 件を解消**: 削除 = `todo` / `todod`（menu）、`Encoding::ALL`、`View::label`、`is_debug_enabled`、`FindCmd::Activate`（送る側が無かったので受ける側も削除）。テストだけが使うので `#[cfg(test)]` に = `list_zip`、`zoom::step`。ログ API として残し `#[allow(dead_code)]` = `log::debug`。テストの不要な `mut`（imgmeta）も外した。
@@ -840,7 +840,7 @@ View History / Restore From History、Magic Select・Copy Line・Paste Before/Af
 ### md Preview の表に罫線（簡易対応、2026-10-26）
 
 作者の依頼。将来は表計算のようなシート（csv など）も読めるようにしたいが、本質はテキストエディタなので、罫線は簡易的に入れる。
-- **やったこと**: `core/markdown.rs` で、pulldown-cmark が出す `<table>` を `<table border="1" cellspacing="0" cellpadding="4">` に置き換える（定数 `TABLE_OPEN`）。本文中の「<table>」という文字は `&lt;` に直されているので巻き込まない（テスト `tables_get_borders_but_the_word_table_in_text_does_not_change`）。ユニットテスト 178 件すべて成功。
+- **やったこと**: `neo/markdown.rs` で、pulldown-cmark が出す `<table>` を `<table border="1" cellspacing="0" cellpadding="4">` に置き換える（定数 `TABLE_OPEN`）。本文中の「<table>」という文字は `&lt;` に直されているので巻き込まない（テスト `tables_get_borders_but_the_word_table_in_text_does_not_change`）。ユニットテスト 178 件すべて成功。
 - **確認（Xvfb、ダーク・ライト）**: 罫線とセルの余白が出て、読める。`docs/screenshots/stage24_verify/22_*`, `23_*`。
 - **できていないこと**: 列の右寄せ（`|---:|`）は HelpView が `style` を解釈しないため反映されない。セルの背景色・列幅の指定・セルの結合・ヘッダー行の色分けもしない。
 - **将来のシート対応への手がかり（未着手）**: csv / tsv を開いたときの Preview として、同じ `<table border>` の HTML を作る道が考えられる。大きなシートには HelpView は向かない（全体を HTML にするため）ので、その段階で別の描画（自前の格子）を検討する。
@@ -850,7 +850,7 @@ View History / Restore From History、Magic Select・Copy Line・Paste Before/Af
 作者の依頼（「シート系の対応拡張を進めて」）。方針は前節のとおり、本質はテキストエディタなので簡易対応にとどめる。
 
 - **やったこと**
-  - `core/sheet.rs`（GUI なし）を新設。`parse`（引用符・`""`・引用符内の改行・CRLF / CR / LF・BOM・全体が空の行の読み飛ばし）と `to_html`（`<th>` / `<td>` + 罫線。空のセルは `&nbsp;` で罫線を保つ。HTML の記号は退避、セル内の改行は空白 1 つに）。
+  - `neo/sheet.rs`（GUI なし）を新設。`parse`（引用符・`""`・引用符内の改行・CRLF / CR / LF・BOM・全体が空の行の読み飛ばし）と `to_html`（`<th>` / `<td>` + 罫線。空のセルは `&nbsp;` で罫線を保つ。HTML の記号は退避、セル内の改行は空白 1 つに）。
   - `viewmode` に `Kind::Sheet`（`.csv` / `.tsv` / `.tab`）を追加。選べる表示は md と同じ Text・Preview・HEX。Text で開き、Preview は文字で開いているときだけ（HEX では選べない）。
   - `app.rs` は md の Preview と同じ道に `Kind::Sheet` の分岐を 1 つ足しただけ。表示は `HelpView`（既存の Preview と同じ部品）。
 - **上限**: 500 行（見出し込み）・30 列・1 セル 200 文字。超えると切って、末尾に「先頭の N 行だけを表示しています」「30 列より右は表示していません」と出す。`HelpView` は全体を HTML にするので、大きなシートには向かない。
@@ -864,7 +864,7 @@ View History / Restore From History、Magic Select・Copy Line・Paste Before/Af
 
 - **区切りの自動判定**（`sheet::delimiter_for`）: tsv / tab はタブ固定、csv 以外は `,`。`.csv` だけ、先頭 20 行を `,`（既定）・`;`・タブ・`|` で読み、「1 行目と同じ列数（2 列以上）の行が半数以上」の区切りのうち、点数（揃った行数 × 列数）が最も高いものを使う。同点は `,` が勝つので、`,` で表になっている csv の本文中の `;` には引きずられない。ヨーロッパ系・一部の Excel が出す `;` 区切りの csv がそのまま表になる。
 - **数の列の右寄せ**: 見出しを除く、空でないセルが 1 つ以上あり、その全てが数である列を、見出しごと `<td align="right">` / `<th align="right">` にする（1 つでも文字が混ざる列、数が 1 つも無い列は左のまま）。数 = 符号・末尾の `%`・小数点・`,` 区切りの千位（`1,234,567.89`）。`;` 区切りのときだけ小数点の `,`（`1,5`）も数。全角数字・指数表記・通貨記号は数として扱わない。
-- **変更箇所**: `core/sheet.rs`（`delimiter_for` / `detect` / `is_number` / `numeric_columns` を追加、`to_html` が列ごとに `align` を付ける）、`app.rs`（`render_preview` が `delimiter_of` の代わりに `delimiter_for` を呼ぶ 2 行）。ほかのファイル・`Cargo.toml` は変えていない。
+- **変更箇所**: `neo/sheet.rs`（`delimiter_for` / `detect` / `is_number` / `numeric_columns` を追加、`to_html` が列ごとに `align` を付ける）、`app.rs`（`render_preview` が `delimiter_of` の代わりに `delimiter_for` を呼ぶ 2 行）。ほかのファイル・`Cargo.toml` は変えていない。
 - **ユニットテスト（追加 4 件、未実行）**: 区切りの判定（`;` / タブ / `|` / `,` 優先 / 1 列だけ / 空 / tsv 固定）、数の判定、右寄せの付く・付かない列、`;` の小数点の `,`。
 - **未検証**: ① ビルドが通ること（ビルドしていない）。② **`HelpView` が `<td align="right">` を実際に右寄せにするか**。md の節で「列の右寄せは `style` を解釈しないので反映されない」としたのは `style` の話で、`align` 属性は FLTK の `Fl_Help_View` が表セルで読む想定だが、確かめていない。効かなければ、`numeric_columns` の判定は残して、出力側だけ（空白でそろえる等）を変える。③ ライト・ダーク両方での見た目。
 - **まだやらないこと**: 列幅の調整、並べ替え・計算・セルの編集、引用符の文字を `'` にする方言。
@@ -874,15 +874,15 @@ View History / Restore From History、Magic Select・Copy Line・Paste Before/Af
 
 作者の判断「展開処理を自前で書く（100〜150 行程度）」に従い、依存を増やさずに `.xlsx` / `.xlsm` / `.ods` を Preview で読めるようにした。**`CLAUDE.md` の指示どおり、ビルドもテストも GUI での確認もしていない（すべて未検証）。** コードは机上で読み合わせ、日付の計算だけ Python で突き合わせた。
 
-- **新規 `core/inflate.rs`（約 180 行。テスト込みで 250 行）**: 生の deflate の解凍。zlib の `puff.c` と同じ作り（無圧縮・固定ハフマン・動的ハフマン）。展開後の上限 `max_out` を超えたらエラー（zip bomb 対策）。壊れた入力ではパニックせず `Err`。見積もり（100〜150 行）より大きいのは、エラー文と「上限」「途中で切れている」の検査を入れたため。
-- **`core/archive.rs`**: `read_entry(bytes, name, max)` を追加。既存の目録の読み取り（`find_eocd` / `read_cd`）を使って 1 項目だけ取り出す。無圧縮（0）と deflate（8）のみ。暗号化・ZIP64・他の方式はエラー。
-- **新規 `core/book.rs`**
+- **新規 `neo/inflate.rs`（約 180 行。テスト込みで 250 行）**: 生の deflate の解凍。zlib の `puff.c` と同じ作り（無圧縮・固定ハフマン・動的ハフマン）。展開後の上限 `max_out` を超えたらエラー（zip bomb 対策）。壊れた入力ではパニックせず `Err`。見積もり（100〜150 行）より大きいのは、エラー文と「上限」「途中で切れている」の検査を入れたため。
+- **`neo/archive.rs`**: `read_entry(bytes, name, max)` を追加。既存の目録の読み取り（`find_eocd` / `read_cd`）を使って 1 項目だけ取り出す。無圧縮（0）と deflate（8）のみ。暗号化・ZIP64・他の方式はエラー。
+- **新規 `neo/book.rs`**
   - 最小の XML 走査器（`Xml`）: 開始・終了・文字、`<a/>`、実体参照（`&lt;` `&#x41;` など）、CDATA、コメント、属性値の中の `>`、名前空間の接頭辞の除去。依存なし。
   - xlsx: `xl/workbook.xml`（シート名・非表示・1904 年起点）→ `xl/_rels/workbook.xml.rels`（シートの場所。読めなければ `sheetN.xml`）→ `sharedStrings.xml`（リッチテキストの連結、ふりがな `rPh` は除く）→ 各シート（`r` 属性で位置を決めるので飛び飛びの行・列も合う。`t` = `s` / `inlineStr` / `str` / `b` / `e` / 数値）。数式は計算済みの値だけ。
   - **日付**: `styles.xml` の `cellXfs` と `numFmts` から、日付・時刻の書式のセルだけシリアル値を `YYYY-MM-DD` / `YYYY-MM-DD HH:MM:SS` / `HH:MM:SS` にする（組み込みの番号 14〜22・27〜36・45〜58 と、独自の書式 `yyyy/m/d` `h:mm` `ggge"年"` など）。範囲外・解釈できない値は元の数のまま。**1900 年 3 月 1 日より前（シリアル 60 以下）は Excel の 1900 年うるう年の誤りのため 1 日ずれる**（直していない）。
   - ods: `content.xml` の `table:table` / `table-row` / `table-cell`。表示用の文字（`text:p`、`text:s`、改行）を使い、無ければ `value` / `date-value` などで代える。`number-rows-repeated` / `number-columns-repeated`（末尾に 1048576 行つづく空など）は、後ろに中身が来たときだけ実際の行・セルにする（巨大な繰り返しでメモリを使わない）。
   - 上限: 行 500・列 30（`sheet::MAX_*` と同じ）、シート 50、zip 64 MiB、1 つの xml は展開後 128 MiB。超えた分は切って注記（xlsx / ods では「全体は Text で見られます」は出さない。Text では読めないため）。
-- **`core/sheet.rs`**: 表の HTML 化を `table_html`（行の並び → `<table>` と注記）に切り出し、csv と xlsx / ods で共用。csv の出力は変わらない（既存テストは同じ期待値）。
+- **`neo/sheet.rs`**: 表の HTML 化を `table_html`（行の並び → `<table>` と注記）に切り出し、csv と xlsx / ods で共用。csv の出力は変わらない（既存テストは同じ期待値）。
 - **配線**: `viewmode` に `Kind::Book`（Preview と HEX を選べる。pdf と同じ）。`app.rs` は pdf と同じ道: バイナリなので最初は HEX で読み込まれ、自動判定で開いたときは Preview で始める。Preview を出すときに別スレッドで `book::read`（`Msg::Book`）、できるまで「Loading...」。`Doc` に `book` / `book_busy`、再読込で捨てる。`render_preview` に 1 分岐。
 - **ユニットテスト（追加、未実行）**: `inflate` 5 件（無圧縮・固定・動的・上限・壊れた入力。ベクトルは Python の zlib で作成）、`book` 13 件前後（XML 走査・日付・書式の判定・列名・xlsx の値と日付と共有文字列と非表示・行列の上限・壊れたブック・deflate の項目・ods の繰り返し・HTML）、`viewmode` の更新。テスト用 zip は `make_zip`（無圧縮）で組み立てる。
 - **未検証**: ① ビルドが通ること。② テストが通ること（特に動的ハフマンの復号）。③ 実際の Excel / LibreOffice のファイル（共有文字列・スタイル・複数シート・日本語）での表示。④ 16 MiB を超える xlsx は、HEX で先頭だけ読む警告ダイアログが出る（pdf と同じ。Preview は別に全体を読む）。⑤ ライト・ダーク。
@@ -913,14 +913,14 @@ View History / Restore From History、Magic Select・Copy Line・Paste Before/Af
 
 作者の依頼（調査結果を記録したら、優先度が高くすぐ実装できるものを実装する）。優先度 1 の xlsx / ods は第26段階で済みなので、次の「UTF-16・EUC-JP」を実装した。**`CLAUDE.md` の指示どおり、ビルドもテストも GUI での確認もしていない（すべて未検証）。**
 
-- **`core/encoding.rs`**
+- **`neo/encoding.rs`**
   - `Encoding` に `EucJp` / `Utf16Le` / `Utf16Be` を追加（表示名は `EUC-JP` / `UTF-16LE` / `UTF-16BE`）。復号は `encoding_rs` の厳密な復号（不正な位置を返す）を `decode_rs` に切り出して共用。Windows-31J の処理は同じ関数に載せ替えただけ。
   - 書き出し: EUC-JP は `encode_rs`（旧 `encode_sjis` を一般化。表せない文字は `?` にして件数と位置を返す = 保存前の警告に載る）。**UTF-16 は `encoding_rs` が書き出せない（UTF-8 になる）ので `encode_utf16` で自前**。UTF-16 は全ての文字を表せるので警告は出ない。サロゲートペア（絵文字）も正しく書く。
   - **BOM の一般化**: `bom_bytes()` / `bom_len()` / `with_bom(enc, …)`（旧 `utf8_bom_len` / `with_bom` は置き換え）。UTF-8 の EF BB BF、UTF-16LE の FF FE、UTF-16BE の FE FF。`wants_bom()` は UTF-16 だけ true。
   - **自動判定の順**: UTF-8 BOM → UTF-16 BOM（**本文が厳密に UTF-16 として読めるときだけ**。FF FE 00 00 で始まる UTF-32 は対象外）→ BOM なし UTF-16 の推定 → バイナリ（HEX）→ UTF-8 → Windows-31J → **EUC-JP** → ISO-8859-1。
   - **BOM なし UTF-16 の推定**（`guess_utf16_without_bom`）: ASCII の多い UTF-16 は 2 バイトの片方が 0 になる。対の 3 割以上が同じ向きの「文字 + 0」で、逆向きが 1 つも無く、全体が厳密に復号でき、制御文字（改行・タブ以外）が出ないときだけ採る。**日本語だけの BOM なし UTF-16 は 0 が出ないので推定できない**（手動で選ぶ）。
   - **EUC-JP の自動判定は「次点」だけ**: Windows-31J として読めなかったときに EUC-JP として読めれば EUC-JP にする。EUC-JP と Windows-31J の両方で読めるバイト列は Windows-31J を選ぶ（区別が付かないため）。EUC-JP のファイルが Windows-31J として化けて開くことはあり得るので、その場合は文字コードのメニューから選ぶ。
-- **`core/document.rs`**: BOM の判定を文字コード別に（指定して開いたときも BOM を外し、保存時に付け直す）。エラー位置は BOM の長さ分を足す。
+- **`neo/document.rs`**: BOM の判定を文字コード別に（指定して開いたときも BOM を外し、保存時に付け直す）。エラー位置は BOM の長さ分を足す。
 - **`app.rs`**: 文字コードのメニューに EUC-JP / UTF-16LE / UTF-16BE を追加（並びは UTF-8 / Windows-31J / EUC-JP / UTF-16LE / UTF-16BE / ISO-8859-1 / US-ASCII）。タイトル・タブの表示は BOM 付きなら `UTF-16LE BOM` のように出す。**新しい文書で UTF-16 を選んだら BOM つきで保存する**（BOM が無いと再度開いたときに向きが分からないため）。
 - **ユニットテスト（追加 5 件 + `document` 1 件、未実行）**: UTF-16 の BOM つき判定と往復・サロゲート・奇数バイト・不正なサロゲート、BOM を信用しない場合（本文が読めない・UTF-32）、BOM なしの推定（LE / BE・バイナリ・短すぎる・奇数長・制御文字）、EUC-JP の往復と表せない文字、`document` での BOM の除去と復元・指定して開く。
 - **未検証 / 未対応**: ① ビルドが通ること、テストが通ること。② 実ファイル（Windows のメモ帳の UTF-16、PowerShell の `>` の出力、EUC-JP の古いファイル）での動作。③ 文字コードのメニューが長くなった見た目。④ UTF-32、ISO-2022-JP（JIS）、Big5 / GBK / EUC-KR、Windows-1252 などは対象外（`encoding_rs` にあるので、同じ形で足せる）。⑤ 自動判定で UTF-16 にならない BOM なし UTF-16 は、今までどおり HEX か文字化けで開く。
@@ -930,7 +930,7 @@ View History / Restore From History、Magic Select・Copy Line・Paste Before/Af
 
 作者の依頼（「次の優先度の項目を実行して」。次は 3）。**`CLAUDE.md` の指示どおり、ビルドもテストも GUI での確認もしていない（すべて未検証）。**
 
-- **新しい `core/doctext.rs`**: zip の展開は `archive::read_entry` + `inflate`、XML は `book` の走査器（`Xml` / `Ev` / `attr` / `entry_text` を `pub(crate)` にして共用）。依存の追加なし。結果は `Text { sections: Vec<Vec<Block>>, truncated }`。`Block` は `Heading(1〜6)` / `Para` / `Item(深さ)` / `Table`。
+- **新しい `neo/doctext.rs`**: zip の展開は `archive::read_entry` + `inflate`、XML は `book` の走査器（`Xml` / `Ev` / `attr` / `entry_text` を `pub(crate)` にして共用）。依存の追加なし。結果は `Text { sections: Vec<Vec<Block>>, truncated }`。`Block` は `Heading(1〜6)` / `Para` / `Item(深さ)` / `Table`。
 - **docx / pptx は 1 つの走査 `parse_ooxml`**: 接頭辞を除いたタグ名（`p` `t` `br` `tab` `tbl` `tr` `tc`）が同じなので共用した。
   - docx: 見出しは `word/styles.xml` のスタイル名（`heading N` / `Title`）から段階を決める（日本語版 Word は styleId が `1` のことがあるため、id ではなく名前を見る。styles が読めないときは id の `Heading2` で判定）。`numPr` があれば項目（`numId` が 0 なら番号なし）。`mc:Fallback`（`mc:Choice` の複製）とふりがな `rt` は読み飛ばす。`pPr` の中の `tab`（位置の定義）は文字にしない。
   - pptx: `presentation.xml` の `sldId` の並びと rels でスライドの順を決める（接頭辞を除くと `id` と `r:id` が両方 `id` になるので、rels に載っている方を関係の id とみなす）。読めないときは `slide1.xml` から番号順に試す。タイトルの図形（`ph type=title|ctrTitle`）は見出し、番号・日付・フッター（`sldNum|dt|ftr|hdr`）は出さない。
@@ -950,7 +950,7 @@ View History / Restore From History、Magic Select・Copy Line・Paste Before/Af
 作者の依頼（「優先度表の次は 4（html / htm の Preview）を進めて」）。**`CLAUDE.md` の指示どおり、ビルドもテストも GUI での確認もしていない（すべて未検証）。**
 
 - **方針**: 既定ブラウザに渡す案（未確認事項「プレビューの描画範囲」の後者）は取らず、md と同じく `HelpView` で描く。理由は、起動の軽さ・依存を増やさないこと・md と同じ操作（チップ → Preview / Text）にそろうこと。代わりに「CSS・JS は効かない」ことを前提に、見える範囲を絞って割り切る。依存の追加なし（`pulldown-cmark` は使わない）。
-- **新しい `core/htmlview.rs`**（GUI なし）: HTML の文字列を、`HelpView` が描けるタグだけの HTML に作り直す（`to_html`）。自前の小さな走査器で、タグを 1 つずつ読む。
+- **新しい `neo/htmlview.rs`**（GUI なし）: HTML の文字列を、`HelpView` が描けるタグだけの HTML に作り直す（`to_html`）。自前の小さな走査器で、タグを 1 つずつ読む。
   - **残すタグ**: `h1`〜`h6` / `p` / `ul`・`ol`・`li` / `dl`・`dt`・`dd` / `table`・`tr`・`td`・`th`（`colspan` / `rowspan` / `align` だけ通す）/ `pre` / `blockquote` / `center` / `b`・`strong` / `i`・`em`・`cite`・`dfn` / `u`・`ins` / `code`・`tt`・`samp` / `kbd` / `var` / `br` / `hr`。属性は上の 3 つ以外を全部捨てる（色・class・style・id も）。色は NeoNote の配色（`<body>` の `bgcolor` / `text` / `link`）に従うので、ダーク・ライトで読みやすさが崩れない。
   - **表**: 罫線つき（`border=1 cellspacing=0 cellpadding=4`。csv・docx の表と同じ見た目）。空のセルには `&nbsp;` を入れて罫線が描かれるようにする。
   - **`div` / `section` / `article` / `header` / `footer` / `nav` / `form` など**: タグは捨て、前後を `<br>` 1 つの改行にする（連続しても重ねない）。中の文字は残す。
@@ -963,7 +963,7 @@ View History / Restore From History、Magic Select・Copy Line・Paste Before/Af
   - **空白**: HTML のとおり連続する空白は 1 つに畳み、`pre` の中だけそのまま。**改行を含む空白の前後が日本語など幅の広い文字なら詰める**（ブラウザと同じ。epub の `doctext` と同じ規則）。
   - **上限**: 読む HTML は 4,000,000 バイト、出す HTML は 3,000,000 バイトまで。超えたら切って「全体は Text で見られます」の注記を出す。見える内容が何も無い（script・style だけなど）ときは、その旨の 1 行を出す。
 - **文字コード**: `<meta charset>` は見ない。NeoNote が開くときに決めた文字コード（自動判定または手動）で読んだ文字をそのまま使う。化けたら `Ctrl+E` で直す（Text でも Preview でも同じ文字を読むため、結果は揃う）。
-- **`core/viewmode.rs`**: `Kind::Html`（`html` / `htm` / `xhtml`）を追加。md・csv と同じく**文字として開く**ファイルなので、選べる表示は Text / Preview / HEX（バイナリで自動的に Preview に切り替わる xlsx・docx とは違い、開くのは Text のまま。Preview はチップから選ぶ）。
+- **`neo/viewmode.rs`**: `Kind::Html`（`html` / `htm` / `xhtml`）を追加。md・csv と同じく**文字として開く**ファイルなので、選べる表示は Text / Preview / HEX（バイナリで自動的に Preview に切り替わる xlsx・docx とは違い、開くのは Text のまま。Preview はチップから選ぶ）。
 - **`app.rs`**: `render_preview` に 1 分岐（`htmlview::to_html`。md と同じく `d.buf.text()` を読むので、編集中の文字がそのまま反映される。別スレッド・読み込み中の表示は不要）。`set_preview_for` で、HEX で開いているとき以外は Preview に入れる（md・csv と同じ）。
 - **ユニットテスト（追加 14 件、未実行）**: head・script・style の除去、コメント・doctype、文字参照と素の `<`、リンクの添え書き（`#`・`javascript:`・文字と同じリンク先）、閉じタグの補完（`li` / `p` / 未閉じの `b` `i` / 余分な閉じタグ）、表（罫線・colspan・空セル・省略された `td` `tr`・セルの外の文字）、`div` の改行、画像の alt、日本語の改行の詰め、`pre`、属性の読み方（引用符の有無・`>` を含む値）、閉じの無い script / head、配色のラッパーと空のページ、上限での切り方。`viewmode` のテストにも `Html` を追加。
 - **未検証**: ① ビルドが通ること（`Images` の借用、`close_until` の `&[&str]` の渡し方、`SKIP.contains(&name)` の寿命）。② テストが通ること。③ **`HelpView` が描ける範囲の確認**（`h1`〜`h6` の大きさ、`colspan` / `rowspan` / `align`、`<ul>` の入れ子、`<pre>` の折り返し、`&nbsp;` だけのセル）。④ 実際のページ（保存した Web ページ、Doxygen・rustdoc などの生成物、メール HTML、日本語サイト）での見た目。⑤ ライト・ダーク。⑥ 大きな html での描画の速さ（`HelpView` は大きなページが苦手なので、上限が適切かどうか）。⑦ 相対パスの画像（html のあるフォルダ基準）が出ること。
@@ -975,7 +975,7 @@ View History / Restore From History、Magic Select・Copy Line・Paste Before/Af
 作者の依頼（「次の候補に進めて」。次は 5）。**`CLAUDE.md` の指示どおり、ビルドもテストも GUI での確認もしていない（すべて未検証）。**
 
 - **方針**: zip と同じ階層ツリーの Preview（`Kind::Archive`）に載せる。**読み取り専用**で、中身の取り出し・書き換え・名前変更はしない（表の「中身の展開・書き換えはしない」のとおり）。依存の追加なし。
-- **新しい `core/tarlist.rs`**（GUI なし）
+- **新しい `neo/tarlist.rs`**（GUI なし）
   - **形式の決め方**: 拡張子だけで決める（`kind_of`）。`tar` → Tar、`gz` / `tgz`（`.tar.gz` の最後の拡張子も `gz`）→ Gz。**中身が tar かどうかは gz を展開してから**、先頭 512 バイトのヘッダーの検査和が合うかで決める。tar なら tar として、そうでなければ 1 ファイルとして出す。
   - **tar の読み方**（`list_tar`）: 512 バイトのヘッダーを順に読む。検査和（符号なし・符号ありのどちらでも可）が合わなければ、1 つ目なら「tar ではありません」、途中なら「壊れています」の Err。全部 0 のブロックで終わる。本文が途中で切れていれば Err（一部だけ出して黙って続けることはしない）。大きさは 8 進と GNU の 2 進表記の両方を読む。
   - **長い名前**: ustar の `prefix`（マジックが `ustar\0` のときだけ。GNU 形式の `ustar  ` では使わない）、GNU の `L`、PAX の `path`。PAX の `size`（大きなファイル）も読む。これらは直後の 1 項目だけに効く。`g`（グローバル PAX）と `K`（長いリンク名）は読み飛ばす。
@@ -983,8 +983,8 @@ View History / Restore From History、Magic Select・Copy Line・Paste Before/Af
   - **名前の文字**: UTF-8 として正しければ UTF-8、だめなら Windows-31J として読めれば Windows-31J、さらにだめなら Latin-1。zip と違い `\` は `/` に直さない（tar では名前の一部）。
   - **gzip の読み方**（`list_gz`）: ヘッダー（10 バイト + `FEXTRA` / `FNAME` / `FCOMMENT` / `FHCRC`）を読み、本体を自前の `inflate` で展開する。**1 つ目のメンバーだけ**。CRC は検査しない（大きさも照合しない）。1 ファイルのときの名前は、ヘッダーの名前（ディレクトリ部は外す）、無ければ拡張子を外したファイル名。大きさは展開後、圧縮後は gz のファイルの大きさ（このときだけ「packed」の列が出る）。
   - **上限**: 読むファイルは 256 MiB まで、gzip の展開後も 256 MiB まで（丸ごとメモリに載せるため。zip の 1 GiB より低くしたのは、展開した分も載るから）。項目は 50,000 件まで（zip・フォルダと同じ。超えたら Err）。
-- **`core/archive.rs`**: `is_archive_path`（フォルダ・zip・tar 系）と `can_rename`（フォルダ・zip だけ）を追加。`list_path` は tar 系なら `tarlist::list_file` に回す。
-- **`core/viewmode.rs`**: 一覧で開く対象の判定を `archive::is_archive_path` に変更（`kind_of` が tar 系を `Kind::Archive` にする。選べる表示は Preview だけ）。
+- **`neo/archive.rs`**: `is_archive_path`（フォルダ・zip・tar 系）と `can_rename`（フォルダ・zip だけ）を追加。`list_path` は tar 系なら `tarlist::list_file` に回す。
+- **`neo/viewmode.rs`**: 一覧で開く対象の判定を `archive::is_archive_path` に変更（`kind_of` が tar 系を `Kind::Archive` にする。選べる表示は Preview だけ）。
 - **`app.rs`**: 開くときの判定を `is_archive_path` に。**Rename (text) は tar 系で出さない**（`can_rename`。`open_archive_edit` にも防御を入れた）。階層ツリーの「packed」の列は、zip か、圧縮後の大きさを持つ項目があるときだけ出す。**一覧を読めなかった tar / gz（形式違い・壊れている・大きすぎる）は、zip と同じく、ふつうのファイルとして開き直す**（バイナリなので HEX）。
 - **ユニットテスト（追加 14 件、未実行）**: 拡張子、8 進・2 進の数、ファイルとフォルダ、`./` とルートの除外、ustar の prefix、GNU の長い名前（次の 1 項目だけに効く）、PAX の path・size、リンク・デバイスを出さないこと、壊れた・途中で切れた・空の tar、Shift_JIS の名前、tar.gz、1 ファイルの gz（名前・ディレクトリ部の除去・名前なし）、壊れた gzip、ディスク上のファイルからの一覧。テスト用の gzip は **無圧縮ブロックだけ**で組み立てる（圧縮器が無いため）。`viewmode` のテストにも tar 系を追加。
 - **未検証**: ① ビルドが通ること。② テストが通ること。③ **実際の圧縮された gzip（動的ハフマン）の展開**（テストは無圧縮ブロックだけ。第26段階の `inflate` の未検証と同じ問題）。④ 実際の tar（GNU tar・bsdtar・Python の tarfile・Windows の 7-Zip が作ったもの）での一覧。特に PAX（bsdtar・macOS の `._` ファイル）と GNU の長い名前。⑤ 大きな tar.gz（数百 MiB）で、展開と一覧が許せる速さか（別スレッドで読むので画面は止まらないはずだが、「Loading...」の表示は zip と同じで無い）。⑥ 日本語のファイル名（Windows の tar は Shift_JIS のことがある）。
@@ -1005,9 +1005,9 @@ View History / Restore From History、Magic Select・Copy Line・Paste Before/Af
 
 ## 旧 Java 版のリポジトリ資料
 
-- 旧リポジトリの zip は `local/archive/NeoNote_legacy_java.zip` に置いた（git に入れない。改版ごとのコピー・.class・同梱の JSON-java・Oracle のライセンス文を含むため）。
+- 旧リポジトリの zip は `admin/archive/NeoNote_legacy_java.zip` に置いた（git に入れない。改版ごとのコピー・.class・同梱の JSON-java・Oracle のライセンス文を含むため）。
 - 取り出したもの: `source/icon.png` → `assets/icon.png`、`source/README` → `assets/README.txt`（改行を LF に）。
-- 取り出さなかったもの: `source/font.ttf`（今の `assets/NeoFont.ttf` と中身が違う。どちらが新しいかは未確認）、`source/LICENSE`（JDK の Oracle NFTC で、NeoNote のライセンスではない）、`neo.java`（664 行。`reference/java/SwingNeoNote.java` の方が新しい）と改版のコピー、`admin/` の JsonFormatter・SilverNBT（別のツール）。
+- 取り出さなかったもの: `source/font.ttf`（今の `assets/NeoFont.ttf` と中身が違う。どちらが新しいかは未確認）、`source/LICENSE`（JDK の Oracle NFTC で、NeoNote のライセンスではない）、`neo.java`（664 行。`admin/java/SwingNeoNote.java` の方が新しい）と改版のコピー、`admin/` の JsonFormatter・SilverNBT（別のツール）。
 - 旧資料との突き合わせ（2026-10-27）で、引き継いでいないと分かったもの:
   - 機能: 全画面の切り替え（最初の版の `Toggle Full Screen`）、文字数・単語数のダイアログ（今はタイトルに文字数だけ）、`Copy File Name`、`Cut Line`、`Change Size`（文字の大きさ。ズームの `Ctrl+ホイール` はある）。
   - ツールバーのツールチップの英語版・HTML 版の文（memo.txt と旧版にある）。
@@ -1047,6 +1047,6 @@ View History / Restore From History、Magic Select・Copy Line・Paste Before/Af
 - `.dat`・`.dat_old`・`.nbt`・`.schematic`・`.schem`・`.litematic` は、NBT として読めれば SNBT（/data と同じ書き方）の文字で開く。保存すると開いたときと同じ包み方（gzip・zlib・なし）と根の名前で NBT に戻す。SNBT の書き間違いは保存せず、行・列を示してそこへカーソルを移す。NBT として読めなければ今まで通り（文字か HEX）。
 - `.mca`（`.mcc`・`.mcr`）はチャンクの一覧で開く（保存しない）。行で Enter かダブルクリックで、そのチャンクを SNBT のタブで開き、保存するとそのチャンクだけを書き換える（ほかのチャンクの中身はそのまま、ファイルは詰め直す。更新時刻はそのチャンクだけ今にする）。LZ4（種類 4）と別ファイル（.mcc 送り）のチャンクは開けない。
 - Preview（右上のチップ）は NBT Explorer のような木。`名前: 値` で並べ、ダブルクリック・Enter で値を書き換える（型は変えない）。右クリックで Edit Value・Add Child（Insert）・Rename（F2）・Delete（Delete）。編集は本文の SNBT を書き換える（元に戻すで 1 回で戻る。Text と同じ中身）。項目は 2 万個まで（超えた分は Text で編集）。
-- 圧縮は自前（`core/deflate.rs`: LZ77 + 固定ハフマン、gzip・zlib の包み、CRC32・Adler32）。依存は増やしていない。Minecraft の圧縮より少し大きくなる（level.dat 2,162 → 2,515 バイト）。
-- 部品: `core/nbt.rs`（バイナリ・修正 UTF-8・SNBT）、`core/nbtedit.rs`（木の編集）、`core/region.rs`（.mca）、`ui/nbttree.rs`（木）。
+- 圧縮は自前（`neo/deflate.rs`: LZ77 + 固定ハフマン、gzip・zlib の包み、CRC32・Adler32）。依存は増やしていない。Minecraft の圧縮より少し大きくなる（level.dat 2,162 → 2,515 バイト）。
+- 部品: `neo/nbt.rs`（バイナリ・修正 UTF-8・SNBT）、`neo/nbtedit.rs`（木の編集）、`neo/region.rs`（.mca）、`ui/nbttree.rs`（木）。
 - 検証済み（Windows 11、手元のワールドの写し）: level.dat を開いて保存すると解凍後の NBT が元と 1 バイトも違わない。木で Difficulty を 2 → 3 にして保存すると、その 1 バイトだけが変わる。r.0.-1.mca の 564 チャンクの一覧、1 チャンクを開いて保存すると全チャンクの中身が元と同じで、時刻はそのチャンクだけ変わる。SNBT の書き間違いで保存を止める知らせ。ユニットテスト 278 件。未検証: 書き換えたワールドを Minecraft で読み込むこと、Add Child・Rename・Delete の画面での操作、.nbt（構造物）・.schem・.litematic の実物、とても大きなチャンク（木の 2 万個の上限）。

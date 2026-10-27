@@ -4,8 +4,8 @@
 // 読むもの: 見出し・段落・リスト（記号だけ）・表（罫線つき）。docx / odt は本文を 1 区切り、pptx / odp はスライドごと、epub は章ごとに区切る。
 // 読まないもの: 書式（太字・色・フォント）、画像・図形・グラフ、ヘッダー・フッター、脚注・コメント、変更履歴の削除分、
 //   ふりがな（本文だけを出す）、スライドのノート、リストの番号、旧形式（doc / ppt）、パスワード付き。
-use crate::core::book::{attr, entry_text, Ev, Xml};
-use crate::core::sheet;
+use crate::neo::book::{attr, entry_text, Ev, Xml};
+use crate::neo::sheet;
 use std::collections::HashMap;
 use std::path::Path;
 
