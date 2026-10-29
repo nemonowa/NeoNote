@@ -52,9 +52,9 @@ pub fn list_dir(root: &Path) -> Result<Vec<Entry>, String> {
             let name = ent
                 .file_name()
                 .into_string()
-                .map_err(|_| format!("UTF-8 でない名前があります: {}", ent.path().display()))?;
+                .map_err(|_| if crate::lang::is_en() { format!("Name is not UTF-8: {}", ent.path().display()) } else { format!("UTF-8 でない名前があります: {}", ent.path().display()) })?;
             if out.len() >= MAX_ENTRIES {
-                return Err(format!("項目が多すぎます（{MAX_ENTRIES} 件まで）"));
+                return Err(if crate::lang::is_en() { format!("Too many entries (up to {MAX_ENTRIES})") } else { format!("項目が多すぎます（{MAX_ENTRIES} 件まで）") });
             }
             if ft.is_dir() {
                 let rel = format!("{prefix}{name}/");
@@ -102,7 +102,7 @@ struct Cd {
 /// `b` はファイルの全体、または末尾の一部。`base` は b の先頭がファイルの何バイト目か。
 fn find_eocd(b: &[u8], base: usize) -> Result<Eocd, String> {
     if b.len() < 22 {
-        return Err("zip ではありません".into());
+        return Err(crate::lang::tr("zip ではありません", "Not a zip file").into());
     }
     let lowest = b.len().saturating_sub(22 + 65_535);
     let mut i = b.len() - 22;
@@ -112,10 +112,10 @@ fn find_eocd(b: &[u8], base: usize) -> Result<Eocd, String> {
             let (n_here, n_all) = (u16le(b, i + 8), u16le(b, i + 10));
             let (cd_size, cd_off) = (u32le(b, i + 12), u32le(b, i + 16));
             if n_all == 0xFFFF || cd_size == 0xFFFF_FFFF || cd_off == 0xFFFF_FFFF || (i >= 20 && u32le(b, i - 20) == 0x0706_4b50) {
-                return Err("ZIP64 の zip には対応していません".into());
+                return Err(crate::lang::tr("ZIP64 の zip には対応していません", "ZIP64 zip files are not supported").into());
             }
             if disk != 0 || cd_disk != 0 || n_here != n_all {
-                return Err("分割された zip には対応していません".into());
+                return Err(crate::lang::tr("分割された zip には対応していません", "Split zip files are not supported").into());
             }
             return Ok(Eocd {
                 pos: base + i,
@@ -126,7 +126,7 @@ fn find_eocd(b: &[u8], base: usize) -> Result<Eocd, String> {
             });
         }
         if i == lowest {
-            return Err("zip ではありません（目録の終端が見つかりません）".into());
+            return Err(crate::lang::tr("zip ではありません（目録の終端が見つかりません）", "Not a zip file (end of central directory not found)").into());
         }
         i -= 1;
     }
@@ -136,7 +136,7 @@ fn find_eocd(b: &[u8], base: usize) -> Result<Eocd, String> {
 fn cd_slice<'a>(b: &'a [u8], e: &Eocd) -> Result<&'a [u8], String> {
     match e.cd_off.checked_add(e.cd_size) {
         Some(end) if end <= e.pos && end <= b.len() => Ok(&b[e.cd_off..end]),
-        _ => Err("zip が壊れています（目録の位置が不正です）".into()),
+        _ => Err(crate::lang::tr("zip が壊れています（目録の位置が不正です）", "Broken zip (invalid central directory position)").into()),
     }
 }
 
@@ -146,23 +146,23 @@ fn read_cd(b: &[u8], e: &Eocd) -> Result<Vec<Cd>, String> {
     let mut p = 0;
     for _ in 0..e.count {
         if p + 46 > b.len() || u32le(b, p) != 0x0201_4b50 {
-            return Err("zip が壊れています（目録が途中で切れています）".into());
+            return Err(crate::lang::tr("zip が壊れています（目録が途中で切れています）", "Broken zip (central directory is truncated)").into());
         }
         let flags = u16le(b, p + 8);
         if flags & 0x2000 != 0 {
-            return Err("目録が暗号化された zip には対応していません".into());
+            return Err(crate::lang::tr("目録が暗号化された zip には対応していません", "Zip files with an encrypted central directory are not supported").into());
         }
         let (csize, usize_, lho) = (u32le(b, p + 20), u32le(b, p + 24), u32le(b, p + 42));
         if csize == 0xFFFF_FFFF || usize_ == 0xFFFF_FFFF || lho == 0xFFFF_FFFF {
-            return Err("ZIP64 の zip には対応していません".into());
+            return Err(crate::lang::tr("ZIP64 の zip には対応していません", "ZIP64 zip files are not supported").into());
         }
         let (n, x, c) = (u16le(b, p + 28) as usize, u16le(b, p + 30) as usize, u16le(b, p + 32) as usize);
         if p + 46 + n + x + c > b.len() {
-            return Err("zip が壊れています（目録の項目がはみ出しています）".into());
+            return Err(crate::lang::tr("zip が壊れています（目録の項目がはみ出しています）", "Broken zip (central directory entry overruns)").into());
         }
         v.push(Cd { start: p, name_len: n, extra_len: x, comment_len: c, flags, lh_off: lho as usize, csize: csize as u64, usize_: usize_ as u64 });
         if v.len() > MAX_ENTRIES {
-            return Err(format!("項目が多すぎます（{MAX_ENTRIES} 件まで）"));
+            return Err(if crate::lang::is_en() { format!("Too many entries (up to {MAX_ENTRIES})") } else { format!("項目が多すぎます（{MAX_ENTRIES} 件まで）") });
         }
         p += 46 + n + x + c;
     }
@@ -214,7 +214,7 @@ pub fn list_zip_file(path: &Path) -> Result<Vec<Entry>, String> {
     f.read_exact(&mut tail).map_err(ctx)?;
     let e = find_eocd(&tail, (len - tail_len) as usize)?;
     if e.cd_off as u64 + e.cd_size as u64 > e.pos as u64 || e.cd_size > 64 << 20 {
-        return Err("zip が壊れています（目録の位置が不正です）".into());
+        return Err(crate::lang::tr("zip が壊れています（目録の位置が不正です）", "Broken zip (invalid central directory position)").into());
     }
     let mut cd = vec![0u8; e.cd_size];
     f.seek(SeekFrom::Start(e.cd_off as u64)).map_err(ctx)?;
@@ -243,26 +243,26 @@ pub fn read_entry(bytes: &[u8], name: &str, max: usize) -> Result<Vec<u8>, Strin
     let c = cds
         .iter()
         .find(|c| decode_name(&cd[c.start + 46..c.start + 46 + c.name_len], c.flags) == name)
-        .ok_or_else(|| format!("zip の中に {name} がありません"))?;
+        .ok_or_else(|| if crate::lang::is_en() { format!("No {name} in the zip") } else { format!("zip の中に {name} がありません") })?;
     if c.flags & 1 != 0 {
-        return Err("暗号化された zip には対応していません".into());
+        return Err(crate::lang::tr("暗号化された zip には対応していません", "Encrypted zip files are not supported").into());
     }
     if c.usize_ > max as u64 {
-        return Err(format!("{name} が大きすぎます"));
+        return Err(if crate::lang::is_en() { format!("{name} is too large") } else { format!("{name} が大きすぎます") });
     }
     let method = u16le(cd, c.start + 10);
     let lh = c.lh_off;
     if lh.saturating_add(30) > bytes.len() || u32le(bytes, lh) != 0x0403_4b50 {
-        return Err("zip が壊れています（項目の先頭が不正です）".into());
+        return Err(crate::lang::tr("zip が壊れています（項目の先頭が不正です）", "Broken zip (invalid entry start)").into());
     }
     let start = lh + 30 + u16le(bytes, lh + 26) as usize + u16le(bytes, lh + 28) as usize;
     let end = start.checked_add(c.csize as usize).filter(|&end| end <= bytes.len());
-    let Some(end) = end else { return Err("zip が壊れています（項目がはみ出しています）".into()) };
+    let Some(end) = end else { return Err(crate::lang::tr("zip が壊れています（項目がはみ出しています）", "Broken zip (entry overruns)").into()) };
     let data = &bytes[start..end];
     match method {
         0 => Ok(data.to_vec()),
         8 => crate::neo::inflate::inflate(data, max),
-        m => Err(format!("対応していない圧縮方式です（{m}）")),
+        m => Err(if crate::lang::is_en() { format!("Unsupported compression method ({m})") } else { format!("対応していない圧縮方式です（{m}）") }),
     }
 }
 
@@ -285,11 +285,15 @@ pub fn parse_edit_text(text: &str, old: &[Entry]) -> Result<Vec<String>, String>
         lines.pop();
     }
     if lines.len() != old.len() {
-        return Err(format!(
+        return Err(if crate::lang::is_en() { format!(
+            "The line count differs from the original (original {} lines, now {} lines). Lines cannot be added or removed; change only the names.",
+            old.len(),
+            lines.len()
+        ) } else { format!(
             "行数が元と違います（元 {} 行 / 今 {} 行）。行の追加・削除はできません。名前だけを直してください。",
             old.len(),
             lines.len()
-        ));
+        ) });
     }
     let new: Vec<String> = lines
         .iter()
@@ -326,11 +330,11 @@ fn follow_dir_renames(old: &[Entry], new: Vec<String>) -> Vec<String> {
 
 fn bad_component(c: &str) -> Option<&'static str> {
     if c.is_empty() {
-        Some("空の階層があります")
+        Some(crate::lang::tr("空の階層があります", "Empty path component"))
     } else if c == "." || c == ".." {
-        Some("`.` と `..` は使えません")
+        Some(crate::lang::tr("`.` と `..` は使えません", "`.` and `..` cannot be used"))
     } else if c.chars().any(|ch| ch == '\\' || ch == ':' || ch.is_control()) {
-        Some("`\\` `:` や制御文字は使えません")
+        Some(crate::lang::tr("`\\` `:` や制御文字は使えません", "`\\` `:` and control characters cannot be used"))
     } else {
         None
     }
@@ -339,35 +343,38 @@ fn bad_component(c: &str) -> Option<&'static str> {
 /// 変更された行だけを厳しく調べる（元からある変わった名前は、触らなければそのまま通す）。
 pub fn check_new_paths(old: &[Entry], new: &[String]) -> Result<(), String> {
     if old.len() != new.len() {
-        return Err(format!("行数が元と違います（元 {} 行 / 今 {} 行）", old.len(), new.len()));
+        return Err(if crate::lang::is_en() { format!("The line count differs from the original (original {} lines, now {} lines)", old.len(), new.len()) } else { format!("行数が元と違います（元 {} 行 / 今 {} 行）", old.len(), new.len()) });
     }
     let mut seen: HashSet<&str> = HashSet::new();
     for (i, (o, n)) in old.iter().zip(new).enumerate() {
         let line = i + 1;
         if o.path != *n {
             if n.is_empty() || n == "/" {
-                return Err(format!("{line} 行目: 名前が空です"));
+                return Err(if crate::lang::is_en() { format!("Line {line}: name is empty") } else { format!("{line} 行目: 名前が空です") });
             }
             if n.starts_with('/') {
-                return Err(format!("{line} 行目: `/` で始まる絶対パスは使えません"));
+                return Err(if crate::lang::is_en() { format!("Line {line}: absolute paths starting with `/` cannot be used") } else { format!("{line} 行目: `/` で始まる絶対パスは使えません") });
             }
             if o.is_dir != n.ends_with('/') {
-                return Err(format!(
+                return Err(if crate::lang::is_en() { format!(
+                    "Line {line}: {}",
+                    if o.is_dir { crate::lang::tr("フォルダの名前は `/` で終わらせてください", "Folder names must end with `/`") } else { crate::lang::tr("ファイルの名前を `/` で終わらせることはできません", "File names cannot end with `/`") }
+                ) } else { format!(
                     "{line} 行目: {}",
-                    if o.is_dir { "フォルダの名前は `/` で終わらせてください" } else { "ファイルの名前を `/` で終わらせることはできません" }
-                ));
+                    if o.is_dir { crate::lang::tr("フォルダの名前は `/` で終わらせてください", "Folder names must end with `/`") } else { crate::lang::tr("ファイルの名前を `/` で終わらせることはできません", "File names cannot end with `/`") }
+                ) });
             }
             for c in n.trim_end_matches('/').split('/') {
                 if let Some(why) = bad_component(c) {
-                    return Err(format!("{line} 行目: {why}（{n}）"));
+                    return Err(if crate::lang::is_en() { format!("Line {line}: {why} ({n})") } else { format!("{line} 行目: {why}（{n}）") });
                 }
             }
             if n.len() > 1024 {
-                return Err(format!("{line} 行目: パスが長すぎます"));
+                return Err(if crate::lang::is_en() { format!("Line {line}: path is too long") } else { format!("{line} 行目: パスが長すぎます") });
             }
         }
         if !seen.insert(n.as_str()) {
-            return Err(format!("{line} 行目: 同じ名前が 2 つあります（{n}）"));
+            return Err(if crate::lang::is_en() { format!("Line {line}: two items have the same name ({n})") } else { format!("{line} 行目: 同じ名前が 2 つあります（{n}）") });
         }
     }
     // ファイルの名前が、別の項目の親フォルダの名前と衝突していないか
@@ -375,7 +382,7 @@ pub fn check_new_paths(old: &[Entry], new: &[String]) -> Result<(), String> {
     for n in new {
         for (idx, ch) in n.trim_end_matches('/').char_indices() {
             if ch == '/' && files.contains(&n[..idx]) {
-                return Err(format!("ファイル「{}」はフォルダとしても使われています（{n}）", &n[..idx]));
+                return Err(if crate::lang::is_en() { format!("File '{}' is also used as a folder ({n})", &n[..idx]) } else { format!("ファイル「{}」はフォルダとしても使われています（{n}）", &n[..idx]) });
             }
         }
     }
@@ -415,12 +422,12 @@ pub fn rename_zip(bytes: &[u8], new: &[String]) -> Result<Vec<u8>, String> {
     order.sort_by_key(|&i| cds[i].lh_off);
     for w in order.windows(2) {
         if cds[w[0]].lh_off == cds[w[1]].lh_off {
-            return Err("対応していない zip です（同じ位置を指す項目があります）".into());
+            return Err(crate::lang::tr("対応していない zip です（同じ位置を指す項目があります）", "Unsupported zip (entries point to the same location)").into());
         }
     }
     if let Some(&f) = order.first() {
         if cds[f].lh_off != 0 {
-            return Err("対応していない zip です（先頭に余分なデータがあります）".into());
+            return Err(crate::lang::tr("対応していない zip です（先頭に余分なデータがあります）", "Unsupported zip (extra data at the start)").into());
         }
     }
     let mut span_end = vec![0usize; cds.len()];
@@ -434,12 +441,12 @@ pub fn rename_zip(bytes: &[u8], new: &[String]) -> Result<Vec<u8>, String> {
         let c = &cds[i];
         let (s, end) = (c.lh_off, span_end[i]);
         if s + 30 > end || u32le(bytes, s) != 0x0403_4b50 {
-            return Err("zip が壊れています（ローカルヘッダーが見つかりません）".into());
+            return Err(crate::lang::tr("zip が壊れています（ローカルヘッダーが見つかりません）", "Broken zip (local header not found)").into());
         }
         let (ln, lx) = (u16le(bytes, s + 26) as usize, u16le(bytes, s + 28) as usize);
         let body = s + 30 + ln + lx;
         if body > end {
-            return Err("zip が壊れています（ローカルヘッダーがはみ出しています）".into());
+            return Err(crate::lang::tr("zip が壊れています（ローカルヘッダーがはみ出しています）", "Broken zip (local header overruns)").into());
         }
         new_off[i] = out.len();
         if old[i].path == new[i] {
@@ -478,7 +485,7 @@ pub fn rename_zip(bytes: &[u8], new: &[String]) -> Result<Vec<u8>, String> {
             (new[i].as_bytes().to_vec(), strip_unicode_path(extra_raw))
         };
         if name.len() > 0xFFFF || extra.len() > 0xFFFF {
-            return Err(format!("{} 件目: 名前が長すぎます", i + 1));
+            return Err(if crate::lang::is_en() { format!("Item {}: name is too long", i + 1) } else { format!("{} 件目: 名前が長すぎます", i + 1) });
         }
         hdr[28..30].copy_from_slice(&(name.len() as u16).to_le_bytes());
         hdr[30..32].copy_from_slice(&(extra.len() as u16).to_le_bytes());
@@ -490,7 +497,7 @@ pub fn rename_zip(bytes: &[u8], new: &[String]) -> Result<Vec<u8>, String> {
     }
     let cd_size = out.len() - cd_start;
     if out.len() as u64 >= 0xFFFF_FFFF {
-        return Err("結果が 4 GiB を超えるため書けません（ZIP64 未対応）".into());
+        return Err(crate::lang::tr("結果が 4 GiB を超えるため書けません（ZIP64 未対応）", "Cannot write: the result exceeds 4 GiB (ZIP64 is not supported)").into());
     }
     out.extend_from_slice(&0x0605_4b50u32.to_le_bytes());
     out.extend_from_slice(&[0, 0, 0, 0]);
@@ -533,7 +540,7 @@ pub fn rename_dir(root: &Path, old: &[Entry], new: &[String]) -> Result<usize, S
     // 事前の検査: 行き先が既にある・リンクの中へ入る、は全部ここで止める
     for &(_, _, to) in &moving {
         if exists(&rel_path(root, to)) && !old_files.contains(to) {
-            return Err(format!("すでに存在します: {to}"));
+            return Err(if crate::lang::is_en() { format!("Already exists: {to}") } else { format!("すでに存在します: {to}") });
         }
     }
     let mut targets: Vec<&str> = moving.iter().map(|m| m.2).collect();
@@ -548,7 +555,7 @@ pub fn rename_dir(root: &Path, old: &[Entry], new: &[String]) -> Result<usize, S
             if let Ok(m) = std::fs::symlink_metadata(rel_path(root, &acc)) {
                 let last = acc.len() == t.trim_end_matches('/').len();
                 if m.file_type().is_symlink() || (!last && !m.is_dir()) || (last && t.ends_with('/') && !m.is_dir()) {
-                    return Err(format!("行き先に使えない場所です: {t}"));
+                    return Err(if crate::lang::is_en() { format!("Destination cannot be used: {t}") } else { format!("行き先に使えない場所です: {t}") });
                 }
             }
         }
@@ -587,7 +594,7 @@ pub fn rename_dir(root: &Path, old: &[Entry], new: &[String]) -> Result<usize, S
             let _ = std::fs::rename(now, orig);
         }
         let _ = std::fs::remove_dir(&tmp);
-        return Err(format!("名前を変更できませんでした（動かしたものは元に戻しました）\n{msg}"));
+        return Err(if crate::lang::is_en() { format!("Could not rename (moved items were put back)\n{msg}") } else { format!("名前を変更できませんでした（動かしたものは元に戻しました）\n{msg}") });
     }
     let _ = std::fs::remove_dir(&tmp);
 
@@ -699,7 +706,7 @@ pub fn to_html(title: &str, entries: &[Entry], packed: bool, bg: &str, fg: &str,
     }
     body.push_str("</font></p>");
     if entries.is_empty() {
-        body.push_str("<p>（空です）</p>");
+        body.push_str(crate::lang::tr("<p>（空です）</p>", "<p>(Empty)</p>"));
     } else {
         body.push_str("<table border=\"0\" cellspacing=\"0\" cellpadding=\"1\">");
         fn walk(n: &Node, depth: usize, packed: bool, dim: &str, out: &mut String) {

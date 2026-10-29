@@ -36,7 +36,7 @@ pub fn list(b: &[u8]) -> Result<Vec<Entry>, String> {
         return Ok(Vec::new()); // Minecraft が作ったばかりの空のファイル
     }
     if b.len() < 2 * SECTOR {
-        return Err("リージョンファイルとして短すぎます".into());
+        return Err(crate::lang::tr("リージョンファイルとして短すぎます", "Too short to be a region file").into());
     }
     let mut out = Vec::new();
     for i in 0..CHUNKS {
@@ -54,23 +54,23 @@ pub fn list(b: &[u8]) -> Result<Vec<Entry>, String> {
 pub fn read_chunk(b: &[u8], e: &Entry) -> Result<(Compression, Vec<u8>), String> {
     let start = e.sector * SECTOR;
     if start + 5 > b.len() {
-        return Err(format!("チャンク {},{} の場所がファイルの外です", e.x, e.z));
+        return Err(if crate::lang::is_en() { format!("Chunk {},{} is outside the file", e.x, e.z) } else { format!("チャンク {},{} の場所がファイルの外です", e.x, e.z) });
     }
     let len = be_u32(b, start) as usize;
     let kind = b[start + 4];
     if kind & 0x80 != 0 {
-        return Err(format!("チャンク {},{} は別のファイル（.mcc）に入っています（対応していません）", e.x, e.z));
+        return Err(if crate::lang::is_en() { format!("Chunk {},{} is in a separate file (.mcc) (not supported)", e.x, e.z) } else { format!("チャンク {},{} は別のファイル（.mcc）に入っています（対応していません）", e.x, e.z) });
     }
     if len < 1 || start + 4 + len > b.len() {
-        return Err(format!("チャンク {},{} の長さが壊れています", e.x, e.z));
+        return Err(if crate::lang::is_en() { format!("Chunk {},{} has a broken length", e.x, e.z) } else { format!("チャンク {},{} の長さが壊れています", e.x, e.z) });
     }
     let body = &b[start + 5..start + 4 + len];
     let raw = match kind {
         1 => super::deflate::gunzip(body, nbt::MAX_RAW)?,
         2 => super::deflate::unzlib(body, nbt::MAX_RAW)?,
         3 => body.to_vec(),
-        4 => return Err(format!("チャンク {},{} は LZ4 で圧縮されています（対応していません）", e.x, e.z)),
-        k => return Err(format!("チャンク {},{} の圧縮の種類 {k} を知りません", e.x, e.z)),
+        4 => return Err(if crate::lang::is_en() { format!("Chunk {},{} is LZ4-compressed (not supported)", e.x, e.z) } else { format!("チャンク {},{} は LZ4 で圧縮されています（対応していません）", e.x, e.z) }),
+        k => return Err(if crate::lang::is_en() { format!("Unknown compression type {k} for chunk {},{}", e.x, e.z) } else { format!("チャンク {},{} の圧縮の種類 {k} を知りません", e.x, e.z) }),
     };
     let c = match kind {
         1 => Compression::Gzip,
@@ -104,7 +104,7 @@ pub fn replace_chunk(b: &[u8], index: usize, c: Compression, raw: &[u8], now: u3
     rec.push(kind);
     rec.extend(packed);
     if rec.len().div_ceil(SECTOR) > 255 {
-        return Err("チャンクが大きすぎます（1 MiB を超えます）".into());
+        return Err(crate::lang::tr("チャンクが大きすぎます（1 MiB を超えます）", "Chunk is too large (over 1 MiB)").into());
     }
     chunks.push((index, rec, now));
     chunks.sort_by_key(|c| c.0);
@@ -124,7 +124,7 @@ pub fn replace_chunk(b: &[u8], index: usize, c: Compression, raw: &[u8], now: u3
 /// チャンクの一覧の文字（1 行に 1 チャンク。先頭の 2 つの数が x z）。`time` は更新時刻（秒）を日時にする。
 pub fn listing(path: &std::path::Path, entries: &[Entry], time: impl Fn(u32) -> String) -> String {
     let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-    let mut out = format!("# {name}: チャンク {} 個（行で Enter かダブルクリックで、そのチャンクを開く）\n#   x   z   大きさ  更新日時\n", entries.len());
+    let mut out = if crate::lang::is_en() { format!("# {name}: {} chunks (press Enter or double-click a row to open that chunk)\n#   x   z   size  updated\n", entries.len()) } else { format!("# {name}: チャンク {} 個（行で Enter かダブルクリックで、そのチャンクを開く）\n#   x   z   大きさ  更新日時\n", entries.len()) };
     for e in entries {
         let t = if e.timestamp == 0 { String::new() } else { time(e.timestamp) };
         out.push_str(&format!("{:>5}{:>4} {:>6} KB  {t}\n", e.x, e.z, e.count * SECTOR / 1024));

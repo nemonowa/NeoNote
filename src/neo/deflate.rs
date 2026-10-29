@@ -180,17 +180,17 @@ pub fn zlib(data: &[u8]) -> Vec<u8> {
 /// gzip を解凍する（ヘッダの付加情報は読み飛ばす）。
 pub fn gunzip(b: &[u8], max_out: usize) -> Result<Vec<u8>, String> {
     if b.len() < 18 || b[0] != 0x1f || b[1] != 0x8b || b[2] != 8 {
-        return Err("gzip ではありません".into());
+        return Err(crate::lang::tr("gzip ではありません", "Not a gzip file").into());
     }
     let flags = b[3];
     let mut p = 10;
     if flags & 4 != 0 {
-        let n = *b.get(p).ok_or("gzip が途中で切れています")? as usize | (*b.get(p + 1).ok_or("gzip が途中で切れています")? as usize) << 8;
+        let n = *b.get(p).ok_or(crate::lang::tr("gzip が途中で切れています", "gzip data is truncated"))? as usize | (*b.get(p + 1).ok_or(crate::lang::tr("gzip が途中で切れています", "gzip data is truncated"))? as usize) << 8;
         p += 2 + n;
     }
     for bit in [8u8, 16] {
         if flags & bit != 0 {
-            while *b.get(p).ok_or("gzip が途中で切れています")? != 0 {
+            while *b.get(p).ok_or(crate::lang::tr("gzip が途中で切れています", "gzip data is truncated"))? != 0 {
                 p += 1;
             }
             p += 1;
@@ -199,16 +199,16 @@ pub fn gunzip(b: &[u8], max_out: usize) -> Result<Vec<u8>, String> {
     if flags & 2 != 0 {
         p += 2;
     }
-    inflate::inflate(b.get(p..).ok_or("gzip が途中で切れています")?, max_out)
+    inflate::inflate(b.get(p..).ok_or(crate::lang::tr("gzip が途中で切れています", "gzip data is truncated"))?, max_out)
 }
 
 /// zlib を解凍する。
 pub fn unzlib(b: &[u8], max_out: usize) -> Result<Vec<u8>, String> {
     if b.len() < 6 || b[0] & 0x0f != 8 || (u16::from(b[0]) << 8 | u16::from(b[1])) % 31 != 0 {
-        return Err("zlib ではありません".into());
+        return Err(crate::lang::tr("zlib ではありません", "Not a zlib file").into());
     }
     if b[1] & 0x20 != 0 {
-        return Err("zlib の辞書付きの形式には対応していません".into());
+        return Err(crate::lang::tr("zlib の辞書付きの形式には対応していません", "zlib streams with a preset dictionary are not supported").into());
     }
     inflate::inflate(&b[2..], max_out)
 }

@@ -133,6 +133,8 @@ pub fn show(x: i32, y: i32, content: Content) {
     }
     win.end();
     win.show();
+    // 本体が最前面に固定されていても後ろに隠れないように
+    crate::platform::set_topmost(win.raw_handle() as *mut std::ffi::c_void, true);
     WIN.with(|w| *w.borrow_mut() = Some(win));
 }
 

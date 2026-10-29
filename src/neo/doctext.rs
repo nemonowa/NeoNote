@@ -72,7 +72,7 @@ pub struct Text {
 /// zip 全体のバイト列から、文字だけを読む。
 pub fn read(bytes: &[u8], fmt: Format) -> Result<Text, String> {
     if bytes.len() > MAX_BYTES {
-        return Err(format!("ファイルが大きすぎます（上限 {} MiB）", MAX_BYTES / 1024 / 1024));
+        return Err(if crate::lang::is_en() { format!("File is too large (limit {} MiB)", MAX_BYTES / 1024 / 1024) } else { format!("ファイルが大きすぎます（上限 {} MiB）", MAX_BYTES / 1024 / 1024) });
     }
     match fmt {
         Format::Docx => read_docx(bytes),
@@ -414,7 +414,7 @@ fn parse_ooxml(xml: &str, styles: &HashMap<String, u8>) -> Vec<Block> {
 }
 
 fn read_docx(bytes: &[u8]) -> Result<Text, String> {
-    let xml = entry_text(bytes, "word/document.xml").map_err(|e| format!("docx として読めません: {e}"))?;
+    let xml = entry_text(bytes, "word/document.xml").map_err(|e| if crate::lang::is_en() { format!("Cannot read as docx: {e}") } else { format!("docx として読めません: {e}") })?;
     let styles = docx_styles(bytes);
     let mut sections = vec![parse_ooxml(&xml, &styles)];
     let truncated = cap(&mut sections);
@@ -422,7 +422,7 @@ fn read_docx(bytes: &[u8]) -> Result<Text, String> {
 }
 
 fn read_pptx(bytes: &[u8]) -> Result<Text, String> {
-    let pres = entry_text(bytes, "ppt/presentation.xml").map_err(|e| format!("pptx として読めません: {e}"))?;
+    let pres = entry_text(bytes, "ppt/presentation.xml").map_err(|e| if crate::lang::is_en() { format!("Cannot read as pptx: {e}") } else { format!("pptx として読めません: {e}") })?;
     // `<p:sldId id="256" r:id="rId2"/>`: 接頭辞を除くと属性が両方 `id` になるので、rels に載っている方を関係の id とみなす
     let mut ids: Vec<Vec<String>> = Vec::new();
     for ev in Xml::new(&pres) {
@@ -458,7 +458,7 @@ fn read_pptx(bytes: &[u8]) -> Result<Text, String> {
         }
     }
     if sections.is_empty() {
-        return Err("pptx にスライドが見つかりません".into());
+        return Err(crate::lang::tr("pptx にスライドが見つかりません", "No slides found in pptx").into());
     }
     truncated |= cap(&mut sections);
     Ok(Text { sections, truncated })
@@ -545,7 +545,7 @@ fn parse_odf(xml: &str) -> Vec<Vec<Block>> {
 }
 
 fn read_odf(bytes: &[u8], fmt: Format) -> Result<Text, String> {
-    let xml = entry_text(bytes, "content.xml").map_err(|e| format!("{} として読めません: {e}", fmt.label()))?;
+    let xml = entry_text(bytes, "content.xml").map_err(|e| if crate::lang::is_en() { format!("Cannot read as {}: {e}", fmt.label()) } else { format!("{} として読めません: {e}", fmt.label()) })?;
     let mut sections = parse_odf(&xml);
     let mut truncated = false;
     if sections.len() > MAX_SECTIONS {
@@ -752,14 +752,14 @@ fn parse_xhtml(xml: &str) -> Vec<Block> {
 }
 
 fn read_epub(bytes: &[u8]) -> Result<Text, String> {
-    let container = entry_text(bytes, "META-INF/container.xml").map_err(|e| format!("epub として読めません: {e}"))?;
+    let container = entry_text(bytes, "META-INF/container.xml").map_err(|e| if crate::lang::is_en() { format!("Cannot read as epub: {e}") } else { format!("epub として読めません: {e}") })?;
     let opf_path = Xml::new(&container)
         .find_map(|ev| match ev {
             Ev::Start(n, a) if n == "rootfile" => attr(&a, "full-path").map(String::from),
             _ => None,
         })
-        .ok_or_else(|| "epub として読めません: 本文の一覧（OPF）が見つかりません".to_string())?;
-    let opf = entry_text(bytes, &opf_path).map_err(|e| format!("epub として読めません: {e}"))?;
+        .ok_or_else(|| crate::lang::tr("epub として読めません: 本文の一覧（OPF）が見つかりません", "Cannot read as epub: content list (OPF) not found").to_string())?;
+    let opf = entry_text(bytes, &opf_path).map_err(|e| if crate::lang::is_en() { format!("Cannot read as epub: {e}") } else { format!("epub として読めません: {e}") })?;
     let base = opf_path.rsplit_once('/').map(|(d, _)| d).unwrap_or("");
     let mut manifest: HashMap<String, String> = HashMap::new();
     let mut spine: Vec<String> = Vec::new();
@@ -798,7 +798,7 @@ fn read_epub(bytes: &[u8]) -> Result<Text, String> {
         sections.push(blocks);
     }
     if sections.is_empty() {
-        return Err("epub に読める章がありません".into());
+        return Err(crate::lang::tr("epub に読める章がありません", "No readable chapter in epub").into());
     }
     truncated |= cap(&mut sections);
     Ok(Text { sections, truncated })
@@ -825,7 +825,7 @@ pub fn to_html(t: &Text, bg: &str, fg: &str, sub: &str) -> String {
     let mut body = String::new();
     let total = t.sections.len();
     if t.sections.iter().all(|s| s.is_empty()) {
-        body.push_str("<p>文字を取り出せませんでした（画像だけの文書、または対応していない内容です）。</p>");
+        body.push_str(crate::lang::tr("<p>文字を取り出せませんでした（画像だけの文書、または対応していない内容です）。</p>", "<p>Could not extract text (the document is images only, or its content is not supported).</p>"));
     }
     for (i, s) in t.sections.iter().enumerate() {
         if total > 1 {
@@ -849,7 +849,7 @@ pub fn to_html(t: &Text, bg: &str, fg: &str, sub: &str) -> String {
                     for _ in 0..*l {
                         body.push_str("&nbsp;&nbsp;&nbsp;&nbsp;");
                     }
-                    body.push_str("・");
+                    body.push_str(crate::lang::tr("・", "- "));
                     esc_text(s, &mut body);
                     body.push_str("</p>");
                 }
@@ -861,7 +861,7 @@ pub fn to_html(t: &Text, bg: &str, fg: &str, sub: &str) -> String {
         }
     }
     if t.truncated {
-        body.push_str(&format!("<p><font color=\"{sub}\">長いため、途中までを表示しています。</font></p>"));
+        body.push_str(&if crate::lang::is_en() { format!("<p><font color=\"{sub}\">Showing only part of it because it is long.</font></p>") } else { format!("<p><font color=\"{sub}\">長いため、途中までを表示しています。</font></p>") });
     }
     format!("<html><body bgcolor=\"{bg}\" text=\"{fg}\">{body}</body></html>")
 }
@@ -881,7 +881,7 @@ pub fn to_plain(t: &Text) -> String {
                 Block::Heading(_, s) | Block::Para(s) => out.push_str(s),
                 Block::Item(l, s) => {
                     out.push_str(&"  ".repeat(*l));
-                    out.push('・');
+                    out.push_str(crate::lang::tr("・", "- "));
                     out.push_str(s);
                 }
                 Block::Table(rows) => {

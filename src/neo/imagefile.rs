@@ -84,7 +84,7 @@ pub fn img_tag(path: &Path, size: Option<(i32, i32)>, max_w: i32) -> String {
 pub fn page_html(path: &Path, size: Option<(i32, i32)>, max_w: i32, bg: &str, fg: &str) -> String {
     let body = match size {
         Some(_) => format!("<p>{}</p>", img_tag(path, size, max_w)),
-        None => "<p>画像を読めませんでした（壊れている、または対応していない形式です）。</p>".to_string(),
+        None => crate::lang::tr("<p>画像を読めませんでした（壊れている、または対応していない形式です）。</p>", "<p>Could not read the image (it is broken, or the format is not supported).</p>").to_string(),
     };
     format!("<html><body bgcolor=\"{bg}\" text=\"{fg}\">{body}</body></html>")
 }

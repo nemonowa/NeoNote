@@ -74,7 +74,7 @@ fn spawn_detached(mut cmd: Command) -> io::Result<()> {
 /// http(s) 以外・大きすぎるもの（32 MiB 超）・20 秒を超えるものは失敗にする。シェルを通さない。
 pub fn download(url: &str, dest: &Path) -> io::Result<()> {
     if !is_http_url(url) {
-        return Err(io::Error::new(io::ErrorKind::InvalidInput, "http(s) の URL ではありません"));
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, crate::lang::tr("http(s) の URL ではありません", "Not an http(s) URL")));
     }
     let mut cmd = Command::new("curl");
     cmd.args(["-fsSL", "--max-time", "20", "--max-filesize", "33554432", "--proto", "=http,https", "-o"])
@@ -90,7 +90,7 @@ pub fn download(url: &str, dest: &Path) -> io::Result<()> {
     }
     let out = cmd.output().map_err(|e| {
         if e.kind() == io::ErrorKind::NotFound {
-            io::Error::new(io::ErrorKind::NotFound, "curl が見つかりません（画像の URL を開くには curl が必要です）")
+            io::Error::new(io::ErrorKind::NotFound, crate::lang::tr("curl が見つかりません（画像の URL を開くには curl が必要です）", "curl not found (curl is needed to open image URLs)"))
         } else {
             e
         }
@@ -100,14 +100,14 @@ pub fn download(url: &str, dest: &Path) -> io::Result<()> {
     } else {
         let _ = std::fs::remove_file(dest);
         let msg = String::from_utf8_lossy(&out.stderr).trim().to_string();
-        Err(io::Error::other(if msg.is_empty() { "ダウンロードに失敗しました".to_string() } else { msg }))
+        Err(io::Error::other(if msg.is_empty() { crate::lang::tr("ダウンロードに失敗しました", "Download failed").to_string() } else { msg }))
     }
 }
 
 /// 既定のブラウザで URL を開く。シェルを通さないので `&` などを含んでも安全。
 pub fn open_url(url: &str) -> io::Result<()> {
     if !is_http_url(url) {
-        return Err(io::Error::new(io::ErrorKind::InvalidInput, format!("http(s) の URL ではありません: {url}")));
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, if crate::lang::is_en() { format!("Not an http(s) URL: {url}") } else { format!("http(s) の URL ではありません: {url}") }));
     }
     #[cfg(target_os = "windows")]
     let cmd = {
@@ -184,12 +184,12 @@ fn make_shortcut_for(exe: &Path) -> io::Result<PathBuf> {
 
 #[cfg(target_os = "macos")]
 fn make_shortcut_for(_exe: &Path) -> io::Result<PathBuf> {
-    Err(io::Error::new(io::ErrorKind::Unsupported, "macOS ではまだ対応していません"))
+    Err(io::Error::new(io::ErrorKind::Unsupported, crate::lang::tr("macOS ではまだ対応していません", "Not yet supported on macOS")))
 }
 
 #[cfg(all(unix, not(target_os = "macos")))]
 fn make_shortcut_for(exe: &Path) -> io::Result<PathBuf> {
-    let home = std::env::var_os("HOME").map(PathBuf::from).ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "HOME が未設定です"))?;
+    let home = std::env::var_os("HOME").map(PathBuf::from).ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, crate::lang::tr("HOME が未設定です", "HOME is not set")))?;
     let desktop = home.join("Desktop");
     let dir = if desktop.is_dir() { desktop } else { home };
     write_desktop_entry(&dir, exe)

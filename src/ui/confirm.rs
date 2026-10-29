@@ -150,6 +150,8 @@ fn run(message: &str, buttons: &[(i32, &str)]) -> i32 {
     }
     win.make_modal(true);
     win.show();
+    // 本体が最前面に固定されていても後ろに隠れないように
+    crate::platform::set_topmost(win.raw_handle() as *mut std::ffi::c_void, true);
     while win.shown() {
         app::wait();
     }

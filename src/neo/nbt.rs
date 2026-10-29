@@ -121,7 +121,7 @@ struct Reader<'a> {
 
 impl Reader<'_> {
     fn take(&mut self, n: usize) -> Result<&[u8], String> {
-        let end = self.p.checked_add(n).filter(|&e| e <= self.b.len()).ok_or_else(|| format!("NBT が途中で切れています（{} バイト目）", self.p))?;
+        let end = self.p.checked_add(n).filter(|&e| e <= self.b.len()).ok_or_else(|| if crate::lang::is_en() { format!("NBT is truncated (at byte {})", self.p) } else { format!("NBT が途中で切れています（{} バイト目）", self.p) })?;
         let s = &self.b[self.p..end];
         self.p = end;
         Ok(s)
@@ -140,7 +140,7 @@ impl Reader<'_> {
     }
     fn len(&mut self) -> Result<usize, String> {
         let n = self.i32()?;
-        usize::try_from(n).map_err(|_| format!("長さが負です（{} バイト目）", self.p - 4))
+        usize::try_from(n).map_err(|_| if crate::lang::is_en() { format!("Negative length (at byte {})", self.p - 4) } else { format!("長さが負です（{} バイト目）", self.p - 4) })
     }
     fn string(&mut self) -> Result<String, String> {
         let n = self.i16()? as u16 as usize;
@@ -148,7 +148,7 @@ impl Reader<'_> {
     }
     fn payload(&mut self, id: u8, depth: usize) -> Result<Tag, String> {
         if depth > MAX_DEPTH {
-            return Err("入れ子が深すぎます".into());
+            return Err(crate::lang::tr("入れ子が深すぎます", "Nesting is too deep").into());
         }
         Ok(match id {
             1 => Tag::Byte(self.u8()? as i8),
@@ -166,7 +166,7 @@ impl Reader<'_> {
                 let elem = self.u8()?;
                 let n = self.len()?;
                 if elem == 0 && n > 0 {
-                    return Err("End のリストに要素があります".into());
+                    return Err(crate::lang::tr("End のリストに要素があります", "The End list has elements").into());
                 }
                 let mut v = Vec::with_capacity(n.min(1 << 16));
                 for _ in 0..n {
@@ -188,13 +188,13 @@ impl Reader<'_> {
             }
             11 => {
                 let n = self.len()?;
-                Tag::IntArray(self.take(n.checked_mul(4).ok_or("長さが大きすぎます")?)?.chunks(4).map(|c| i32::from_be_bytes(c.try_into().unwrap_or_default())).collect())
+                Tag::IntArray(self.take(n.checked_mul(4).ok_or(crate::lang::tr("長さが大きすぎます", "Length is too large"))?)?.chunks(4).map(|c| i32::from_be_bytes(c.try_into().unwrap_or_default())).collect())
             }
             12 => {
                 let n = self.len()?;
-                Tag::LongArray(self.take(n.checked_mul(8).ok_or("長さが大きすぎます")?)?.chunks(8).map(|c| i64::from_be_bytes(c.try_into().unwrap_or_default())).collect())
+                Tag::LongArray(self.take(n.checked_mul(8).ok_or(crate::lang::tr("長さが大きすぎます", "Length is too large"))?)?.chunks(8).map(|c| i64::from_be_bytes(c.try_into().unwrap_or_default())).collect())
             }
-            _ => return Err(format!("知らないタグの種類です: {id}（{} バイト目）", self.p - 1)),
+            _ => return Err(if crate::lang::is_en() { format!("Unknown tag type: {id} (at byte {})", self.p - 1) } else { format!("知らないタグの種類です: {id}（{} バイト目）", self.p - 1) }),
         })
     }
 }
@@ -204,7 +204,7 @@ pub fn read(raw: &[u8]) -> Result<(String, Tag), String> {
     let mut r = Reader { b: raw, p: 0 };
     let id = r.u8()?;
     if id != 10 {
-        return Err(format!("NBT ではありません（先頭のタグが複合タグではなく {id}）"));
+        return Err(if crate::lang::is_en() { format!("Not NBT (the first tag is {id}, not a compound tag)") } else { format!("NBT ではありません（先頭のタグが複合タグではなく {id}）") });
     }
     let name = r.string()?;
     let tag = r.payload(10, 0)?;
@@ -476,7 +476,11 @@ pub struct SnbtError {
 
 impl std::fmt::Display for SnbtError {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "{} 行 {} 列: {}", self.line, self.col, self.message)
+        if crate::lang::is_en() {
+            write!(f, "Line {} column {}: {}", self.line, self.col, self.message)
+        } else {
+            write!(f, "{} 行 {} 列: {}", self.line, self.col, self.message)
+        }
     }
 }
 
@@ -507,7 +511,7 @@ impl Parser<'_> {
             self.p += 1;
             Ok(())
         } else {
-            Err(self.err(format!("「{}」がありません", c as char)))
+            Err(self.err(if crate::lang::is_en() { format!("Missing '{}'", c as char) } else { format!("「{}」がありません", c as char) }))
         }
     }
     fn quoted(&mut self) -> Result<String, SnbtError> {
@@ -516,11 +520,11 @@ impl Parser<'_> {
         let mut out = String::new();
         loop {
             let rest = &self.text[self.p..];
-            let Some(c) = rest.chars().next() else { return Err(self.err("引用符が閉じていません")) };
+            let Some(c) = rest.chars().next() else { return Err(self.err(crate::lang::tr("引用符が閉じていません", "Unclosed quote"))) };
             self.p += c.len_utf8();
             match c {
                 '\\' => {
-                    let Some(e) = self.text[self.p..].chars().next() else { return Err(self.err("引用符が閉じていません")) };
+                    let Some(e) = self.text[self.p..].chars().next() else { return Err(self.err(crate::lang::tr("引用符が閉じていません", "Unclosed quote"))) };
                     self.p += e.len_utf8();
                     out.push(match e {
                         'n' => '\n',
@@ -546,16 +550,16 @@ impl Parser<'_> {
             Some(b'"' | b'\'') => self.quoted(),
             _ => {
                 let n = self.bare();
-                if n.is_empty() { Err(self.err("名前がありません")) } else { Ok(n) }
+                if n.is_empty() { Err(self.err(crate::lang::tr("名前がありません", "Missing name"))) } else { Ok(n) }
             }
         }
     }
     fn value(&mut self, depth: usize) -> Result<Tag, SnbtError> {
         if depth > MAX_DEPTH {
-            return Err(self.err("入れ子が深すぎます"));
+            return Err(self.err(crate::lang::tr("入れ子が深すぎます", "Nesting is too deep")));
         }
         match self.peek() {
-            None => Err(self.err("値がありません")),
+            None => Err(self.err(crate::lang::tr("値がありません", "Missing value"))),
             Some(b'{') => {
                 self.p += 1;
                 let mut v: Vec<(String, Tag)> = Vec::new();
@@ -568,7 +572,7 @@ impl Parser<'_> {
                     let k = self.name()?;
                     if v.iter().any(|(x, _)| *x == k) {
                         self.p = at;
-                        return Err(self.err(format!("名前「{k}」が 2 回あります")));
+                        return Err(self.err(if crate::lang::is_en() { format!("Name '{k}' appears twice") } else { format!("名前「{k}」が 2 回あります") }));
                     }
                     self.expect(b':')?;
                     let x = self.value(depth + 1)?;
@@ -585,7 +589,7 @@ impl Parser<'_> {
                             self.p += 1;
                             return Ok(Tag::Compound(v));
                         }
-                        _ => return Err(self.err("「,」か「}」がありません")),
+                        _ => return Err(self.err(crate::lang::tr("「,」か「}」がありません", "Missing ',' or '}'"))),
                     }
                 }
             }
@@ -609,7 +613,7 @@ impl Parser<'_> {
                     if let Some(first) = v.first() {
                         if first.id() != x.id() {
                             self.p = at;
-                            return Err(self.err("リストの要素の型がそろっていません"));
+                            return Err(self.err(crate::lang::tr("リストの要素の型がそろっていません", "List element types do not match")));
                         }
                     }
                     v.push(x);
@@ -625,7 +629,7 @@ impl Parser<'_> {
                             self.p += 1;
                             break;
                         }
-                        _ => return Err(self.err("「,」か「]」がありません")),
+                        _ => return Err(self.err(crate::lang::tr("「,」か「]」がありません", "Missing ',' or ']'"))),
                     }
                 }
                 let id = v[0].id();
@@ -636,7 +640,7 @@ impl Parser<'_> {
                 let at = self.p;
                 let w = self.bare();
                 if w.is_empty() {
-                    return Err(self.err("値として読めない文字です"));
+                    return Err(self.err(crate::lang::tr("値として読めない文字です", "Character cannot be read as a value")));
                 }
                 Ok(number(&w).unwrap_or_else(|| {
                     let _ = at;
@@ -651,12 +655,12 @@ impl Parser<'_> {
             loop {
                 self.ws();
                 let w = self.bare();
-                let t = number(&w).ok_or_else(|| self.err(format!("配列の要素が数ではありません: {w}")))?;
+                let t = number(&w).ok_or_else(|| self.err(if crate::lang::is_en() { format!("Array element is not a number: {w}") } else { format!("配列の要素が数ではありません: {w}") }))?;
                 nums.push(t);
                 match self.peek() {
                     Some(b',') => self.p += 1,
                     Some(b']') => break,
-                    _ => return Err(self.err("「,」か「]」がありません")),
+                    _ => return Err(self.err(crate::lang::tr("「,」か「]」がありません", "Missing ',' or ']'"))),
                 }
             }
         }
@@ -670,7 +674,7 @@ impl Parser<'_> {
         };
         let mut vals = Vec::with_capacity(nums.len());
         for t in &nums {
-            vals.push(as_i64(t).ok_or_else(|| self.err("配列の要素は整数にしてください"))?);
+            vals.push(as_i64(t).ok_or_else(|| self.err(crate::lang::tr("配列の要素は整数にしてください", "Array elements must be integers")))?);
         }
         Ok(match kind {
             b'B' => Tag::ByteArray(vals.iter().map(|&v| v as i8).collect()),
@@ -714,11 +718,11 @@ fn number(w: &str) -> Option<Tag> {
 pub fn from_snbt(text: &str) -> Result<Tag, SnbtError> {
     let mut p = Parser { s: text.as_bytes(), p: 0, text };
     if p.peek() != Some(b'{') {
-        return Err(p.err("全体を { } で囲んでください（根は複合タグ）"));
+        return Err(p.err(crate::lang::tr("全体を { } で囲んでください（根は複合タグ）", "Wrap the whole thing in { } (the root is a compound tag)")));
     }
     let t = p.value(0)?;
     if p.peek().is_some() {
-        return Err(p.err("最後の } の後ろに余分な文字があります"));
+        return Err(p.err(crate::lang::tr("最後の } の後ろに余分な文字があります", "Extra characters after the final }")));
     }
     Ok(t)
 }

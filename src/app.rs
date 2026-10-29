@@ -56,6 +56,8 @@ const HISTORY_STEP_LIMIT: usize = 100_000;
 /// 検索バーの入力欄の文字の大きさ（本文の拡大縮小には合わせない）。
 const FIND_TEXT_SIZE: i32 = 14;
 /// 行番号欄が隠れているとき、マウスが左端と見なされる幅。
+/// 端の欄を出すまでに留まる回数（0.1 秒ごと。ツールチップと同じくらい待つ）。
+const EDGE_DWELL: u32 = 5;
 const GUTTER_EDGE: i32 = 10;
 /// 行番号欄を広げられる最大の幅。
 const GUTTER_EXTRA_MAX: i32 = 120;
@@ -93,12 +95,13 @@ fn title_path(path: &Path, exe_dir: Option<&Path>) -> String {
 pub fn window_title(path: Option<&Path>, pos: Option<(usize, usize)>, chars: usize, encoding: &str, eol: &str, dirty: bool) -> String {
     let exe = std::env::current_exe().ok();
     let exe_dir = exe.as_deref().and_then(Path::parent);
-    let file = path.map(|p| title_path(p, exe_dir)).unwrap_or_else(|| "Unsaved File".into());
+    let file = path.map(|p| title_path(p, exe_dir)).unwrap_or_else(|| crate::lang::tr("未保存のファイル", "Unsaved File").into());
     let mark = if dirty { "*" } else { "" };
     let at = pos.map(|(l, c)| format!(" | Ln {l}, Col {c}")).unwrap_or_default();
     let eol = if eol.is_empty() { String::new() } else { format!(" | EOL: {eol}") };
+    let (path_l, chars_l, enc_l) = if crate::lang::is_en() { ("Path", "Chars", "Encoding") } else { ("パス", "文字数", "文字コード") };
     format!(
-        "{mark}[{}] {TITLE} - by nemo | Path: {file}{at} | Chars: {chars} | Encoding: {encoding}{eol}",
+        "{mark}[{}] {TITLE} - by nemo | {path_l}: {file}{at} | {chars_l}: {chars} | {enc_l}: {encoding}{eol}",
         dev::version()
     )
 }
@@ -222,6 +225,8 @@ struct Doc {
     preview: Cell<bool>,
     /// 拡張子で決まらない文字の文書を、この形式で Preview する（表示のメニューで選ぶ。タブを閉じるまで覚える）。
     preview_as: Cell<Option<viewmode::Kind>>,
+    /// 形式を自動で決める（拡張子、無ければ中身から）。表示のメニューで形式を選ぶと外れる。
+    format_auto: Cell<bool>,
     /// 前回の未保存の変更（読み込みが終わったら本文に戻す）。
     pending_restore: RefCell<Option<String>>,
     /// pdf の Preview 用に取り出した文字（ページごと）。None は未取得か取得中。
@@ -316,6 +321,8 @@ struct Ui {
     hscroll_key: Cell<(u64, i32, i32, i32, i32, bool, i32)>,
     /// マウスが編集領域の左端（行番号欄の上）にある。
     mouse_left: Cell<bool>,
+    /// マウスが端に入ってからの回数（poll_mouse の 0.1 秒ごと）。EDGE_DWELL に届いたら欄を出す。
+    edge_dwell: Cell<(u32, u32)>,
     /// 編集領域・プレビューと右端の欄を横に並べる行。
     body: Flex,
     /// 右端の情報・縮小表示の欄。
@@ -391,7 +398,7 @@ fn file_meta_rows(p: &Path) -> Vec<(String, String)> {
     let mut rows = Vec::new();
     if imagefile::is_image_path(p) {
         if let Some((w, h)) = image_size(p) {
-            rows.push(("Image".into(), format!("{w} x {h} px")));
+            rows.push((crate::lang::tr("画像", "Image").into(), format!("{w} x {h} px")));
         }
     } else if audiometa::supports(p) && std::fs::metadata(p).is_ok_and(|m| m.len() <= AUDIO_INFO_MAX) {
         if let Ok(info) = std::fs::read(p).map_err(|e| e.to_string()).and_then(|b| audiometa::info(&b)) {
@@ -411,7 +418,7 @@ fn fetch_image(url: &str) -> std::io::Result<PathBuf> {
     let n = std::fs::File::open(&part).and_then(|mut f| f.read(&mut head)).unwrap_or(0);
     let Some(ext) = imagefile::sniff(&head[..n]) else {
         let _ = std::fs::remove_file(&part);
-        return Err(Error::new(ErrorKind::InvalidData, "画像ではありませんでした（png / jpg / gif / bmp のみ）"));
+        return Err(Error::new(ErrorKind::InvalidData, crate::lang::tr("画像ではありませんでした（png / jpg / gif / bmp のみ）", "Not an image (png / jpg / gif / bmp only)")));
     };
     let dest = part.with_extension(ext);
     std::fs::rename(&part, &dest)?;
@@ -446,7 +453,7 @@ fn write_audio_patch(path: &Path, old: &[u8], p: &audiometa::Patch) -> std::io::
 fn apply_archive_rename(text: &str, root: &Path, old: &[archive::Entry]) -> Result<(usize, Vec<archive::Entry>), String> {
     let now = archive::list_path(root)?;
     if now.iter().map(|e| &e.path).ne(old.iter().map(|e| &e.path)) {
-        return Err("開いたあとに、中身が変わっています。いちど開き直してから編集してください。".into());
+        return Err(crate::lang::tr("開いたあとに、中身が変わっています。いちど開き直してから編集してください。", "The contents changed after opening. Reopen the file before editing.").into());
     }
     let new = archive::parse_edit_text(text, old)?;
     let n = archive::changes(old, &new).len();
@@ -456,7 +463,7 @@ fn apply_archive_rename(text: &str, root: &Path, old: &[archive::Entry]) -> Resu
         } else {
             let len = std::fs::metadata(root).map_err(|e| format!("{}\n{e}", root.display()))?.len();
             if len > archive::MAX_ZIP {
-                return Err("大きすぎる zip です（1 GiB まで）".into());
+                return Err(crate::lang::tr("大きすぎる zip です（1 GiB まで）", "Zip is too large (up to 1 GiB)").into());
             }
             let bytes = std::fs::read(root).map_err(|e| format!("{}\n{e}", root.display()))?;
             let out = archive::rename_zip(&bytes, &new)?;
@@ -487,7 +494,7 @@ fn encoding_label(st: &State) -> String {
         return "Region".to_string();
     }
     if st.hex {
-        if st.hex_truncated { "HEX (read-only, truncated)".to_string() } else { "HEX".to_string() }
+        if st.hex_truncated { crate::lang::tr("HEX（読み取り専用・一部のみ）", "HEX (read-only, truncated)").to_string() } else { "HEX".to_string() }
     } else if st.bom && !st.encoding.bom_bytes().is_empty() {
         format!("{} BOM", st.encoding.label())
     } else {
@@ -517,6 +524,10 @@ impl Ui {
         let k = viewmode::kind_of(d.st.borrow().path.as_deref());
         match (k, d.preview_as.get()) {
             (viewmode::Kind::Other | viewmode::Kind::Markdown | viewmode::Kind::Html | viewmode::Kind::Sheet, Some(f)) => f,
+            (viewmode::Kind::Other, None) if d.format_auto.get() && !d.st.borrow().hex => {
+                let buf = &d.buf;
+                viewmode::sniff(&buf.text_range(0, buf.length().min(viewmode::SNIFF_BYTES)).unwrap_or_default())
+            }
             _ => k,
         }
     }
@@ -539,6 +550,7 @@ impl Ui {
             cursor: Cell::new(0),
             preview: Cell::new(false),
             preview_as: Cell::new(None),
+            format_auto: Cell::new(true),
             pending_restore: RefCell::new(None),
             pdf_text: RefCell::new(None),
             pdf_error: RefCell::new(None),
@@ -775,37 +787,36 @@ impl Ui {
         let pos = self.cursor_pos();
         let st = d.st.borrow();
         let title = if st.loading {
-            format!("Loading... {}", st.loading_path.as_deref().map(|p| log::file_name(&p.to_string_lossy()).to_string()).unwrap_or_default())
+            format!("{} {}", crate::lang::tr("読み込み中...", "Loading..."), st.loading_path.as_deref().map(|p| log::file_name(&p.to_string_lossy()).to_string()).unwrap_or_default())
         } else {
             window_title(st.path.clone().or(st.meta_of.as_deref().map(meta_label)).or(st.arch_of.as_deref().map(arch_label)).or(st.chunk_of.as_ref().map(chunk_label)).as_deref(), pos, st.chars, &encoding_label(&st), if st.hex { "" } else { st.eol.label() }, st.dirty)
         };
         let chip_label = if st.loading { "…".to_string() } else if st.hex { "-".to_string() } else { encoding_label(&st) };
-        let view_label = if st.loading { "…" } else if d.preview.get() { "Preview" } else if st.hex { "HEX" } else { "Text" };
+        let view_now = if st.loading { "…" } else if d.preview.get() { "Preview" } else if st.hex { "HEX" } else { "Text" };
         let chip_tip = if st.loading {
             String::new()
         } else {
             let at = pos.map(|(l, c)| format!("Ln {l}, Col {c}")).unwrap_or_else(|| "Ln -, Col -".into());
             let eol = if st.hex { "-" } else { st.eol.label() };
-            let file = st.path.as_deref().map(|p| p.display().to_string()).unwrap_or_else(|| "Unsaved File".into());
+            let file = st.path.as_deref().map(|p| p.display().to_string()).unwrap_or_else(|| crate::lang::tr("未保存のファイル", crate::lang::tr("未保存のファイル", "Unsaved File")).into());
             format!(
-                "{file}\nEncoding: {}\nEOL: {eol}\n{at}\nChars: {}\nクリックで 文字コード・改行コードを切り替え",
+                "{file}\n{}: {}\nEOL: {eol}\n{at}\n{}: {}\n{}",
+                crate::lang::tr("文字コード", "Encoding"),
                 encoding_label(&st),
-                st.chars
+                crate::lang::tr("文字数", "Chars"),
+                st.chars,
+                crate::lang::tr("クリックで 文字コード・改行コードを切り替え", "Click to change encoding and line ending")
             )
         };
         drop(st);
+        let fmt = if d.format_auto.get() && d.preview_as.get().is_none() { format!("Auto ({view_now})") } else { view_now.to_string() };
+        let view_tip = format!("Format: {fmt}\n{}", crate::lang::tr("クリックで 表示（Text・Preview・HEX）と形式を切り替え", "Click to switch view (Text / Preview / HEX) and format"));
+        let chip_tip = format!("Encode: {chip_label}\n{chip_tip}");
         {
             let mut chip = self.chip.clone();
-            if chip.label() != chip_label {
-                chip.set_label(&chip_label);
-                chip.redraw();
-            }
             chip.set_tooltip(&chip_tip);
             let mut vc = self.view_chip.clone();
-            if vc.label() != view_label {
-                vc.set_label(view_label);
-                vc.redraw();
-            }
+            vc.set_tooltip(&view_tip);
         }
         self.pos_shown.set(pos);
         self.win.clone().set_label(&title);
@@ -828,11 +839,11 @@ impl Ui {
                     id: d.id,
                     label: tabs::tab_label(shown, st.dirty, st.loading),
                     tip: match (&st.meta_of, &st.arch_of, shown) {
-                        (Some(img), _, _) => format!("Metadata of {}", img.display()),
-                        (None, Some(root), _) => format!("Rename list of {}", root.display()),
-                        (None, None, _) if st.chunk_of.is_some() => format!("Chunk of {}", st.chunk_of.as_ref().map(|c| c.0.display().to_string()).unwrap_or_default()),
+                        (Some(img), _, _) => if crate::lang::is_en() { format!("Metadata of {}", img.display()) } else { format!("{} のメタデータ", img.display()) },
+                        (None, Some(root), _) => if crate::lang::is_en() { format!("Rename list of {}", root.display()) } else { format!("{} の名前変更一覧", root.display()) },
+                        (None, None, _) if st.chunk_of.is_some() => { let c = st.chunk_of.as_ref().map(|c| c.0.display().to_string()).unwrap_or_default(); if crate::lang::is_en() { format!("Chunk of {c}") } else { format!("{c} のチャンク") } },
                         (None, None, Some(p)) => p.display().to_string(),
-                        (None, None, None) => "Unsaved File".into(),
+                        (None, None, None) => crate::lang::tr("未保存のファイル", "Unsaved File").into(),
                     },
                     active: d.id == active,
                 }
@@ -1046,7 +1057,7 @@ impl Ui {
             self.unsaved_sig.set(0);
         }
         self.persist();
-        self.flash(if on { "Resume: on" } else { "Resume: off" });
+        self.flash(if on { crate::lang::tr("再開: オン", "Resume: on") } else { crate::lang::tr("再開: オフ", "Resume: off") });
     }
 
     /// 前回の未保存の変更を戻す。元のファイルがあるタブは読み込み後に本文を差し替え、無ければ名前の無いタブにする。
@@ -1124,10 +1135,10 @@ impl Ui {
             self.activate(id);
         }
         if restored > 0 {
-            self.flash(&format!("Restored {restored} unsaved tabs"));
+            self.flash(&if crate::lang::is_en() { format!("Restored {restored} unsaved tabs") } else { format!("未保存のタブを {restored} 件復元しました") });
         } else if !ids.is_empty() {
             log::info(TAG, &format!("session: {} tabs restored ({missing} missing)", ids.len()));
-            self.flash(&if missing > 0 { format!("Restored {} tabs ({missing} missing)", ids.len()) } else { format!("Restored {} tabs", ids.len()) });
+            self.flash(&if missing > 0 { if crate::lang::is_en() { format!("Restored {} tabs ({missing} missing)", ids.len()) } else { format!("{} 件のタブを復元しました（{missing} 件は見つかりませんでした）", ids.len()) } } else { if crate::lang::is_en() { format!("Restored {} tabs", ids.len()) } else { format!("{} 件のタブを復元しました", ids.len()) } });
         }
     }
 
@@ -1177,10 +1188,8 @@ impl Ui {
                 }
                 if loaded.truncated {
                     log::warn(TAG, "HEX: 上限を超えたため先頭だけ読みました（保存は無効）");
-                    confirm::alert(&format!(
-                        "ファイルが大きいため、先頭の {} MiB だけを HEX で表示しています。\n壊さないよう、このファイルへの保存は無効です。",
-                        hex::MAX_BYTES / 1024 / 1024
-                    ));
+                    let mib = hex::MAX_BYTES / 1024 / 1024;
+                    confirm::alert(&if crate::lang::is_en() { format!("The file is large, so only the first {mib} MiB is shown in HEX.\nSaving is disabled for this file so it is not damaged.") } else { format!("ファイルが大きいため、先頭の {mib} MiB だけを HEX で表示しています。\n壊さないよう、このファイルへの保存は無効です。") });
                 }
             }
             Err(msg) => {
@@ -1197,7 +1206,7 @@ impl Ui {
                     self.refresh_tabs();
                 }
                 self.refresh_title(); // モーダルなダイアログの間に "Loading..." を残さない
-                confirm::alert(&format!("ファイルを開けませんでした。\n\n{msg}"));
+                confirm::alert(&if crate::lang::is_en() { format!("Could not open the file.\n\n{msg}") } else { format!("ファイルを開けませんでした。\n\n{msg}") });
             }
         }
         self.refresh_title();
@@ -1242,7 +1251,7 @@ impl Ui {
                     self.refresh_tabs();
                 }
                 self.refresh_title();
-                confirm::alert(&format!("フォルダを開けませんでした。\n\n{msg}"));
+                confirm::alert(&if crate::lang::is_en() { format!("Could not open the folder.\n\n{msg}") } else { format!("フォルダを開けませんでした。\n\n{msg}") });
             }
         }
         self.refresh_title();
@@ -1273,15 +1282,15 @@ impl Ui {
     }
 
     fn confirm_discard(&self) -> bool {
-        let name = self.doc().st.borrow().path.as_deref().map_or_else(|| "Untitled".to_string(), |p| log::file_name(&p.to_string_lossy()).to_string());
-        self.confirm_discard_msg(&format!("「{name}」の変更が保存されていません。"))
+        let name = self.doc().st.borrow().path.as_deref().map_or_else(|| crate::lang::tr("無題", "Untitled").to_string(), |p| log::file_name(&p.to_string_lossy()).to_string());
+        self.confirm_discard_msg(&if crate::lang::is_en() { format!("\"{name}\" has unsaved changes.") } else { format!("「{name}」の変更が保存されていません。") })
     }
 
     fn confirm_discard_msg(&self, msg: &str) -> bool {
         if !self.would_lose(&self.doc()) {
             return true;
         }
-        match confirm::choice(msg, "キャンセル", "保存", "破棄") {
+        match confirm::choice(msg, crate::lang::tr("キャンセル", "Cancel"), crate::lang::tr("保存", "Save"), crate::lang::tr("破棄", "Discard")) {
             Some(1) => self.save(false),
             Some(2) => true,
             _ => false,
@@ -1316,12 +1325,12 @@ impl Ui {
                 d.st.borrow_mut().dirty = false;
                 self.refresh_tabs();
                 self.refresh_title();
-                self.flash("Metadata saved");
+                self.flash(crate::lang::tr("メタデータを保存しました", "Metadata saved"));
                 true
             }
             Err(e) => {
                 log::warn(TAG, &format!("metadata save failed: {}", e.replace('\n', " / ")));
-                confirm::alert(&format!("メタデータを保存できませんでした。\n\n{e}"));
+                confirm::alert(&if crate::lang::is_en() { format!("Could not save the metadata.\n\n{e}") } else { format!("メタデータを保存できませんでした。\n\n{e}") });
                 false
             }
         }
@@ -1354,7 +1363,7 @@ impl Ui {
                 }
                 self.activate(d.id);
             }
-            Err(e) => confirm::alert(&format!("メタデータを読めませんでした。\n\n{e}")),
+            Err(e) => confirm::alert(&if crate::lang::is_en() { format!("Could not read the metadata.\n\n{e}") } else { format!("メタデータを読めませんでした。\n\n{e}") }),
         }
     }
 
@@ -1363,7 +1372,7 @@ impl Ui {
         let d = self.doc();
         let Some(root) = d.st.borrow().path.clone() else { return };
         if !archive::can_rename(&root) {
-            self.flash("tar・gz は一覧を見るだけです（名前の変更は zip とフォルダだけ）");
+            self.flash(crate::lang::tr("tar・gz は一覧を見るだけです（名前の変更は zip とフォルダだけ）", "tar / gz files can only be listed (renaming works for zip and folders only)"));
             return;
         }
         let Some(entries) = d.archive.borrow().clone() else { return };
@@ -1413,12 +1422,12 @@ impl Ui {
                 }
                 self.refresh_tabs();
                 self.refresh_title();
-                self.flash(&if n == 0 { "No changes".to_string() } else { format!("Renamed {n}") });
+                self.flash(&if n == 0 { crate::lang::tr("変更はありません", "No changes").to_string() } else { if crate::lang::is_en() { format!("Renamed {n}") } else { format!("{n} 件の名前を変更しました") } });
                 true
             }
             Err(e) => {
                 log::warn(TAG, &format!("rename failed: {}", e.replace('\n', " / ")));
-                confirm::alert(&format!("名前を変更できませんでした。\n\n{e}"));
+                confirm::alert(&if crate::lang::is_en() { format!("Could not rename.\n\n{e}") } else { format!("名前を変更できませんでした。\n\n{e}") });
                 false
             }
         }
@@ -1430,7 +1439,7 @@ impl Ui {
         let text = match d.pdf_text.borrow().as_ref() {
             Some(p) => p.iter().map(|s| s.trim()).filter(|s| !s.is_empty()).collect::<Vec<_>>().join("\n\n"),
             None => {
-                self.flash(if d.pdf_busy.get() { "取り出し中です" } else { "文字を取り出せていません" });
+                self.flash(if d.pdf_busy.get() { crate::lang::tr("取り出し中です", "Extracting text...") } else { crate::lang::tr("文字を取り出せていません", "Could not extract text") });
                 return;
             }
         };
@@ -1446,7 +1455,7 @@ impl Ui {
         let text = match d.doc_text.borrow().as_ref() {
             Some(Ok(t)) => doctext::to_plain(t),
             _ => {
-                self.flash(if d.doc_busy.get() { "読み込み中です" } else { "文字を取り出せていません" });
+                self.flash(if d.doc_busy.get() { crate::lang::tr("読み込み中です", "Loading...") } else { crate::lang::tr("文字を取り出せていません", "Could not extract text") });
                 return;
             }
         };
@@ -1467,7 +1476,7 @@ impl Ui {
                 let mut ed = self.editor.clone();
                 ed.set_insert_position(at);
                 ed.show_insert_position();
-                confirm::alert(&format!("SNBT の書き方が違うため、保存しませんでした。\n{e}"));
+                confirm::alert(&if crate::lang::is_en() { format!("Not saved because the SNBT syntax is wrong.\n{e}") } else { format!("SNBT の書き方が違うため、保存しませんでした。\n{e}") });
                 None
             }
         }
@@ -1495,7 +1504,7 @@ impl Ui {
                 true
             }
             Err(e) => {
-                confirm::alert(&format!("保存できませんでした。\n{}\n{e}", target.display()));
+                confirm::alert(&if crate::lang::is_en() { format!("Could not save.\n{}\n{e}", target.display()) } else { format!("保存できませんでした。\n{}\n{e}", target.display()) });
                 false
             }
         }
@@ -1516,11 +1525,11 @@ impl Ui {
                 d.st.borrow_mut().dirty = false;
                 self.refresh_tabs();
                 self.recount();
-                self.flash("Chunk saved");
+                self.flash(crate::lang::tr("チャンクを保存しました", "Chunk saved"));
                 true
             }
             Err(e) => {
-                confirm::alert(&format!("チャンクを保存できませんでした。\n{}\n{e}", region_path.display()));
+                confirm::alert(&if crate::lang::is_en() { format!("Could not save the chunk.\n{}\n{e}", region_path.display()) } else { format!("チャンクを保存できませんでした。\n{}\n{e}", region_path.display()) });
                 false
             }
         }
@@ -1543,7 +1552,7 @@ impl Ui {
             return true;
         }
         let opened = std::fs::read(&path).map_err(|e| e.to_string()).and_then(|b| {
-            let e = region::list(&b)?.into_iter().find(|e| e.index() == index).ok_or("チャンクがありません")?;
+            let e = region::list(&b)?.into_iter().find(|e| e.index() == index).ok_or(crate::lang::tr("チャンクがありません", "No such chunk"))?;
             let (c, raw) = region::read_chunk(&b, &e)?;
             nbt::open_raw(c, &raw)
         });
@@ -1560,7 +1569,7 @@ impl Ui {
                 }
                 self.activate(n.id);
             }
-            Err(e) => confirm::alert(&format!("チャンク {x},{z} を開けませんでした。\n{e}")),
+            Err(e) => confirm::alert(&if crate::lang::is_en() { format!("Could not open chunk {x},{z}.\n{e}") } else { format!("チャンク {x},{z} を開けませんでした。\n{e}") }),
         }
         true
     }
@@ -1575,7 +1584,7 @@ impl Ui {
             let st = d.st.borrow();
             if d.preview.get() && !st.hex && viewmode::kind_of(st.path.as_deref()) == viewmode::Kind::Audio {
                 drop(st);
-                self.flash("Audio preview is read-only (use Edit Metadata (text))");
+                self.flash(crate::lang::tr("音声のプレビューは読み取り専用です（Edit Metadata (text) を使ってください）", "Audio preview is read-only (use Edit Metadata (text))"));
                 return false;
             }
         }
@@ -1585,7 +1594,7 @@ impl Ui {
             st.arch_of = None;
         }
         if d.archive.borrow().is_some() {
-            self.flash("Folder / zip preview is read-only (use Rename (text))");
+            self.flash(crate::lang::tr("フォルダ・zip のプレビューは読み取り専用です（Rename (text) を使ってください）", "Folder / zip preview is read-only (use Rename (text))"));
             return false;
         }
         let arch = d.st.borrow().arch_of.clone();
@@ -1605,7 +1614,7 @@ impl Ui {
         }
         if d.st.borrow().region_list {
             if !as_new {
-                self.flash("チャンクの一覧は保存しません（行で Enter かダブルクリックで、チャンクを開いて編集）");
+                self.flash(crate::lang::tr("チャンクの一覧は保存しません（行で Enter かダブルクリックで、チャンクを開いて編集）", "The chunk list is not saved (press Enter or double-click a row to open and edit the chunk)"));
                 return false;
             }
             d.st.borrow_mut().region_list = false;
@@ -1620,9 +1629,9 @@ impl Ui {
         };
         if self.disk_changed(&d, &target) {
             log::warn(TAG, &format!("changed on disk: {}", log::file_name(&target.to_string_lossy())));
-            let msg = "このファイルは、開いた後にディスク上で書き換えられています。\nそのまま保存すると、その変更を上書きします。";
+            let msg = crate::lang::tr("このファイルは、開いた後にディスク上で書き換えられています。\nそのまま保存すると、その変更を上書きします。", "This file was changed on disk after it was opened.\nSaving as is will overwrite those changes.");
             // Enter で選ばれる真ん中のボタンは、相手の変更を消さない「別名で保存」にする（Esc はキャンセル）
-            match confirm::choice(msg, "キャンセル", "別名で保存", "上書き保存") {
+            match confirm::choice(msg, crate::lang::tr("キャンセル", "Cancel"), crate::lang::tr("別名で保存", "Save As"), crate::lang::tr("上書き保存", "Overwrite")) {
                 Some(1) => return self.save(true),
                 Some(2) => {}
                 _ => return false,
@@ -1644,10 +1653,10 @@ impl Ui {
         let mut bom = bom;
         if encoded.lossy_count > 0 {
             // 黙って「?」にしない。保存前に必ず確認する。
-            let first = encoded.first.as_ref().map(|u| format!("（最初は {} 行 {} 列の「{}」）", u.line, u.col, u.ch)).unwrap_or_default();
-            let msg = format!("{} で表せない文字が {} 個あります{}。", enc.label(), encoded.lossy_count, first);
+            let first = encoded.first.as_ref().map(|u| if crate::lang::is_en() { format!(" (first at line {} col {}: \"{}\")", u.line, u.col, u.ch) } else { format!("（最初は {} 行 {} 列の「{}」）", u.line, u.col, u.ch) }).unwrap_or_default();
+            let msg = if crate::lang::is_en() { format!("{} characters cannot be saved in {}{}.", encoded.lossy_count, enc.label(), first) } else { format!("{} で表せない文字が {} 個あります{}。", enc.label(), encoded.lossy_count, first) };
             log::warn(TAG, &format!("{} unmappable chars for {}", encoded.lossy_count, enc.label()));
-            match confirm::choice(&msg, "キャンセル", "UTF-8 に変えて保存", "? に置き換えて保存") {
+            match confirm::choice(&msg, crate::lang::tr("キャンセル", "Cancel"), crate::lang::tr("UTF-8 に変えて保存", "Save as UTF-8"), crate::lang::tr("? に置き換えて保存", "Save with ? replaced")) {
                 Some(1) => {
                     enc = Encoding::Utf8;
                     bom = false;
@@ -1685,7 +1694,7 @@ impl Ui {
             }
             Err(e) => {
                 log::error(TAG, &format!("保存に失敗: {e}"));
-                confirm::alert(&format!("保存できませんでした。\n\n{}\n{e}", target.display()));
+                confirm::alert(&if crate::lang::is_en() { format!("Could not save.\n\n{}\n{e}", target.display()) } else { format!("保存できませんでした。\n\n{}\n{e}", target.display()) });
                 false
             }
         }
@@ -1703,7 +1712,7 @@ impl Ui {
     /// HEX の編集結果をバイト列として保存する。不正な箇所があれば書かずに、そこへカーソルを移す。
     fn save_hex(&self, d: &Rc<Doc>, target: PathBuf) -> bool {
         if d.st.borrow().hex_truncated {
-            confirm::alert("先頭だけを読み込んだファイルなので、保存できません（元のファイルを壊さないため）。");
+            confirm::alert(crate::lang::tr("先頭だけを読み込んだファイルなので、保存できません（元のファイルを壊さないため）。", "This file was only partly loaded, so it cannot be saved (to protect the original)."));
             return false;
         }
         let text = d.buf.text();
@@ -1715,10 +1724,7 @@ impl Ui {
                 ed.show_insert_position();
                 let _ = ed.take_focus();
                 log::warn(TAG, &format!("HEX 不正: {} 行 {} 列", e.line, e.col));
-                confirm::alert(&format!(
-                    "保存できません。{} 行 {} 列「{}」\n{}。\n（ファイルは書き換えていません）",
-                    e.line, e.col, e.token, e.reason
-                ));
+                confirm::alert(&if crate::lang::is_en() { format!("Cannot save. Line {} col {} \"{}\"\n{}.\n(The file was not changed.)", e.line, e.col, e.token, e.reason) } else { format!("保存できません。{} 行 {} 列「{}」\n{}。\n（ファイルは書き換えていません）", e.line, e.col, e.token, e.reason) });
                 return false;
             }
         };
@@ -1744,7 +1750,7 @@ impl Ui {
             }
             Err(e) => {
                 log::error(TAG, &format!("保存に失敗: {e}"));
-                confirm::alert(&format!("保存できませんでした。\n\n{}\n{e}", target.display()));
+                confirm::alert(&if crate::lang::is_en() { format!("Could not save.\n\n{}\n{e}", target.display()) } else { format!("保存できませんでした。\n\n{}\n{e}", target.display()) });
                 false
             }
         }
@@ -1813,7 +1819,7 @@ impl Ui {
                 self.refresh_title();
             }
             Some(p) => {
-                if self.confirm_discard_msg("文字コードを切り替えるとディスクから読み直します。\n変更を保存しますか？") {
+                if self.confirm_discard_msg(crate::lang::tr("文字コードを切り替えるとディスクから読み直します。\n変更を保存しますか？", "Changing the encoding reloads the file from disk.\nSave your changes?")) {
                     self.load_into(&d, p, Some(Mode::Text(enc)));
                 }
             }
@@ -1832,7 +1838,7 @@ impl Ui {
         self.nbt_tree.restyle(self.font.get(), self.size.get());
         match nbt::from_snbt(&d.buf.text()) {
             Ok(root) => self.nbt_tree.show(&root, d.tree_open.borrow().as_ref(), select),
-            Err(e) => self.nbt_tree.show_message(&format!("SNBT の書き方が違うため、木で表示できません（Text で直してください）: {e}")),
+            Err(e) => self.nbt_tree.show_message(&if crate::lang::is_en() { format!("Cannot show as a tree because the SNBT syntax is wrong (fix it in Text): {e}") } else { format!("SNBT の書き方が違うため、木で表示できません（Text で直してください）: {e}") }),
         }
     }
 
@@ -1859,14 +1865,14 @@ impl Ui {
     fn nbt_edit_value(&self) {
         let Some(path) = self.nbt_tree.selected_path() else { return };
         self.edit_nbt(|root| {
-            let t = nbtedit::get_mut(root, &path).ok_or("項目が見つかりません")?;
+            let t = nbtedit::get_mut(root, &path).ok_or(crate::lang::tr("項目が見つかりません", "Item not found"))?;
             let Some(cur) = nbtedit::edit_text(t) else { return Err(String::new()) };
             let name = match path.last() {
                 Some(Seg::Key(k)) => k.clone(),
                 Some(Seg::Index(i)) => format!("[{i}]"),
                 None => String::new(),
             };
-            let prompt = format!("{name}（{}）の値", nbtedit::type_name(t.id()));
+            let prompt = if crate::lang::is_en() { format!("Value of {name} ({})", nbtedit::type_name(t.id())) } else { format!("{name}（{}）の値", nbtedit::type_name(t.id())) };
             let Some(input) = dialog::input_default(&prompt, &cur) else { return Err(String::new()) };
             *t = nbtedit::parse_edit(t, &input)?;
             Ok(Some(path.clone()))
@@ -1876,11 +1882,11 @@ impl Ui {
     fn nbt_rename(&self) {
         let Some(path) = self.nbt_tree.selected_path() else { return };
         let Some(Seg::Key(old)) = path.last().cloned() else {
-            self.flash("名前を変えられるのは、複合タグの中の項目だけです");
+            self.flash(crate::lang::tr("名前を変えられるのは、複合タグの中の項目だけです", "Only items inside a compound tag can be renamed"));
             return;
         };
         self.edit_nbt(|root| {
-            let Some(name) = dialog::input_default("新しい名前", &old) else { return Err(String::new()) };
+            let Some(name) = dialog::input_default(crate::lang::tr("新しい名前", "New name"), &old) else { return Err(String::new()) };
             nbtedit::rename(root, &path, name.trim())?;
             let mut p = path.clone();
             p.pop();
@@ -1896,7 +1902,7 @@ impl Ui {
             Some(Seg::Index(i)) => format!("[{i}]"),
             None => return,
         };
-        if confirm::choice(&format!("「{label}」を消しますか？（元に戻すで戻せます）"), "キャンセル", "消す", "") != Some(1) {
+        if confirm::choice(&if crate::lang::is_en() { format!("Delete \"{label}\"? (You can undo this.)") } else { format!("「{label}」を消しますか？（元に戻すで戻せます）") }, crate::lang::tr("キャンセル", "Cancel"), crate::lang::tr("消す", "Delete"), "") != Some(1) {
             return;
         }
         self.edit_nbt(|root| {
@@ -1914,7 +1920,7 @@ impl Ui {
             if !matches!(nbtedit::get(root, &parent), Some(nbt::Tag::Compound(_) | nbt::Tag::List(..))) {
                 parent.pop();
             }
-            let p = nbtedit::get(root, &parent).ok_or("項目が見つかりません")?;
+            let p = nbtedit::get(root, &parent).ok_or(crate::lang::tr("項目が見つかりません", "Item not found"))?;
             let in_list = matches!(p, nbt::Tag::List(..));
             let id = match nbtedit::fixed_child_type(p) {
                 Some(id) => id,
@@ -1927,10 +1933,10 @@ impl Ui {
             let name = if in_list {
                 String::new()
             } else {
-                let Some(n) = dialog::input_default(&format!("足す {} の名前", nbtedit::type_name(id)), "") else { return Err(String::new()) };
+                let Some(n) = dialog::input_default(&if crate::lang::is_en() { format!("Name for the new {}", nbtedit::type_name(id)) } else { format!("足す {} の名前", nbtedit::type_name(id)) }, "") else { return Err(String::new()) };
                 n.trim().to_string()
             };
-            let child = nbtedit::default_of(id).ok_or("知らない型です")?;
+            let child = nbtedit::default_of(id).ok_or(crate::lang::tr("知らない型です", "Unknown type"))?;
             let path = nbtedit::add_child(root, &parent, &name, child)?;
             Ok(Some(path))
         });
@@ -1940,7 +1946,7 @@ impl Ui {
     fn nbt_menu(&self) {
         let path = self.nbt_tree.selected_path();
         let on_key = matches!(path.as_ref().and_then(|p| p.last()), Some(Seg::Key(_)));
-        let mut rows = vec![menu::Row::plain("Edit Value (Enter)"), menu::Row::plain("Add Child (Insert)"), menu::Row::plain("Rename (F2)"), menu::Row::plain("Delete (Delete)")];
+        let mut rows = vec![menu::Row::plain(crate::lang::tr("値を編集 (Enter)", "Edit Value (Enter)")), menu::Row::plain(crate::lang::tr("子を追加 (Insert)", "Add Child (Insert)")), menu::Row::plain(crate::lang::tr("名前を変更 (F2)", "Rename (F2)")), menu::Row::plain(crate::lang::tr("削除 (Delete)", "Delete (Delete)"))];
         // 値を書き換えられるのは、数・文字列・配列だけ（複合タグ・リストは中の項目を書き換える）
         let editable = path.as_ref().is_some_and(|p| {
             nbt::from_snbt(&self.doc().buf.text()).ok().as_ref().and_then(|r| nbtedit::get(r, p)).and_then(nbtedit::edit_text).is_some()
@@ -2009,19 +2015,19 @@ impl Ui {
             match d.audio.borrow().as_ref() {
                 Some(Ok(a)) => audiometa::page_html(&name, &a.info, &a.items, &self.audio_status(d), &bg, &fg, &hex(color_subtext())),
                 Some(Err(e)) => pdftext::message_html(e, &bg, &fg),
-                None => pdftext::message_html("Loading...", &bg, &fg),
+                None => pdftext::message_html(crate::lang::tr("読み込み中...", "Loading..."), &bg, &fg),
             }
         } else if kind == viewmode::Kind::Book {
             match d.book.borrow().as_ref() {
                 Some(Ok(sheets)) => book::to_html(sheets, &bg, &fg, &hex(color_subtext())),
                 Some(Err(e)) => pdftext::message_html(e, &bg, &fg),
-                None => pdftext::message_html("Loading...", &bg, &fg),
+                None => pdftext::message_html(crate::lang::tr("読み込み中...", "Loading..."), &bg, &fg),
             }
         } else if kind == viewmode::Kind::Doc {
             match d.doc_text.borrow().as_ref() {
                 Some(Ok(t)) => doctext::to_html(t, &bg, &fg, &hex(color_subtext())),
                 Some(Err(e)) => pdftext::message_html(e, &bg, &fg),
-                None => pdftext::message_html("Loading...", &bg, &fg),
+                None => pdftext::message_html(crate::lang::tr("読み込み中...", "Loading..."), &bg, &fg),
             }
         } else if kind == viewmode::Kind::Html {
             let base = path.as_deref().and_then(|p| p.parent());
@@ -2045,7 +2051,7 @@ impl Ui {
         } else if let Some(e) = d.pdf_error.borrow().as_ref() {
             pdftext::message_html(e, &bg, &fg)
         } else {
-            pdftext::message_html("Loading...", &bg, &fg)
+            pdftext::message_html(crate::lang::tr("読み込み中...", "Loading..."), &bg, &fg)
         };
         let mut pv = self.preview.clone();
         pv.set_color(rgb(color_main()));
@@ -2211,7 +2217,7 @@ impl Ui {
         thread::spawn(move || {
             let r = std::fs::metadata(&path)
                 .map_err(|e| format!("{}\n{e}", path.display()))
-                .and_then(|m| if m.len() > AUDIO_INFO_MAX { Err(format!("大きすぎるため、情報とタグを読みません（{} MiB まで）", AUDIO_INFO_MAX / 1024 / 1024)) } else { Ok(()) })
+                .and_then(|m| if m.len() > AUDIO_INFO_MAX { Err(if crate::lang::is_en() { format!("Too large to read info and tags (up to {} MiB)", AUDIO_INFO_MAX / 1024 / 1024) } else { format!("大きすぎるため、情報とタグを読みません（{} MiB まで）", AUDIO_INFO_MAX / 1024 / 1024) }) } else { Ok(()) })
                 .and_then(|_| std::fs::read(&path).map_err(|e| format!("{}\n{e}", path.display())))
                 .map(|b| AudioData { info: audiometa::info(&b), items: audiometa::items(&b).map(|(_, v)| v).unwrap_or_default() });
             tx.send(Msg::Audio(id, r));
@@ -2239,13 +2245,13 @@ impl Ui {
     /// Preview の上に出す 1 行（再生の状態と、操作の案内）。
     fn audio_status(&self, d: &Doc) -> String {
         if !audioplay::AVAILABLE {
-            return "Playback is not included in this build".into();
+            return crate::lang::tr("この build には再生機能が含まれていません", "Playback is not included in this build").into();
         }
         match self.audio_state(d) {
-            Some((audioplay::State::Playing, pos)) => format!("Playing {} (Space: Stop)", audiometa::format_time(pos)),
-            Some((audioplay::State::Finished, _)) => "Finished (Space: Play again)".into(),
-            Some((audioplay::State::Stopped, pos)) => format!("Stopped {} (Space: Play)", audiometa::format_time(pos)),
-            None => "Stopped (Space: Play)".into(),
+            Some((audioplay::State::Playing, pos)) => format!("{} {} ({})", crate::lang::tr("再生中", "Playing"), audiometa::format_time(pos), crate::lang::tr("Space: 停止", "Space: Stop")),
+            Some((audioplay::State::Finished, _)) => crate::lang::tr("再生が終わりました（Space: もう一度再生）", "Finished (Space: Play again)").into(),
+            Some((audioplay::State::Stopped, pos)) => format!("{} {} ({})", crate::lang::tr("停止中", "Stopped"), audiometa::format_time(pos), crate::lang::tr("Space: 再生", "Space: Play")),
+            None => crate::lang::tr("停止中（Space: 再生）", "Stopped (Space: Play)").into(),
         }
     }
 
@@ -2255,7 +2261,7 @@ impl Ui {
         let path = d.st.borrow().path.clone();
         let Some(path) = path.filter(|p| viewmode::kind_of(Some(p)) == viewmode::Kind::Audio) else { return };
         if !audioplay::AVAILABLE {
-            self.flash("Playback is not included in this build");
+            self.flash(crate::lang::tr("この build には再生機能が含まれていません", "Playback is not included in this build"));
             return;
         }
         let state = self.audio_state(&d).map(|(s, _)| s);
@@ -2273,7 +2279,7 @@ impl Ui {
             if let Err(e) = started {
                 log::warn(TAG, &format!("audio play failed: {}", e.replace('\n', " / ")));
                 *d.player.borrow_mut() = None;
-                confirm::alert(&format!("再生できませんでした。\n\n{e}"));
+                confirm::alert(&if crate::lang::is_en() { format!("Could not play.\n\n{e}") } else { format!("再生できませんでした。\n\n{e}") });
             }
         }
         d.audio_secs.set(-1);
@@ -2394,9 +2400,9 @@ impl Ui {
         }
         let path = d.st.borrow().path.clone();
         match path {
-            None => self.flash("Save first"),
+            None => self.flash(crate::lang::tr("先に保存してください", "Save first")),
             Some(p) => {
-                if self.confirm_discard_msg("HEX で開き直します（ディスクから読み直します）。\n変更を保存しますか？") {
+                if self.confirm_discard_msg(crate::lang::tr("HEX で開き直します（ディスクから読み直します）。\n変更を保存しますか？", "Reopen as HEX (reloads from disk).\nSave your changes?")) {
                     self.load_into(&d, p, Some(Mode::Hex));
                 }
             }
@@ -2424,7 +2430,7 @@ impl Ui {
                 self.refresh_title();
             }
             Some(p) => {
-                if self.confirm_discard_msg("自動判定で開き直します（ディスクから読み直します）。\n変更を保存しますか？") {
+                if self.confirm_discard_msg(crate::lang::tr("自動判定で開き直します（ディスクから読み直します）。\n変更を保存しますか？", "Reopen with auto detection (reloads from disk).\nSave your changes?")) {
                     self.load_into(&d, p, None);
                 }
             }
@@ -2448,6 +2454,7 @@ impl Ui {
             As(viewmode::Kind),
             Text(Encoding),
             Auto,
+            FormatAuto,
             Eol,
             Meta,
             Play,
@@ -2464,6 +2471,7 @@ impl Ui {
         let is_arch = self.doc().archive.borrow().is_some();
         let file_kind = viewmode::kind_of(path.as_deref());
         let forced = self.doc().preview_as.get();
+        let fmt_auto = self.doc().format_auto.get() && forced.is_none();
         let kind = match self.view_kind(&self.doc()) {
             _ if self.is_nbt_doc(&self.doc()) => viewmode::Kind::Nbt,
             viewmode::Kind::Archive if !is_arch => viewmode::Kind::Other,
@@ -2472,6 +2480,9 @@ impl Ui {
         };
         // (選択, 表示名, 選ばれている, 選べる, この行の後に区切りを入れる)
         let mut rows: Vec<(Pick, String, bool, bool, bool)> = Vec::new();
+        if !is_arch {
+            rows.push((Pick::FormatAuto, format!("Auto ({})", viewmode::kind_name(kind, in_preview, is_hex)), fmt_auto, true, true));
+        }
         let mut views = viewmode::available_for(kind);
         if path.is_none() {
             views.retain(|v| *v != viewmode::View::Hex); // リージョンのチャンクは、HEX で開き直す元のファイルが無い
@@ -2482,13 +2493,13 @@ impl Ui {
             match v {
                 viewmode::View::Text => {
                     if has_preview {
-                        rows.push((Pick::View(v), "Text".into(), !in_preview && !is_hex, true, false));
+                        rows.push((Pick::View(v), "Text".into(), !fmt_auto && !in_preview && !is_hex, true, false));
                     }
                 }
-                viewmode::View::Hex => rows.push((Pick::View(v), "HEX".into(), !auto && is_hex && !in_preview, true, true)),
+                viewmode::View::Hex => rows.push((Pick::View(v), "HEX".into(), !fmt_auto && !auto && is_hex && !in_preview, true, true)),
                 viewmode::View::Preview => {
-                    let name = if v.implemented(kind) { "Preview" } else { "Preview (準備中)" };
-                    rows.push((Pick::View(v), name.into(), in_preview, v.implemented(kind), false));
+                    let name = if v.implemented(kind) { "Preview" } else { crate::lang::tr("Preview（準備中）", "Preview (coming soon)") };
+                    rows.push((Pick::View(v), name.into(), !fmt_auto && in_preview, v.implemented(kind), false));
                 }
             }
         }
@@ -2497,37 +2508,40 @@ impl Ui {
             if let Some(last) = rows.last_mut() {
                 last.4 = true;
             }
-            for (k, name) in [(viewmode::Kind::Markdown, "Preview as Markdown"), (viewmode::Kind::Html, "Preview as HTML"), (viewmode::Kind::Sheet, "Preview as CSV / TSV")] {
-                rows.push((Pick::As(k), name.into(), in_preview && kind == k && (forced.is_some() || file_kind == k), true, false));
+            for (k, name) in [(viewmode::Kind::Markdown, crate::lang::tr("Markdown として表示", "Preview as Markdown")), (viewmode::Kind::Html, crate::lang::tr("HTML として表示", "Preview as HTML")), (viewmode::Kind::Sheet, crate::lang::tr("CSV / TSV として表示", "Preview as CSV / TSV"))] {
+                rows.push((Pick::As(k), name.into(), !fmt_auto && in_preview && kind == k && (forced.is_some() || file_kind == k), true, false));
             }
         }
         let is_audio = kind == viewmode::Kind::Audio;
         let view_rows = rows.len();
         if !is_arch && !(is_audio && in_preview) {
+            let detected = if is_hex { "HEX".to_string() } else { cur.label().to_string() };
+            rows.push((Pick::Auto, format!("Auto ({detected})"), auto && !in_preview, true, true));
             for e in [Encoding::Utf8, Encoding::Windows31J, Encoding::EucJp, Encoding::Utf16Le, Encoding::Utf16Be, Encoding::Iso8859_1, Encoding::UsAscii] {
                 rows.push((Pick::Text(e), e.label().into(), !auto && !is_hex && !in_preview && cur == e, true, false));
             }
-            let detected = if is_hex { "HEX".to_string() } else { cur.label().to_string() };
-            rows.push((Pick::Auto, format!("Auto ({detected})"), auto && !in_preview, true, true));
-            rows.push((Pick::Eol, format!("Line Ending: {}", if is_hex { "-" } else { eol.label() }), false, !is_hex, false));
+            if let Some(last) = rows.last_mut() {
+                last.4 = true;
+            }
+            rows.push((Pick::Eol, format!("{}: {}", crate::lang::tr("改行コード", "Line Ending"), if is_hex { "-" } else { eol.label() }), false, !is_hex, false));
         }
         let enc_end = rows.len();
         if is_arch && path.as_deref().is_some_and(archive::can_rename) {
-            rows.push((Pick::ArchiveRename, "Rename (text)".into(), false, true, false));
+            rows.push((Pick::ArchiveRename, crate::lang::tr("名前の変更（テキスト）", "Rename (text)").into(), false, true, false));
         }
         // 画像・pdf は、中身を文字として編集する入口を最後に出す
         if is_audio && in_preview && audioplay::AVAILABLE {
             let playing = matches!(self.audio_state(&self.doc()), Some((audioplay::State::Playing, _)));
-            rows.push((Pick::Play, String::from(if playing { "Stop" } else { "Play" }), false, true, false));
+            rows.push((Pick::Play, String::from(if playing { crate::lang::tr("停止", "Stop") } else { crate::lang::tr("再生", "Play") }), false, true, false));
         }
         if (kind == viewmode::Kind::Image && path.as_deref().is_some_and(imgmeta::supports)) || (is_audio && path.as_deref().is_some_and(audiometa::supports)) {
-            rows.push((Pick::Meta, "Edit Metadata (text)".into(), false, true, false));
+            rows.push((Pick::Meta, crate::lang::tr("メタデータを編集（テキスト）", "Edit Metadata (text)").into(), false, true, false));
         }
         if kind == viewmode::Kind::Pdf {
-            rows.push((Pick::PdfText, "Text in New Tab".into(), false, true, false));
+            rows.push((Pick::PdfText, crate::lang::tr("新しいタブでテキストを開く", "Text in New Tab").into(), false, true, false));
         }
         if kind == viewmode::Kind::Doc {
-            rows.push((Pick::DocText, "Text in New Tab".into(), false, true, false));
+            rows.push((Pick::DocText, crate::lang::tr("新しいタブでテキストを開く", "Text in New Tab").into(), false, true, false));
         }
         // 表示のチップは文字コードの行を除き、文字コードのチップは文字コードの行だけにする
         if view {
@@ -2558,10 +2572,27 @@ impl Ui {
             None => x,
         };
         let Some(i) = menu::pick(&menu_rows, x, y) else { return };
+        if matches!(rows[i].0, Pick::View(_) | Pick::As(_)) {
+            self.doc().format_auto.set(false);
+        }
         match rows[i].0 {
+            Pick::FormatAuto => {
+                let d = self.doc();
+                d.format_auto.set(true);
+                d.preview_as.set(None);
+                self.set_preview(false);
+                if is_hex && !auto_previews(file_kind) {
+                    self.change_to_auto();
+                }
+                if auto_previews(self.view_kind(&d)) {
+                    self.set_preview(true);
+                }
+                self.refresh_title();
+            }
             Pick::View(viewmode::View::Hex) => self.change_to_hex(),
             Pick::View(viewmode::View::Preview) => {
-                self.doc().preview_as.set(None);
+                // Auto で中身から決めた形式は、選び直した後もそのまま使う
+                self.doc().preview_as.set((file_kind == viewmode::Kind::Other && kind != viewmode::Kind::Other).then_some(kind));
                 self.set_preview(true);
             }
             Pick::As(k) => {
@@ -2653,11 +2684,39 @@ impl Ui {
             Action::GotoLine => self.goto_line(),
             Action::ConvertEol => self.convert_eol(),
             Action::ChooseTheme => self.choose_theme(),
+            Action::ToggleLang => {
+                let next = if crate::lang::is_en() { crate::lang::Lang::Ja } else { crate::lang::Lang::En };
+                self.perform(Action::SetLang(next));
+            }
+            Action::SetLang(l) => {
+                crate::lang::set(l);
+                self.apply_lang();
+                self.persist();
+                self.flash(crate::lang::tr("日本語に切り替えました", "Switched to English"));
+            }
+            Action::SetTheme(i) => {
+                if let Some(p) = theme::PALETTES.get(i) {
+                    theme::set_named(p.name);
+                    self.apply_theme();
+                    self.persist();
+                    self.flash(&format!("{}: {}", crate::lang::tr("配色", "Theme"), p.name));
+                }
+            }
+            Action::EditCustomTheme => {
+                if theme::custom().is_none() {
+                    theme::store_custom(theme::palette());
+                }
+                theme::set_named(theme::CUSTOM_NAME);
+                self.apply_theme();
+                self.persist(); // custom_* を書いてから開く
+                self.open_config();
+                self.flash(crate::lang::tr("custom_* を書き換えて保存すると反映されます", "Edit custom_* and save to apply"));
+            }
             Action::ToggleTheme => {
                 theme::set_light(!theme::is_light());
                 self.apply_theme();
                 self.persist();
-                self.flash(if theme::is_light() { "Light theme" } else { "Dark theme" });
+                self.flash(if theme::is_light() { crate::lang::tr("ライトテーマ", "Light theme") } else { crate::lang::tr("ダークテーマ", "Dark theme") });
             }
             Action::UndoAll => self.history_all(true),
             Action::RedoAll => self.history_all(false),
@@ -2699,9 +2758,9 @@ impl Ui {
         match self.doc().st.borrow().path.as_ref() {
             Some(p) => {
                 app::copy(&p.display().to_string());
-                self.flash("Path copied");
+                self.flash(crate::lang::tr("パスをコピーしました", "Path copied"));
             }
-            None => self.flash("Unsaved File"),
+            None => self.flash(crate::lang::tr("未保存のファイル", "Unsaved File")),
         }
     }
 
@@ -2709,9 +2768,9 @@ impl Ui {
         match self.doc().st.borrow().path.as_ref().and_then(|p| p.file_name()) {
             Some(n) => {
                 app::copy(&n.to_string_lossy());
-                self.flash("File name copied");
+                self.flash(crate::lang::tr("ファイル名をコピーしました", "File name copied"));
             }
-            None => self.flash("Unsaved File"),
+            None => self.flash(crate::lang::tr("未保存のファイル", "Unsaved File")),
         }
     }
 
@@ -2728,11 +2787,12 @@ impl Ui {
         }
         let text = d.buf.selection_text();
         let whole = text.is_empty();
-        let (text, scope) = if whole { (d.buf.text(), "") } else { (text, "（選択範囲）") };
+        let (text, scope) = if whole { (d.buf.text(), "") } else { (text, crate::lang::tr("（選択範囲）", " (selection)")) };
+        let (cl, wl, ll) = if crate::lang::is_en() { ("Chars", "Words", "Lines") } else { ("文字数", "単語数", "行数") };
         // 全体の行数は行番号と同じ数え方（末尾の改行の後ろの空の行も 1 行）。右端の欄の Lines と合わせる
         let lines = if whole { d.buf.count_lines(0, d.buf.length()) as usize + 1 } else { text.lines().count() };
         confirm::message(&format!(
-            "文字数{scope}: {}\n単語数{scope}: {}\n行数{scope}: {}",
+            "{cl}{scope}: {}\n{wl}{scope}: {}\n{ll}{scope}: {}",
             document::char_count(&text),
             document::word_count(&text),
             lines
@@ -2740,11 +2800,11 @@ impl Ui {
     }
 
     fn ask_size(&self) {
-        let prompt = format!("文字の大きさ（{}〜{}、既定 {}）", zoom::MIN, zoom::MAX, zoom::DEFAULT);
+        let prompt = if crate::lang::is_en() { format!("Font size ({}-{}, default {})", zoom::MIN, zoom::MAX, zoom::DEFAULT) } else { format!("文字の大きさ（{}〜{}、既定 {}）", zoom::MIN, zoom::MAX, zoom::DEFAULT) };
         let Some(input) = dialog::input_default(&prompt, &self.size.get().to_string()) else { return };
         match input.trim().parse::<i32>() {
             Ok(n) => self.set_size(n),
-            Err(_) => self.flash("数字を入れてください"),
+            Err(_) => self.flash(crate::lang::tr("数字を入れてください", "Enter a number")),
         }
     }
 
@@ -2769,7 +2829,7 @@ impl Ui {
         }
         let needle = self.last_search.borrow().clone();
         if needle.is_empty() {
-            self.flash("検索する文字列がありません");
+            self.flash(crate::lang::tr("検索する文字列がありません", "No search text"));
             return;
         }
         let smart = self.last_smart.get();
@@ -2795,15 +2855,15 @@ impl Ui {
         }
         let needle = self.last_search.borrow().clone();
         if needle.is_empty() {
-            self.flash("検索する文字列がありません");
+            self.flash(crate::lang::tr("検索する文字列がありません", "No search text"));
             return;
         }
         let with = self.find_bar.replace.value();
         let text = d.buf.text();
         let hits = if self.last_smart.get() { replace::find_all_smart(&text, &needle) } else { replace::find_all(&text, &needle) };
         if hits.is_empty() {
-            self.set_find_count("Not found");
-            self.flash("Not found");
+            self.set_find_count(crate::lang::tr("見つかりません", "Not found"));
+            self.flash(crate::lang::tr("見つかりません", "Not found"));
             return;
         }
         let new_text = replace::apply_replace(&text, &hits, &with);
@@ -2815,7 +2875,7 @@ impl Ui {
         log::info(TAG, &format!("replace: {} 件", hits.len()));
         let n = self.highlight(&needle, self.last_smart.get());
         self.show_find_count(&needle, n);
-        self.flash(&format!("Replaced {}", hits.len()));
+        self.flash(&if crate::lang::is_en() { format!("Replaced {}", hits.len()) } else { format!("{} 件を置換しました", hits.len()) });
     }
 
     /// 選択文字列を全て別の文字列に置き換える（複数行の選択用）。全文を 1 回だけ読み、1 回の編集として書き戻す
@@ -2827,12 +2887,12 @@ impl Ui {
         }
         let target = d.buf.selection_text();
         if target.is_empty() {
-            confirm::message("先に置換したい文字列を選択してください。");
+            confirm::message(crate::lang::tr("先に置換したい文字列を選択してください。", "Select the text to replace first."));
             return;
         }
         let shown: String = target.chars().take(40).collect();
         let more = if target.chars().count() > 40 { "…" } else { "" };
-        let Some(with) = dialog::input_default(&format!("「{shown}{more}」を何に置き換えますか（全て置換）"), "") else {
+        let Some(with) = dialog::input_default(&if crate::lang::is_en() { format!("Replace \"{shown}{more}\" with what? (replace all)") } else { format!("「{shown}{more}」を何に置き換えますか（全て置換）") }, "") else {
             return;
         };
         let text = d.buf.text();
@@ -2844,9 +2904,9 @@ impl Ui {
                 let pos = b.utf8_align(pos.min(b.length()));
                 self.editor.clone().set_insert_position(pos);
                 log::info(TAG, &format!("replace: {n} 件"));
-                self.flash(&format!("Replaced {n}"));
+                self.flash(&if crate::lang::is_en() { format!("Replaced {n}") } else { format!("{n} 件を置換しました") });
             }
-            None => self.flash("Not found"),
+            None => self.flash(crate::lang::tr("見つかりません", "Not found")),
         }
     }
 
@@ -2861,8 +2921,8 @@ impl Ui {
     /// 選んだフォントは config.txt の `font=` に残り、次の起動でも使う。
     fn choose_font(&self) {
         let mut dlg = NativeFileChooser::new(FileDialogType::BrowseFile);
-        dlg.set_title("Select Font File (.ttf or .otf)");
-        dlg.set_filter("Font files\t*.{ttf,otf}");
+        dlg.set_title(crate::lang::tr("フォントファイルを選択（.ttf / .otf）", "Select Font File (.ttf or .otf)"));
+        dlg.set_filter(crate::lang::tr("フォントファイル\t*.{ttf,otf}", "Font files\t*.{ttf,otf}"));
         if let Some(d) = platform::font_dir() {
             let _ = dlg.set_directory(&d);
         }
@@ -2879,18 +2939,15 @@ impl Ui {
                 *self.font_path.borrow_mut() = Some(path.clone());
                 self.persist();
                 log::info(TAG, &format!("font: {name}"));
-                self.flash("Font changed");
+                self.flash(crate::lang::tr("フォントを変更しました", "Font changed"));
             }
             other => {
                 let why = match other {
-                    Ok(name) => format!("「{name}」を使えませんでした"),
+                    Ok(name) => if crate::lang::is_en() { format!("could not use \"{name}\"") } else { format!("「{name}」を使えませんでした") },
                     Err(e) => e.to_string(),
                 };
                 log::error(TAG, &format!("フォントの読込に失敗: {} ({why})", log::file_name(&path.to_string_lossy())));
-                confirm::alert(&format!(
-                    "フォントを読み込めませんでした。有効なフォントファイル（.ttf / .otf）か確認してください。\n\n{}\n{why}",
-                    path.display()
-                ));
+                confirm::alert(&if crate::lang::is_en() { format!("Could not load the font. Check that it is a valid font file (.ttf / .otf).\n\n{}\n{why}", path.display()) } else { format!("フォントを読み込めませんでした。有効なフォントファイル（.ttf / .otf）か確認してください。\n\n{}\n{why}", path.display()) });
             }
         }
     }
@@ -2906,15 +2963,15 @@ impl Ui {
                 *self.font_path.borrow_mut() = None;
                 self.persist();
                 log::info(TAG, &format!("font: {name} (default)"));
-                self.flash("Default font");
+                self.flash(crate::lang::tr("既定のフォント", "Default font"));
             }
             other => {
                 let why = match other {
-                    Ok(name) => format!("「{name}」を使えませんでした"),
+                    Ok(name) => if crate::lang::is_en() { format!("could not use \"{name}\"") } else { format!("「{name}」を使えませんでした") },
                     Err(e) => e,
                 };
                 log::error(TAG, &format!("既定フォントに戻せませんでした: {why}"));
-                confirm::alert(&format!("既定のフォントに戻せませんでした。\n\n{why}"));
+                confirm::alert(&if crate::lang::is_en() { format!("Could not restore the default font.\n\n{why}") } else { format!("既定のフォントに戻せませんでした。\n\n{why}") });
             }
         }
     }
@@ -2945,6 +3002,14 @@ impl Ui {
     }
 
     /// 今のパレットに合わせて、画面の色を全部塗り直す（モードの切替・設定ファイルの反映のとき）。
+    /// 言語を切り替えたあと、作るときに決めた名前・ツールチップを今の言語に合わせ直す。
+    /// メニュー・確認画面・お知らせは出すたびに言語を見るので、ここでは触らない。
+    fn apply_lang(&self) {
+        toolbar::relabel(&self.bar, &self.top_pin, &self.gap);
+        self.refresh_tabs();
+        self.refresh_title();
+    }
+
     fn apply_theme(&self) {
         skin::apply_globals();
         skin::style_scrollbars(&self.editor);
@@ -2965,6 +3030,7 @@ impl Ui {
         self.refresh_preview();
         self.win.clone().set_color(rgb(color_main()));
         toolbar::restyle(&self.bar, &self.gap);
+        toolbar::refresh_icon_tips(&self.bar);
         searchbar::restyle(&self.find_bar);
         let mut tb = self.tabbar.borrow().clone();
         tb.set_color(rgb(color_sub()));
@@ -3060,7 +3126,7 @@ impl Ui {
 
     /// 見つかった数を出す（0 件は Not found、空の検索は何も出さない）。
     fn show_find_count(&self, needle: &str, n: usize) {
-        self.set_find_count(&if needle.is_empty() { String::new() } else if n == 0 { "Not found".to_string() } else { format!("{n} found") });
+        self.set_find_count(&if needle.is_empty() { String::new() } else if n == 0 { crate::lang::tr("見つかりません", "Not found").to_string() } else { if crate::lang::is_en() { format!("{n} found") } else { format!("{n} 件") } });
     }
 
     /// 検索バーの文字列が変わった: 全てを強調し、いまの位置から先の最初の 1 件を選ぶ（入力しても飛ばない）。
@@ -3086,6 +3152,19 @@ impl Ui {
     }
 
     /// Ctrl+F: 検索バーへ移る。編集領域で選んでいる 1 行の文字列があれば、それを検索する（検索中の文字列そのものなら置き換えない）。
+    /// 虫眼鏡: 閉じているか空なら開いて検索欄へ。開いていれば全てを強調して次の一致を選ぶ。
+    fn search_button(&self) {
+        let needle = self.find_bar.input.value();
+        if !self.find_bar.is_open() || needle.is_empty() {
+            self.focus_find();
+        } else if *self.last_search.borrow() != needle {
+            self.find_changed();
+        } else {
+            self.highlight(&needle, true);
+            self.find_move(true, false);
+        }
+    }
+
     fn focus_find(&self) {
         self.prefill_find();
         let _ = self.find_bar.input.clone().take_focus();
@@ -3237,9 +3316,9 @@ impl Ui {
         let text = d.buf.text();
         let hits = if self.last_smart.get() { replace::find_all_smart(&text, &needle) } else { replace::find_all(&text, &needle) };
         if hits.is_empty() {
-            self.set_find_count("Not found");
+            self.set_find_count(crate::lang::tr("見つかりません", "Not found"));
             if !self.find_bar.is_open() {
-                self.flash("Not found");
+                self.flash(crate::lang::tr("見つかりません", "Not found"));
             }
             return;
         }
@@ -3273,10 +3352,10 @@ impl Ui {
         let sel = self.doc().buf.selection_text();
         let url = sel.trim().to_string();
         if !platform::is_http_url(&url) {
-            self.flash("画像の URL を選んでください");
+            self.flash(crate::lang::tr("画像の URL を選んでください", "Choose an image URL"));
             return;
         }
-        self.flash("Fetching image...");
+        self.flash(crate::lang::tr("画像を取得しています...", "Fetching image..."));
         log::info(TAG, "open image url");
         let tx = self.tx.clone();
         thread::spawn(move || {
@@ -3291,8 +3370,8 @@ impl Ui {
             Ok((path, url)) => self.show_image_window(path, &url),
             Err(e) => {
                 log::warn(TAG, &format!("image url: {}", e.replace('\n', " / ")));
-                self.flash("画像を取得できません");
-                confirm::alert(&format!("画像を取得できませんでした。\n\n{e}"));
+                self.flash(crate::lang::tr("画像を取得できません", "Cannot fetch the image"));
+                confirm::alert(&if crate::lang::is_en() { format!("Could not fetch the image.\n\n{e}") } else { format!("画像を取得できませんでした。\n\n{e}") });
             }
         }
     }
@@ -3327,7 +3406,7 @@ impl Ui {
             log::warn(TAG, &format!("ブラウザを開けませんでした: {e}"));
             // 失敗したらホームページを開く（Java 版と同じ）
             if url == platform::HOMEPAGE || platform::open_url(platform::HOMEPAGE).is_err() {
-                confirm::alert(&format!("ブラウザを開けませんでした。\n\n{e}"));
+                confirm::alert(&if crate::lang::is_en() { format!("Could not open the browser.\n\n{e}") } else { format!("ブラウザを開けませんでした。\n\n{e}") });
             }
         }
     }
@@ -3344,7 +3423,7 @@ impl Ui {
         }
         if CONFIRM_RUN_CMD {
             let shown: String = sel.chars().take(200).collect();
-            if confirm::choice(&format!("次を実行します。\n\n{shown}"), "キャンセル", "実行", "") != Some(1) {
+            if confirm::choice(&if crate::lang::is_en() { format!("Run the following?\n\n{shown}") } else { format!("次を実行します。\n\n{shown}") }, crate::lang::tr("キャンセル", "Cancel"), crate::lang::tr("実行", "Run"), "") != Some(1) {
                 return;
             }
         }
@@ -3359,7 +3438,7 @@ impl Ui {
 
     fn run_failed(&self, e: &str) {
         log::error(TAG, &format!("コマンド実行に失敗: {e}"));
-        confirm::alert(&format!("NeoErrorCode:250 | FallbackCrash - コマンド実行中に例外が発生しました: {e}"));
+        confirm::alert(&if crate::lang::is_en() { format!("NeoErrorCode:250 | FallbackCrash - An exception occurred while running the command: {e}") } else { format!("NeoErrorCode:250 | FallbackCrash - コマンド実行中に例外が発生しました: {e}") });
     }
 
     fn on_ran(&self, result: Result<String, String>) {
@@ -3367,12 +3446,12 @@ impl Ui {
             Ok(out) => {
                 let mut shown: String = out.chars().take(RUN_OUTPUT_LIMIT).collect();
                 if out.chars().count() > RUN_OUTPUT_LIMIT {
-                    shown.push_str("\n…（以下省略）");
+                    shown.push_str(crate::lang::tr("\n…（以下省略）", "\n… (truncated)"));
                 }
                 if shown.is_empty() {
-                    shown = "（出力なし）".to_string();
+                    shown = crate::lang::tr("（出力なし）", "(no output)").to_string();
                 }
-                dialog::message_title("実行結果");
+                dialog::message_title(crate::lang::tr("実行結果", "Run Result"));
                 confirm::message(&shown);
             }
             Err(e) => self.run_failed(&e),
@@ -3386,7 +3465,7 @@ impl Ui {
         log::info(TAG, &format!("open site: {url}"));
         if let Err(e) = platform::open_url(url) {
             log::warn(TAG, &format!("ブラウザを開けませんでした: {e}"));
-            confirm::alert(&format!("ブラウザを開けませんでした。\n\n{e}"));
+            confirm::alert(&if crate::lang::is_en() { format!("Could not open the browser.\n\n{e}") } else { format!("ブラウザを開けませんでした。\n\n{e}") });
         }
     }
 
@@ -3394,11 +3473,11 @@ impl Ui {
         match platform::make_shortcut() {
             Ok(p) => {
                 log::info(TAG, &format!("shortcut: {}", log::file_name(&p.to_string_lossy())));
-                self.flash("Shortcut created");
+                self.flash(crate::lang::tr("ショートカットを作りました", "Shortcut created"));
             }
             Err(e) => {
                 log::warn(TAG, &format!("ショートカットを作れませんでした: {e}"));
-                confirm::alert(&format!("ショートカットを作れませんでした。\n\n{e}"));
+                confirm::alert(&if crate::lang::is_en() { format!("Could not create the shortcut.\n\n{e}") } else { format!("ショートカットを作れませんでした。\n\n{e}") });
             }
         }
     }
@@ -3466,6 +3545,7 @@ impl Ui {
             gutter_extra: Some(self.gutter_extra.get()).filter(|w| *w != 0),
             side_w: Some(self.side_w.get()).filter(|w| *w != sidepanel::WIDTH),
             resume: self.resume.get(),
+            lang: crate::lang::code(crate::lang::current()).to_string(),
             light: theme::is_light(),
             theme: Some(theme::current_name().to_string()),
             custom: theme::custom().map(|p| [p.main, p.sub, p.accent, p.text, p.subtext]),
@@ -3505,13 +3585,13 @@ impl Ui {
     /// 設定ファイルをタブで開く。まだ無ければ今の状態で作ってから開く。
     fn open_config(self: &Rc<Self>) {
         let Some(path) = self.config_path.clone() else {
-            confirm::alert("設定ファイルの場所を決められませんでした（実行ファイルの場所を取得できません）。");
+            confirm::alert(crate::lang::tr("設定ファイルの場所を決められませんでした（実行ファイルの場所を取得できません）。", "Could not decide where the config file is (the program location is unknown)."));
             return;
         };
         if !path.exists() {
             if let Err(e) = config::save(&path, &self.current_config()) {
                 log::error(TAG, &format!("設定ファイルを作れませんでした: {} ({e})", path.display()));
-                confirm::alert(&format!("設定ファイルを作れませんでした。\n\n{}\n{e}", path.display()));
+                confirm::alert(&if crate::lang::is_en() { format!("Could not create the config file.\n\n{}\n{e}", path.display()) } else { format!("設定ファイルを作れませんでした。\n\n{}\n{e}", path.display()) });
                 return;
             }
         }
@@ -3544,6 +3624,10 @@ impl Ui {
         // 配色
         let before = (theme::current_name(), theme::palette());
         apply_theme_config(&cfg);
+        if let Some(l) = crate::lang::from_code(&cfg.lang).filter(|l| *l != crate::lang::current()) {
+            crate::lang::set(l);
+            self.apply_lang();
+        }
         if before != (theme::current_name(), theme::palette()) {
             self.apply_theme();
         }
@@ -3594,25 +3678,25 @@ impl Ui {
                     }
                     other => {
                         let why = match other {
-                            Ok(name) => format!("「{name}」を使えませんでした"),
+                            Ok(name) => if crate::lang::is_en() { format!("could not use \"{name}\"") } else { format!("「{name}」を使えませんでした") },
                             Err(e) => e.to_string(),
                         };
                         log::warn(TAG, &format!("config: font を読み込めませんでした: {} ({why})", f.display()));
-                        confirm::alert(&format!("config.txt の font を読み込めませんでした。今のフォントのままにします。\n\n{}\n{why}", f.display()));
+                        confirm::alert(&if crate::lang::is_en() { format!("Could not load the font in config.txt. Keeping the current font.\n\n{}\n{why}", f.display()) } else { format!("config.txt の font を読み込めませんでした。今のフォントのままにします。\n\n{}\n{why}", f.display()) });
                     }
                 },
                 None => self.reset_font(),
             }
         }
         log::info(TAG, "config: applied");
-        self.flash("Config applied");
+        self.flash(crate::lang::tr("設定を適用しました", "Config applied"));
     }
 
     /// 最近開いたファイル（保存した一覧）を表示し、選んだものをタブで開く。
     fn recent_menu(self: &Rc<Self>) {
         let list = self.recent.borrow().clone();
         if list.is_empty() {
-            self.flash("No recent files");
+            self.flash(crate::lang::tr("最近使ったファイルはありません", "No recent files"));
             return;
         }
         let labels: Vec<String> = list.iter().enumerate().map(|(i, p)| recent::label(i, p)).collect();
@@ -3632,7 +3716,7 @@ impl Ui {
         if let Some(last) = rows.last_mut() {
             last.divider = true;
         }
-        rows.push(menu::Row::plain("Edit custom colors..."));
+        rows.push(menu::Row::plain(crate::lang::tr("カスタム配色を編集...", "Edit custom colors...")));
         let Some(i) = menu::pick(&rows, app::event_x(), app::event_y()) else { return };
         if theme::custom().is_none() && i >= names.len() - 1 {
             theme::store_custom(theme::palette());
@@ -3641,7 +3725,7 @@ impl Ui {
             theme::set_named(names[i]);
             self.apply_theme();
             self.persist();
-            self.flash(&format!("Theme: {}", names[i]));
+            self.flash(&if crate::lang::is_en() { format!("Theme: {}", names[i]) } else { format!("配色: {}", names[i]) });
         } else {
             self.persist(); // custom_* を書いてから開く
             self.open_config();
@@ -3653,7 +3737,7 @@ impl Ui {
     fn set_wrap(&self, on: bool) {
         self.set_wrap_quiet(on);
         self.persist();
-        self.flash(if on { "Word Wrap: ON" } else { "Word Wrap: OFF" });
+        self.flash(if on { crate::lang::tr("折り返し: オン", "Word Wrap: ON") } else { crate::lang::tr("折り返し: オフ", "Word Wrap: OFF") });
     }
 
     /// 折り返しを切り替えるだけ（設定ファイルは触らない。設定の読み直しからも使う）。
@@ -3674,12 +3758,12 @@ impl Ui {
     fn set_size(&self, n: i32) {
         let n = zoom::clamp(n);
         if n == self.size.get() {
-            self.flash(&format!("Size: {n}"));
+            self.flash(&if crate::lang::is_en() { format!("Size: {n}") } else { format!("文字サイズ: {n}") });
             return;
         }
         self.apply_size(n);
         self.persist();
-        self.flash(&format!("Size: {n}"));
+        self.flash(&if crate::lang::is_en() { format!("Size: {n}") } else { format!("文字サイズ: {n}") });
     }
 
     /// 編集領域・行番号・ハイライトの文字サイズを変える（設定ファイルは触らない）。
@@ -3762,14 +3846,14 @@ impl Ui {
         let on = !self.top_pin.value();
         let ok = platform::set_topmost(self.win.raw_handle() as *mut std::ffi::c_void, on);
         if !ok {
-            self.flash("この環境では最前面に固定できません");
+            self.flash(crate::lang::tr("この環境では最前面に固定できません", "Cannot keep the window on top in this environment"));
             return;
         }
         let mut b = self.top_pin.clone();
         b.set_value(on);
-        b.set_tooltip(if on { "最前面に固定中（クリックで解除）" } else { "ウィンドウを最前面に固定する" });
+        b.set_tooltip(if on { crate::lang::tr("最前面に固定中（クリックで解除）", "Pinned on top (click to unpin)") } else { crate::lang::tr("ウィンドウを最前面に固定する", "Keep window on top") });
         b.redraw();
-        self.flash(if on { "Always on top: on" } else { "Always on top: off" });
+        self.flash(if on { crate::lang::tr("最前面: オン", "Always on top: on") } else { crate::lang::tr("最前面: オフ", "Always on top: off") });
     }
 
     /// 押しピンの右の境目のドラッグ: 行番号欄の幅を、桁数で決まる幅から GUTTER_EXTRA_MAX まで広げる。
@@ -3804,7 +3888,7 @@ impl Ui {
         pin.set_selection_color(rgb(color_main()));
         pin.set_label_color(if pinned { rgb(color_text()) } else { rgb(color_subtext()) });
         pin.set_value(pinned);
-        pin.set_tooltip(if pinned { "行番号: 常に表示中（クリックで自動表示に戻す。右の境目のドラッグで幅を変える）" } else { "行番号: 自動表示（クリックで常に表示する。右の境目のドラッグで幅を変える）" });
+        pin.set_tooltip(if pinned { crate::lang::tr("行番号: 常に表示中（クリックで自動表示に戻す。右の境目のドラッグで幅を変える）", "Line numbers: always shown (click for auto; drag the right edge to resize)") } else { crate::lang::tr("行番号: 自動表示（クリックで常に表示する。右の境目のドラッグで幅を変える）", "Line numbers: auto (click to always show; drag the right edge to resize)") });
         pin.redraw();
     }
 
@@ -3826,7 +3910,7 @@ impl Ui {
         self.style_pin();
         self.update_gutter();
         self.persist();
-        self.flash(if self.gutter_pinned.get() { "Line numbers: pinned" } else { "Line numbers: auto" });
+        self.flash(if self.gutter_pinned.get() { crate::lang::tr("行番号: 常に表示", "Line numbers: pinned") } else { crate::lang::tr("行番号: 自動", "Line numbers: auto") });
     }
 
     /// 横スクロールバーは、はみ出す行があるときだけ出す。
@@ -3879,6 +3963,12 @@ impl Ui {
                 let right_zone = if u.side.widget.visible() { u.side_w.get() + edge.max(app::scrollbar_size() + 4) } else { edge };
                 (in_y && mx >= x0 && mx < x0 + left_zone, in_y && mx < x0 + b.w() && mx >= x0 + b.w() - right_zone)
             };
+            // 出すのは、端にしばらく留まってから（端の文字を選ぼうとして欄が出るのを防ぐ）。消すのはすぐ
+            let (dl, dr) = u.edge_dwell.get();
+            let (dl, dr) = (if left { dl + 1 } else { 0 }, if right { dr + 1 } else { 0 });
+            u.edge_dwell.set((dl, dr));
+            let left = left && (u.mouse_left.get() || dl >= EDGE_DWELL);
+            let right = right && (u.mouse_right.get() || dr >= EDGE_DWELL);
             if left != u.mouse_left.get() {
                 u.mouse_left.set(left);
                 u.update_gutter();
@@ -3945,7 +4035,7 @@ impl Ui {
             peek::Peek::Char(c, cp) => peekwin::Content::Text { big: c, note: cp },
             peek::Peek::Time(secs, ms) => {
                 let t = std::time::UNIX_EPOCH + std::time::Duration::from_secs(secs as u64);
-                peekwin::Content::Text { big: platform::local_datetime(t), note: if ms { "UNIX 時刻（ミリ秒）".into() } else { "UNIX 時刻（秒）".into() } }
+                peekwin::Content::Text { big: platform::local_datetime(t), note: if ms { crate::lang::tr("UNIX 時刻（ミリ秒）", "UNIX time (ms)").into() } else { crate::lang::tr("UNIX 時刻（秒）", "UNIX time (s)").into() } }
             }
             peek::Peek::Image(s) => {
                 let base = path.as_deref().and_then(|p| p.parent());
@@ -4003,7 +4093,7 @@ impl Ui {
         self.update_side();
         self.side.widget.clone().redraw();
         self.persist();
-        self.flash(if on { "Side panel: pinned" } else { "Side panel: auto" });
+        self.flash(if on { crate::lang::tr("サイドパネル: 固定", "Side panel: pinned") } else { crate::lang::tr("サイドパネル: 自動", "Side panel: auto") });
     }
 
     /// Alt だけを押して離したとき: 左右の欄をまとめて開く・閉じる。
@@ -4033,17 +4123,17 @@ impl Ui {
         self.side_key.set(key);
         let mut rows: Vec<(String, String)> = Vec::new();
         let name = path.as_deref().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().to_string());
-        rows.push(("Name".into(), name.unwrap_or_else(|| "Unsaved File".into())));
+        rows.push((crate::lang::tr("名前", "Name").into(), name.unwrap_or_else(|| crate::lang::tr("未保存のファイル", "Unsaved File").into())));
         if let Some(p) = path.as_deref() {
             if let Some(dir) = p.parent() {
-                rows.push(("Folder".into(), dir.display().to_string()));
+                rows.push((crate::lang::tr("フォルダ", "Folder").into(), dir.display().to_string()));
             }
             if let Ok(m) = std::fs::metadata(p) {
                 if m.is_file() {
-                    rows.push(("Size".into(), archive::human_size(m.len()))); // フォルダの合計は下のツリーマップに出す
+                    rows.push((crate::lang::tr("サイズ", "Size").into(), archive::human_size(m.len()))); // フォルダの合計は下のツリーマップに出す
                 }
                 if let Ok(t) = m.modified() {
-                    rows.push(("Modified".into(), platform::local_datetime(t)));
+                    rows.push((crate::lang::tr("更新日時", "Modified").into(), platform::local_datetime(t)));
                 }
             }
             rows.extend(file_meta_rows(p));
@@ -4053,14 +4143,14 @@ impl Ui {
         if is_arch {
             // フォルダ・zip の本文は一覧なので、文字数などは出さない（大きさは下のツリーマップ）
         } else if hex {
-            rows.push(("Bytes".into(), hex::byte_count(&text).to_string()));
+            rows.push((crate::lang::tr("バイト数", "Bytes").into(), hex::byte_count(&text).to_string()));
         } else {
-            rows.push(("Chars".into(), document::char_count(&text).to_string()));
-            rows.push(("Words".into(), document::word_count(&text).to_string()));
-            rows.push(("Lines".into(), (d.buf.count_lines(0, len) + 1).to_string()));
+            rows.push((crate::lang::tr("文字数", "Chars").into(), document::char_count(&text).to_string()));
+            rows.push((crate::lang::tr("単語数", "Words").into(), document::word_count(&text).to_string()));
+            rows.push((crate::lang::tr("行数", "Lines").into(), (d.buf.count_lines(0, len) + 1).to_string()));
             if sel > 0 {
                 let s = d.buf.selection_text();
-                rows.push(("Selected".into(), format!("{} chars, {} words", document::char_count(&s), document::word_count(&s))));
+                rows.push((crate::lang::tr("選択", "Selected").into(), if crate::lang::is_en() { format!("{} chars, {} words", document::char_count(&s), document::word_count(&s)) } else { format!("{} 文字、{} 単語", document::char_count(&s), document::word_count(&s)) }));
             }
         }
         let tree = d.archive.borrow().as_deref().map(treemap::build);
@@ -4131,7 +4221,7 @@ impl Ui {
             }
             st.eol
         };
-        let to = match confirm::choice(&format!("改行コードを変換します（今: {}）", cur.label()), "キャンセル", "LF", "CRLF") {
+        let to = match confirm::choice(&if crate::lang::is_en() { format!("Convert the line ending? (now: {})", cur.label()) } else { format!("改行コードを変換します（今: {}）", cur.label()) }, crate::lang::tr("キャンセル", "Cancel"), "LF", "CRLF") {
             Some(1) => Eol::Lf,
             Some(2) => Eol::Crlf,
             _ => return,
@@ -4148,7 +4238,7 @@ impl Ui {
             log::info(TAG, &format!("eol: {} -> {}", cur.label(), to.label()));
         }
         d.st.borrow_mut().eol = to;
-        self.flash(&format!("Line ending: {}", to.label()));
+        self.flash(&if crate::lang::is_en() { format!("Line ending: {}", to.label()) } else { format!("改行コード: {}", to.label()) });
         self.refresh_title();
     }
 
@@ -4157,10 +4247,10 @@ impl Ui {
         let text = d.buf.text();
         let total = text.matches('\n').count() + 1;
         let (cur_line, cur_col) = json::line_col(&text, self.editor.insert_position().max(0) as usize);
-        let prompt = format!("移動する行（または 行:桁）  今: {cur_line}:{cur_col} / 全 {total} 行");
+        let prompt = if crate::lang::is_en() { format!("Line to go to (or line:column)  now: {cur_line}:{cur_col} / {total} lines") } else { format!("移動する行（または 行:桁）  今: {cur_line}:{cur_col} / 全 {total} 行") };
         let Some(input) = dialog::input_default(&prompt, "") else { return };
         let Some((line, col)) = goto::parse(&input) else {
-            self.flash("Go To Line: 12 または 12:5 の形で入力");
+            self.flash(crate::lang::tr("行へ移動: 12 または 12:5 の形で入力", "Go To Line: enter 12 or 12:5"));
             return;
         };
         let at = goto::offset(&text, line, col) as i32;
@@ -4171,7 +4261,7 @@ impl Ui {
         ed.show_insert_position();
         self.refresh_title();
         if line > total {
-            self.flash(&format!("最終行（{total}）へ移動"));
+            self.flash(&if crate::lang::is_en() { format!("Moved to the last line ({total})") } else { format!("最終行（{total}）へ移動") });
         }
     }
 
@@ -4180,7 +4270,7 @@ impl Ui {
         self.autosave.set(on);
         menu::set_autosave_checked(on);
         log::info(TAG, if on { "auto save: on" } else { "auto save: off" });
-        self.flash(if on { "Auto Save: ON" } else { "Auto Save: OFF" });
+        self.flash(if on { crate::lang::tr("自動保存: オン", "Auto Save: ON") } else { crate::lang::tr("自動保存: オフ", "Auto Save: OFF") });
         if on && !self.autosave_armed.get() {
             self.arm_autosave();
         }
@@ -4218,7 +4308,7 @@ impl Ui {
                 // 他で書き換えられたファイルは、黙って上書きしない。知らせるのは 1 回だけ（手動の保存で確認する）
                 if !std::mem::replace(&mut d.st.borrow_mut().conflict_noted, true) {
                     log::warn(TAG, &format!("auto save skipped: changed on disk: {}", log::file_name(&path.to_string_lossy())));
-                    self.flash("Auto Save skipped: file changed on disk");
+                    self.flash(crate::lang::tr("自動保存をスキップしました: ディスク上で変更されています", "Auto Save skipped: file changed on disk"));
                 }
                 continue;
             }
@@ -4262,10 +4352,10 @@ impl Ui {
         let target = self.path_history.borrow().iter().find(|p| self.find_by_path(&document::absolutize(p)).is_none()).cloned();
         match target {
             Some(p) => {
-                self.flash(&format!("Restored {}", p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()));
+                self.flash(&format!("{} {}", crate::lang::tr("復元しました:", "Restored"), p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()));
                 self.open_paths(vec![p]);
             }
-            None => self.flash("No history to restore (all are open)"),
+            None => self.flash(crate::lang::tr("復元する履歴がありません（すべて開いています）", "No history to restore (all are open)")),
         }
     }
 
@@ -4275,7 +4365,7 @@ impl Ui {
         self.prune_history();
         let list = self.path_history.borrow().clone();
         if list.is_empty() {
-            self.flash("No history (opened files are recorded)");
+            self.flash(crate::lang::tr("履歴はありません（開いたファイルが記録されます）", "No history (opened files are recorded)"));
             return;
         }
         // 中身に合わせた大きさにする: 幅は一番長い行に合わせ（240〜560）、高さは行数に合わせる（最大 12 行。超えたらスクロール）
@@ -4288,7 +4378,7 @@ impl Ui {
         let w = (widest + 40).clamp(240, 560).min(sw as i32);
         const STRIP: i32 = 3; // 上端のアクセント色の帯（開いたボタンと同じ色）
         let h = (labels.len().min(12) as i32 * step + 6 + STRIP).min(sh as i32);
-        let mut win = Window::default().with_size(w, h).with_label(&format!("History ({})", list.len()));
+        let mut win = Window::default().with_size(w, h).with_label(&format!("{} ({})", crate::lang::tr("履歴", "History"), list.len()));
         // 押したボタン（Undo）の真下に出す。画面からはみ出さないよう収める
         if let Some((bx, by)) = toolbar::last_button_bottom() {
             win.set_pos(bx.min(sw as i32 - w).max(0), by.min(sh as i32 - h).max(0));
@@ -4380,7 +4470,7 @@ impl Ui {
         while n < HISTORY_STEP_LIMIT && (if undo { b.undo().is_ok() } else { b.redo().is_ok() }) {
             n += 1;
         }
-        self.flash(&format!("{} {}", if undo { "Undone" } else { "Redone" }, n));
+        self.flash(&format!("{} {}", if undo { crate::lang::tr("元に戻しました", "Undone") } else { crate::lang::tr("やり直しました", "Redone") }, n));
     }
 
     /// 全文と、いまの選択範囲（無ければカーソル位置）。位置はバイトオフセット。
@@ -4417,10 +4507,10 @@ impl Ui {
     fn copy_selection(&self) {
         let sel = self.doc().buf.selection_text();
         if sel.is_empty() {
-            self.flash("No selection");
+            self.flash(crate::lang::tr("選択がありません", "No selection"));
         } else {
             app::copy(&sel);
-            self.flash("Selection copied");
+            self.flash(crate::lang::tr("選択範囲をコピーしました", "Selection copied"));
         }
     }
 
@@ -4432,7 +4522,7 @@ impl Ui {
         let end = (d.buf.line_end(pos) + 1).min(d.buf.length());
         if let Some(line) = d.buf.text_range(start, end) {
             app::copy(&line);
-            self.flash("Line copied");
+            self.flash(crate::lang::tr("行をコピーしました", "Line copied"));
         }
     }
 
@@ -4449,7 +4539,7 @@ impl Ui {
             app::copy(&line);
             d.buf.clone().remove(start, end);
             self.editor.clone().set_insert_position(start);
-            self.flash("Line cut");
+            self.flash(crate::lang::tr("行を切り取りました", "Line cut"));
         }
     }
 
@@ -4479,12 +4569,12 @@ impl Ui {
             }
         };
         if text.trim().is_empty() {
-            self.flash("Nothing to copy");
+            self.flash(crate::lang::tr("コピーするものがありません", "Nothing to copy"));
             return;
         }
         app::copy(&text);
         let added = self.clip_history.borrow_mut().push(&text);
-        self.flash(if added { "Copied to history" } else { "Copied (already in history)" });
+        self.flash(if added { crate::lang::tr("履歴にコピーしました", "Copied to history") } else { crate::lang::tr("コピー済み（履歴にあります）", "Copied (already in history)") });
     }
 
     /// 履歴から選んだテキストを、選択を置き換えて（無ければカーソル位置に）貼り付ける。
@@ -4492,7 +4582,7 @@ impl Ui {
         let labels: Vec<String> =
             self.clip_history.borrow().items().iter().enumerate().map(|(i, s)| history::clip_label(i, s)).collect();
         if labels.is_empty() {
-            self.flash("Clipboard history is empty");
+            self.flash(crate::lang::tr("クリップボードの履歴はありません", "Clipboard history is empty"));
             return;
         }
         let rows: Vec<menu::Row> = labels.iter().map(|l| menu::Row::plain(l)).collect();
@@ -4519,7 +4609,7 @@ impl Ui {
         {
             let st = d.st.borrow();
             if st.loading || st.hex {
-                self.flash("Cannot format here");
+                self.flash(crate::lang::tr("ここでは整形できません", "Cannot format here"));
                 return;
             }
         }
@@ -4535,13 +4625,13 @@ impl Ui {
                     out.push('\n'); // 全文のとき、末尾の改行は保つ
                 }
                 if out == src {
-                    self.flash("Already formatted");
+                    self.flash(crate::lang::tr("整形済みです", "Already formatted"));
                     return;
                 }
                 b.unselect();
                 b.replace(s, e, &out);
                 self.editor.clone().set_insert_position(s);
-                self.flash("JSON formatted");
+                self.flash(crate::lang::tr("JSON を整形しました", "JSON formatted"));
             }
             Err(err) => {
                 let at = s + err.pos as i32;
@@ -4550,7 +4640,7 @@ impl Ui {
                 ed.set_insert_position(at);
                 ed.show_insert_position();
                 log::warn(TAG, &format!("JSON error {line}:{col} {}", err.msg));
-                self.flash(&format!("JSON error {line}:{col} {}", err.msg));
+                self.flash(&if crate::lang::is_en() { format!("JSON error {line}:{col} {}", err.msg) } else { format!("JSON の誤り {line}:{col} {}", err.msg) });
             }
         }
     }
@@ -4625,7 +4715,7 @@ impl Ui {
                     }
                     self.editor.clone().set_insert_position(ed.sel.1 as i32);
                 }
-                None => self.flash(if shift { "Nothing to unindent" } else { "Nothing to indent" }),
+                None => self.flash(if shift { crate::lang::tr("インデントを解除するものがありません", "Nothing to unindent") } else { crate::lang::tr("インデントするものがありません", "Nothing to indent") }),
             }
             true
         } else {
@@ -4745,7 +4835,7 @@ fn load_default_font(app: &app::App) -> Font {
         Ok(name) if Font::by_name(&name).bits() == LOADED_FONT_SLOT => Font::by_name(&name),
         other => {
             let why = match other {
-                Ok(name) => format!("「{name}」を使えませんでした"),
+                Ok(name) => if crate::lang::is_en() { format!("could not use \"{name}\"") } else { format!("「{name}」を使えませんでした") },
                 Err(e) => e,
             };
             log::error(TAG, &format!("同梱フォントを読み込めませんでした（OS 標準のフォントで続行）: {why}"));
@@ -4765,7 +4855,7 @@ fn load_configured_font(app: &app::App, cfg: &config::Config, default_font: Font
         }
         other => {
             let why = match other {
-                Ok(name) => format!("「{name}」を使えませんでした"),
+                Ok(name) => if crate::lang::is_en() { format!("could not use \"{name}\"") } else { format!("「{name}」を使えませんでした") },
                 Err(e) => e.to_string(),
             };
             log::warn(TAG, &format!("config: font を読み込めませんでした（既定のフォントで続行）: {} ({why})", path.display()));
@@ -4783,6 +4873,7 @@ pub fn run(paths: Vec<String>) -> Result<(), FltkError> {
     let config_path = config::path();
     let cfg = config_path.as_deref().map(config::load).unwrap_or_default();
     apply_theme_config(&cfg); // ウィンドウを作る前に決める
+    crate::lang::set(crate::lang::from_code(&cfg.lang).unwrap_or(crate::lang::Lang::Ja));
     if let Ok(name) = std::env::var("NEONOTE_THEME") {
         // 見比べ用の候補のパレット（theme.rs の PALETTES）。保存はしない
         if !theme::set_named(&name) {
@@ -4829,12 +4920,13 @@ pub fn run(paths: Vec<String>) -> Result<(), FltkError> {
     tabbar.end();
     let tx_view = tx_bar2.clone();
     let mut view_chip = tabs::build_chip();
-    view_chip.set_label("Text");
-    view_chip.set_tooltip("クリックで 表示（Text・Preview・HEX）を切り替え");
+    view_chip.set_label("Format");
+    view_chip.set_tooltip(crate::lang::tr("クリックで 表示（Text・Preview・HEX）と形式を切り替え", "Click to switch view (Text / Preview / HEX) and format"));
     view_chip.set_callback(move |_| tx_view.send(Msg::Do(Action::ChangeView)));
     tabrow.fixed(&view_chip, tabs::VIEW_CHIP_W);
     let tx_chip = tx_bar2.clone();
     let mut chip = tabs::build_chip();
+    chip.set_label("Encode");
     chip.set_callback(move |_| tx_chip.send(Msg::Do(Action::ChangeEncoding)));
     tabrow.fixed(&chip, tabs::CHIP_W);
     tabrow.end();
@@ -4931,6 +5023,7 @@ pub fn run(paths: Vec<String>) -> Result<(), FltkError> {
         gutter_digits: Cell::new(2),
         hscroll_key: Cell::new((0, -1, 0, 0, 0, false, 0)),
         mouse_left: Cell::new(false),
+        edge_dwell: Cell::new((0, 0)),
         body: body.clone(),
         side,
         side_pinned: Cell::new(cfg.side_pin),
@@ -5120,18 +5213,15 @@ pub fn run(paths: Vec<String>) -> Result<(), FltkError> {
                 Msg::Tab(TabCmd::Close(id)) => ui.close_tab(id),
                 Msg::Tab(TabCmd::New) => ui.new_tab(),
                 Msg::Tab(TabCmd::Move(id, to)) => ui.move_tab(id, to),
-                Msg::Find(FindCmd::Open) => ui.focus_find(),
+                Msg::Find(FindCmd::Search) => ui.search_button(),
+                Msg::Find(FindCmd::ClearReplace) => {
+                    let mut r = ui.find_bar.replace.clone();
+                    r.set_value("");
+                    let _ = r.take_focus();
+                }
                 Msg::Find(FindCmd::Changed) => ui.find_changed(),
                 Msg::Find(FindCmd::ReplaceOne) => ui.replace_one_bar(),
                 Msg::Find(FindCmd::ReplaceAll) => ui.replace_all_bar(),
-                Msg::Find(FindCmd::Next) => {
-                    ui.find_move(true, false);
-                    let _ = ui.editor.clone().take_focus();
-                }
-                Msg::Find(FindCmd::Prev) => {
-                    ui.find_move(false, false);
-                    let _ = ui.editor.clone().take_focus();
-                }
                 Msg::Find(FindCmd::Clear) => ui.clear_find(),
                 Msg::Resized => {
                     ui.refresh_tabs();
@@ -5163,4 +5253,9 @@ mod tests {
         assert_eq!(title_path(dir, Some(dir)), "/opt/neonote");
         assert_eq!(title_path(Path::new("/home/a/b.txt"), None), "/home/a/b.txt");
     }
+}
+
+/// 形式が Auto のとき、Preview で見る種類（文字として編集できる物は Text のまま）。
+fn auto_previews(k: viewmode::Kind) -> bool {
+    matches!(k, viewmode::Kind::Book | viewmode::Kind::Doc | viewmode::Kind::Pdf | viewmode::Kind::Image | viewmode::Kind::Audio | viewmode::Kind::Archive)
 }

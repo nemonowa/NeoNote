@@ -57,6 +57,56 @@ pub fn kind_of(path: Option<&Path>) -> Kind {
     }
 }
 
+/// 形式の自動判定で見る、本文の先頭の大きさ。
+pub const SNIFF_BYTES: i32 = 8192;
+
+/// 拡張子で決まらない文字の文書の形式を、先頭の中身から推す（html・Markdown・CSV / TSV。決まらなければ Other）。
+pub fn sniff(text: &str) -> Kind {
+    let head = text.trim_start_matches('\u{feff}').trim_start();
+    let low: String = head.chars().take(64).collect::<String>().to_lowercase();
+    if low.starts_with("<!doctype html") || low.starts_with("<html") {
+        return Kind::Html;
+    }
+    let lines: Vec<&str> = head.lines().take(50).collect();
+    let md = lines
+        .iter()
+        .filter(|l| {
+            let t = l.trim_start();
+            (t.starts_with('#') && t.trim_start_matches('#').starts_with(' ')) || t.starts_with("```") || t.starts_with("- ") || t.starts_with("* ") || t.starts_with("> ") || (t.contains("](") && t.contains('['))
+        })
+        .count();
+    if md >= 2 || lines.first().is_some_and(|l| l.starts_with("# ")) {
+        return Kind::Markdown;
+    }
+    for sep in [',', '\t'] {
+        let rows: Vec<usize> = lines.iter().filter(|l| !l.trim().is_empty()).map(|l| l.matches(sep).count()).collect();
+        if rows.len() >= 2 && rows[0] >= 1 && rows.iter().all(|&n| n == rows[0]) {
+            return Kind::Sheet;
+        }
+    }
+    Kind::Other
+}
+
+/// Auto の行に添える、いまの形式の名前。
+pub fn kind_name(kind: Kind, preview: bool, hex: bool) -> &'static str {
+    if hex && !preview {
+        return "HEX";
+    }
+    match kind {
+        Kind::Markdown => "Markdown",
+        Kind::Html => "HTML",
+        Kind::Sheet => "CSV",
+        Kind::Book => "Sheet",
+        Kind::Doc => "Document",
+        Kind::Pdf => "PDF",
+        Kind::Image => "Image",
+        Kind::Archive => "Folder",
+        Kind::Audio => "Audio",
+        Kind::Nbt => "NBT",
+        Kind::Other => "Text",
+    }
+}
+
 /// そのファイルで選べる表示（並べる順）。pdf は文字として編集できないので Text を出さない。
 #[cfg(test)]
 pub fn available(path: Option<&Path>) -> Vec<View> {
@@ -76,6 +126,14 @@ pub fn available_for(kind: Kind) -> Vec<View> {
 mod tests {
     use super::*;
     use std::path::Path;
+
+    #[test]
+    fn sniff_guesses_format() {
+        assert_eq!(sniff("<!DOCTYPE html><p>a"), Kind::Html);
+        assert_eq!(sniff("# Title\nbody"), Kind::Markdown);
+        assert_eq!(sniff("a,b,c\n1,2,3\n"), Kind::Sheet);
+        assert_eq!(sniff("just a memo, nothing else"), Kind::Other);
+    }
 
     #[test]
     fn kind_follows_the_extension_case_insensitively() {
