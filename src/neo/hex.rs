@@ -85,7 +85,7 @@ pub fn parse(text: &str) -> Result<Vec<u8>, ParseError> {
             if first {
                 first = false;
                 if tok.len() != 8 || !tok.bytes().all(|b| b.is_ascii_hexdigit()) {
-                    return Err(err("行頭はオフセット（8桁の16進数）です"));
+                    return Err(err(crate::lang::tr("行頭はオフセット（8桁の16進数）です", "The start of a line is an offset (8-digit hex)")));
                 }
                 continue;
             }
@@ -93,7 +93,7 @@ pub fn parse(text: &str) -> Result<Vec<u8>, ParseError> {
                 break;
             }
             if !is_hex2(tok) {
-                return Err(err("2桁の16進数（00-FF）だけ書けます"));
+                return Err(err(crate::lang::tr("2桁の16進数（00-FF）だけ書けます", "Only 2-digit hex values (00-FF) can be written")));
             }
             bytes.push(u8::from_str_radix(tok, 16).unwrap_or(0));
         }

@@ -1,6 +1,7 @@
 // ツールバー: 左端の押しピン（ウィンドウを最前面に固定。幅は行番号欄にそろえる）+ 8 ボタン + 余白 + 右端の検索バー（searchbar.rs。使うときだけ開く）。
 // 左クリック = そのボタンの主な動作。マウスを乗せる（または右クリック）と、そのボタンのメニューが真下に出る（hovermenu.rs）。
 // 余白をクリックすると現在のパスをコピーする（ダイアログは出さない）。
+use crate::lang;
 use super::{hovermenu, icons::{self, Icon}, menu::{self, Action, MenuEntry}, theme::*};
 use fltk::{
     app,
@@ -44,24 +45,60 @@ const BUTTON_W: i32 = 64;
 
 struct Spec {
     label: &'static str,
+    label_ja: &'static str,
     icon: Icon,
     tip: &'static str,
+    tip_ja: &'static str,
     /// 左クリックの動作。None はグレー表示で何も起きない。
     main: Option<Action>,
     menu: &'static [MenuEntry],
 }
 
+impl Spec {
+    fn label(&self) -> &'static str {
+        lang::tr(self.label_ja, self.label)
+    }
+    fn tip(&self) -> &'static str {
+        lang::tr(self.tip_ja, self.tip)
+    }
+}
+
 const SPECS: [Spec; 8] = [
-    Spec { label: "Load", icon: Icon::Folder, tip: "Load: 開く（右クリックでメニュー）", main: Some(Action::Open), menu: menu::LOAD },
-    Spec { label: "Save", icon: Icon::Save, tip: "Save: 保存（右クリックでメニュー）", main: Some(Action::Save), menu: menu::SAVE },
-    Spec { label: "Undo", icon: Icon::Undo, tip: "Undo: 元に戻す（右クリックでメニュー）", main: Some(Action::Undo), menu: menu::UNDO },
-    Spec { label: "Redo", icon: Icon::Redo, tip: "Redo: やり直し（右クリックでメニュー）", main: Some(Action::Redo), menu: menu::REDO },
+    Spec { label: "Load", label_ja: "開く", icon: Icon::Folder, tip: "Load: open a file (hover for menu)", tip_ja: "開く: ファイルを開く（乗せるとメニュー）", main: Some(Action::Open), menu: menu::LOAD },
+    Spec { label: "Save", label_ja: "保存", icon: Icon::Save, tip: "Save: save the file (hover for menu)", tip_ja: "保存: 上書き保存（乗せるとメニュー）", main: Some(Action::Save), menu: menu::SAVE },
+    Spec { label: "Undo", label_ja: "戻す", icon: Icon::Undo, tip: "Undo: undo the last edit (hover for menu)", tip_ja: "戻す: 元に戻す（乗せるとメニュー）", main: Some(Action::Undo), menu: menu::UNDO },
+    Spec { label: "Redo", label_ja: "進む", icon: Icon::Redo, tip: "Redo: redo the undone edit (hover for menu)", tip_ja: "進む: やり直し（乗せるとメニュー）", main: Some(Action::Redo), menu: menu::REDO },
     // Edit は選択系操作の入口。左クリックは Magic Select（選択を単語→行→段落→全体へ広げる）
-    Spec { label: "Edit", icon: Icon::Select, tip: "Edit: 選択範囲を広げる（右クリックでメニュー）", main: Some(Action::MagicSelect), menu: menu::EDIT },
-    Spec { label: "Copy", icon: Icon::Copy, tip: "Copy: コピー（右クリックでメニュー）", main: Some(Action::Copy), menu: menu::COPY },
-    Spec { label: "Paste", icon: Icon::Paste, tip: "Paste: 貼り付け（右クリックでメニュー）", main: Some(Action::Paste), menu: menu::PASTE },
-    Spec { label: "Run", icon: Icon::Run, tip: "Run: 選択範囲をコマンド実行 / 無ければ現在のフォルダを開く", main: Some(Action::RunCmd), menu: menu::RUN },
+    Spec { label: "Edit", label_ja: "選択", icon: Icon::Select, tip: "Edit: expand the selection (hover for menu)", tip_ja: "選択: 選択範囲を広げる（乗せるとメニュー）", main: Some(Action::MagicSelect), menu: menu::EDIT },
+    Spec { label: "Copy", label_ja: "複写", icon: Icon::Copy, tip: "Copy: copy (hover for menu)", tip_ja: "複写: コピー（乗せるとメニュー）", main: Some(Action::Copy), menu: menu::COPY },
+    Spec { label: "Paste", label_ja: "貼付", icon: Icon::Paste, tip: "Paste: paste (hover for menu)", tip_ja: "貼付: 貼り付け（乗せるとメニュー）", main: Some(Action::Paste), menu: menu::PASTE },
+    Spec { label: "Run", label_ja: "実行", icon: Icon::Run, tip: "Run: run the selection as a command, or open the current folder", tip_ja: "実行: 選択範囲をコマンド実行 / 無ければ現在のフォルダを開く", main: Some(Action::RunCmd), menu: menu::RUN },
 ];
+
+/// 検索欄の左の、アイコンだけのボタン（言語・配色）。左クリックで切り替え、乗せると一覧。
+struct IconSpec {
+    icon: Icon,
+    main: Action,
+    menu: &'static [MenuEntry],
+}
+
+const ICON_SPECS: [IconSpec; 2] = [
+    IconSpec { icon: Icon::Flag, main: Action::ToggleLang, menu: menu::LANG },
+    IconSpec { icon: Icon::Moon, main: Action::ToggleTheme, menu: menu::THEME },
+];
+const ICON_W: i32 = 32;
+/// バーの子の番号: 押しピン(0)・SPECS・余白の次から ICON_SPECS。
+const ICON_FIRST: i32 = SPECS.len() as i32 + 2;
+
+fn icon_tip(i: usize) -> String {
+    match i {
+        0 => {
+            let name = lang::ALL.iter().find(|a| a.0 == lang::current()).map_or("", |a| a.2);
+            format!("{}: {name}\n{}", lang::tr("言語", "Language"), lang::tr("クリックで English に切り替え（乗せると一覧）", "Click to switch to 日本語 (hover for list)"))
+        }
+        _ => format!("{}: {}\n{}", lang::tr("配色", "Theme"), current_name(), lang::tr("クリックで明るい・暗いを切り替え（乗せると一覧）", "Click to switch light / dark (hover for list)")),
+    }
+}
 
 fn rgb((r, g, b): (u8, u8, u8)) -> Color {
     Color::from_rgb(r, g, b)
@@ -85,6 +122,34 @@ fn draw_button(b: &mut Button, icon: Icon) {
     icons::draw(icon, x0, b.y() + (b.h() - icons::SIZE) / 2);
     draw::draw_text2(&label, x0 + icons::SIZE + gap, b.y(), tw + 2, b.h(), Align::Left | Align::Inside);
     draw_divider(b);
+}
+
+/// 言語を切り替えたあと、ボタンの名前とツールチップを今の言語に合わせ直す。
+pub fn relabel(bar: &Flex, top: &Button, gap: &Frame) {
+    for (i, spec) in SPECS.iter().enumerate() {
+        if let Some(w) = bar.child(i as i32 + 1) {
+            let mut b = unsafe { Button::from_widget_ptr(w.as_widget_ptr()) };
+            b.set_label(spec.label());
+            b.set_tooltip(spec.tip());
+        }
+    }
+    refresh_icon_tips(bar);
+    let mut top = top.clone();
+    if !top.value() {
+        top.set_tooltip(lang::tr("ウィンドウを最前面に固定する", "Keep the window on top"));
+    }
+    gap.clone().set_tooltip(lang::tr("クリックで現在のパスをコピー", "Click to copy the current path"));
+    bar.clone().redraw();
+}
+
+/// 言語・配色のボタンのツールチップを、今の状態に合わせる。
+pub fn refresh_icon_tips(bar: &Flex) {
+    for i in 0..ICON_SPECS.len() {
+        if let Some(w) = bar.child(ICON_FIRST + i as i32) {
+            let mut b = unsafe { Button::from_widget_ptr(w.as_widget_ptr()) };
+            b.set_tooltip(&icon_tip(i));
+        }
+    }
 }
 
 /// 配色を切り替えたあと、ツールバーの色を今のパレットに合わせ直す。
@@ -120,7 +185,7 @@ pub fn build<F: Fn(Action) + Clone + 'static, T>(on_action: F, extra: impl FnOnc
     top.set_frame(FrameType::FlatBox);
     top.set_down_frame(FrameType::FlatBox);
     top.clear_visible_focus();
-    top.set_tooltip("ウィンドウを最前面に固定する");
+    top.set_tooltip(lang::tr("ウィンドウを最前面に固定する", "Keep the window on top"));
     top.super_draw(false);
     top.draw(|b| {
         draw::draw_box(FrameType::FlatBox, b.x(), b.y(), b.w(), b.h(), rgb(color_sub()));
@@ -137,13 +202,13 @@ pub fn build<F: Fn(Action) + Clone + 'static, T>(on_action: F, extra: impl FnOnc
     bar.fixed(&top, 32);
 
     for spec in SPECS.iter() {
-        let mut b = Button::default().with_label(spec.label);
+        let mut b = Button::default().with_label(spec.label());
         b.set_frame(FrameType::FlatBox);
         b.set_down_frame(FrameType::FlatBox);
         b.set_color(rgb(color_main()));
         b.set_selection_color(rgb(color_accent()));
         b.set_label_color(if spec.main.is_some() { rgb(color_subtext()) } else { rgb(color_subtext()).darker() });
-        b.set_tooltip(spec.tip);
+        b.set_tooltip(spec.tip());
         b.clear_visible_focus(); // キーボードフォーカスは編集領域に残す
         let icon = spec.icon;
         b.super_draw(false);
@@ -208,8 +273,8 @@ pub fn build<F: Fn(Action) + Clone + 'static, T>(on_action: F, extra: impl FnOnc
     gap.set_color(rgb(color_sub()));
     gap.set_label_color(rgb(color_subtext()));
     gap.set_align(Align::Inside | Align::Right);
-    gap.set_tooltip("クリックで現在のパスをコピー");
-    let cb = on_action;
+    gap.set_tooltip(lang::tr("クリックで現在のパスをコピー", "Click to copy the current path"));
+    let cb = on_action.clone();
     gap.handle(move |_, ev| {
         if ev == Event::Push {
             cb(Action::CopyPath);
@@ -217,6 +282,48 @@ pub fn build<F: Fn(Action) + Clone + 'static, T>(on_action: F, extra: impl FnOnc
         }
         false
     });
+    for (i, spec) in ICON_SPECS.iter().enumerate() {
+        let mut b = Button::default();
+        b.set_frame(FrameType::FlatBox);
+        b.set_down_frame(FrameType::FlatBox);
+        b.clear_visible_focus();
+        b.set_tooltip(&icon_tip(i));
+        let icon = spec.icon;
+        b.super_draw(false);
+        b.draw(move |b| {
+            draw::draw_box(FrameType::FlatBox, b.x(), b.y(), b.w(), b.h(), rgb(color_sub()));
+            let hovered = app::belowmouse::<fltk::widget::Widget>().is_some_and(|w| w.as_widget_ptr() == b.as_widget_ptr());
+            draw::set_draw_color(rgb(if hovered || hovermenu::is_open_for(b) { color_text() } else { color_subtext() }));
+            let s = icons::SIZE;
+            icons::draw(icon, b.x() + (b.w() - s) / 2, b.y() + (b.h() - s) / 2);
+        });
+        bar.fixed(&b, ICON_W);
+        let cb = on_action.clone();
+        let main = spec.main;
+        b.set_callback(move |_| cb(main));
+        let cb = on_action.clone();
+        let menu = spec.menu;
+        b.super_handle_first(false);
+        b.handle(move |w, ev| {
+            if matches!(ev, Event::Enter | Event::Leave) {
+                w.redraw();
+                if ev == Event::Enter {
+                    let cb = cb.clone();
+                    hovermenu::hover(w, menu, Some(main), move |a| cb(a));
+                }
+                return ev == Event::Enter;
+            }
+            if ev == Event::Push && app::event_mouse_button() == app::MouseButton::Right {
+                let cb = cb.clone();
+                hovermenu::open(w, menu, Some(main), move |a| cb(a));
+                return true;
+            }
+            if ev == Event::Push {
+                hovermenu::close();
+            }
+            false
+        });
+    }
     let extra = extra(&mut bar);
     bar.end();
     (bar, gap, top, extra)

@@ -762,10 +762,10 @@ pub fn to_html(src: &str, bg: &str, fg: &str, link: &str, sub: &str, imgs: &Imag
     let (mut body, seen, cut, (pbg, pfg, plink)) = convert(src, imgs, theme);
     let (bg, fg, link) = (htmlstyle::hex(pbg), htmlstyle::hex(pfg), htmlstyle::hex(plink));
     if !seen {
-        body = "<p>表示できる内容がありません（本文が空、または script・style などだけです）。</p>".to_string();
+        body = crate::lang::tr("<p>表示できる内容がありません（本文が空、または script・style などだけです）。</p>", "<p>Nothing to display (the body is empty, or only script, style, etc.).</p>").to_string();
     }
     if cut {
-        body.push_str(&format!("<p><font color=\"{sub}\">── 長いため途中までを表示しています。全体は Text で見られます ──</font></p>"));
+        body.push_str(&if crate::lang::is_en() { format!("<p><font color=\"{sub}\">── Showing part of it because it is long. The whole file can be viewed in Text ──</font></p>") } else { format!("<p><font color=\"{sub}\">── 長いため途中までを表示しています。全体は Text で見られます ──</font></p>") });
     }
     format!("<html><body bgcolor=\"{bg}\" text=\"{fg}\" link=\"{link}\">{body}</body></html>")
 }

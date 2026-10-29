@@ -76,11 +76,11 @@ pub fn get_mut<'a>(root: &'a mut Tag, path: &[Seg]) -> Option<&'a mut Tag> {
 pub fn summary(name: &str, t: &Tag) -> String {
     let short = |s: String| if s.chars().count() > 80 { format!("{}…", s.chars().take(80).collect::<String>()) } else { s };
     let value = match t {
-        Tag::Compound(v) => format!("{{{} 個}}", v.len()),
-        Tag::List(id, v) => format!("[{} 個 {}]", v.len(), type_name(if v.is_empty() { *id } else { v[0].id() })),
-        Tag::ByteArray(v) => format!("[B; {} 個]", v.len()),
-        Tag::IntArray(v) => format!("[I; {} 個]", v.len()),
-        Tag::LongArray(v) => format!("[L; {} 個]", v.len()),
+        Tag::Compound(v) => if crate::lang::is_en() { format!("{{{} items}}", v.len()) } else { format!("{{{} 個}}", v.len()) },
+        Tag::List(id, v) => if crate::lang::is_en() { format!("[{} items {}]", v.len(), type_name(if v.is_empty() { *id } else { v[0].id() })) } else { format!("[{} 個 {}]", v.len(), type_name(if v.is_empty() { *id } else { v[0].id() })) },
+        Tag::ByteArray(v) => if crate::lang::is_en() { format!("[B; {} items]", v.len()) } else { format!("[B; {} 個]", v.len()) },
+        Tag::IntArray(v) => if crate::lang::is_en() { format!("[I; {} items]", v.len()) } else { format!("[I; {} 個]", v.len()) },
+        Tag::LongArray(v) => if crate::lang::is_en() { format!("[L; {} items]", v.len()) } else { format!("[L; {} 個]", v.len()) },
         Tag::String(s) => short(format!("\"{s}\"")),
         other => super::nbt::to_snbt(other).trim_end().to_string(),
     };
@@ -109,7 +109,7 @@ pub fn edit_text(t: &Tag) -> Option<String> {
 pub fn parse_edit(old: &Tag, input: &str) -> Result<Tag, String> {
     let s = input.trim();
     fn num<T: std::str::FromStr>(s: &str, what: &str) -> Result<T, String> {
-        s.parse::<T>().map_err(|_| format!("{what} として読めません: {s}"))
+        s.parse::<T>().map_err(|_| if crate::lang::is_en() { format!("Cannot read as {what}: {s}") } else { format!("{what} として読めません: {s}") })
     }
     fn list<T: std::str::FromStr>(s: &str, what: &str) -> Result<Vec<T>, String> {
         s.split(',').map(str::trim).filter(|x| !x.is_empty()).map(|x| num::<T>(x, what)).collect()
@@ -118,18 +118,18 @@ pub fn parse_edit(old: &Tag, input: &str) -> Result<Tag, String> {
         Tag::Byte(_) => Tag::Byte(match s {
             "true" => 1,
             "false" => 0,
-            _ => num(s, "Byte（-128〜127）")?,
+            _ => num(s, crate::lang::tr("Byte（-128〜127）", "Byte (-128 to 127)"))?,
         }),
-        Tag::Short(_) => Tag::Short(num(s, "Short（-32768〜32767）")?),
+        Tag::Short(_) => Tag::Short(num(s, crate::lang::tr("Short（-32768〜32767）", "Short (-32768 to 32767)"))?),
         Tag::Int(_) => Tag::Int(num(s, "Int")?),
         Tag::Long(_) => Tag::Long(num(s, "Long")?),
         Tag::Float(_) => Tag::Float(num(s, "Float")?),
         Tag::Double(_) => Tag::Double(num(s, "Double")?),
         Tag::String(_) => Tag::String(input.to_string()),
-        Tag::ByteArray(_) => Tag::ByteArray(list(s, "Byte（-128〜127）")?),
+        Tag::ByteArray(_) => Tag::ByteArray(list(s, crate::lang::tr("Byte（-128〜127）", "Byte (-128 to 127)"))?),
         Tag::IntArray(_) => Tag::IntArray(list(s, "Int")?),
         Tag::LongArray(_) => Tag::LongArray(list(s, "Long")?),
-        Tag::List(..) | Tag::Compound(_) => return Err("リストと複合タグは、中の項目を書き換えてください".into()),
+        Tag::List(..) | Tag::Compound(_) => return Err(crate::lang::tr("リストと複合タグは、中の項目を書き換えてください", "For lists and compound tags, edit the items inside").into()),
     })
 }
 
@@ -152,20 +152,20 @@ pub fn remove(root: &mut Tag, path: &[Seg]) -> bool {
 
 /// 複合タグの中の項目の名前を変える。同じ名前がもうあれば理由を返す。
 pub fn rename(root: &mut Tag, path: &[Seg], new_name: &str) -> Result<(), String> {
-    let Some((Seg::Key(old), parent)) = path.split_last() else { return Err("名前を変えられるのは複合タグの中の項目だけです".into()) };
-    let Some(Tag::Compound(v)) = get_mut(root, parent) else { return Err("項目が見つかりません".into()) };
+    let Some((Seg::Key(old), parent)) = path.split_last() else { return Err(crate::lang::tr("名前を変えられるのは複合タグの中の項目だけです", "Only items inside a compound tag can be renamed").into()) };
+    let Some(Tag::Compound(v)) = get_mut(root, parent) else { return Err(crate::lang::tr("項目が見つかりません", "Item not found").into()) };
     if new_name.is_empty() {
-        return Err("名前が空です".into());
+        return Err(crate::lang::tr("名前が空です", "Name is empty").into());
     }
     if new_name != old && v.iter().any(|(n, _)| n == new_name) {
-        return Err(format!("「{new_name}」はもうあります"));
+        return Err(if crate::lang::is_en() { format!("'{new_name}' already exists") } else { format!("「{new_name}」はもうあります") });
     }
     match v.iter_mut().find(|(n, _)| n == old) {
         Some(e) => {
             e.0 = new_name.to_string();
             Ok(())
         }
-        None => Err("項目が見つかりません".into()),
+        None => Err(crate::lang::tr("項目が見つかりません", "Item not found").into()),
     }
 }
 
@@ -175,10 +175,10 @@ pub fn add_child(root: &mut Tag, parent: &[Seg], name: &str, child: Tag) -> Resu
     match get_mut(root, parent) {
         Some(Tag::Compound(v)) => {
             if name.is_empty() {
-                return Err("名前が空です".into());
+                return Err(crate::lang::tr("名前が空です", "Name is empty").into());
             }
             if v.iter().any(|(n, _)| n == name) {
-                return Err(format!("「{name}」はもうあります"));
+                return Err(if crate::lang::is_en() { format!("'{name}' already exists") } else { format!("「{name}」はもうあります") });
             }
             v.push((name.to_string(), child));
             path.push(Seg::Key(name.to_string()));
@@ -186,14 +186,14 @@ pub fn add_child(root: &mut Tag, parent: &[Seg], name: &str, child: Tag) -> Resu
         Some(Tag::List(id, v)) => {
             if let Some(first) = v.first() {
                 if first.id() != child.id() {
-                    return Err(format!("このリストには {} しか入れられません", type_name(first.id())));
+                    return Err(if crate::lang::is_en() { format!("This list can only contain {}", type_name(first.id())) } else { format!("このリストには {} しか入れられません", type_name(first.id())) });
                 }
             }
             *id = child.id();
             v.push(child);
             path.push(Seg::Index(v.len() - 1));
         }
-        _ => return Err("子を足せるのは複合タグとリストだけです".into()),
+        _ => return Err(crate::lang::tr("子を足せるのは複合タグとリストだけです", "Only compound tags and lists can have children added").into()),
     }
     Ok(path)
 }

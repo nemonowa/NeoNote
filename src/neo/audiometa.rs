@@ -115,7 +115,7 @@ pub fn info(b: &[u8]) -> Result<Info, String> {
         Some(Format::Mp3) => Ok(mp3_info(b)),
         Some(Format::Flac) => flac_info(b),
         Some(Format::Wav) => wav_info(b),
-        None => Err("MP3 / FLAC / WAV ではありません".into()),
+        None => Err(crate::lang::tr("MP3 / FLAC / WAV ではありません", "Not an MP3 / FLAC / WAV file").into()),
     }
 }
 
@@ -125,7 +125,7 @@ pub fn items(b: &[u8]) -> Result<(Format, Vec<(String, String)>), String> {
         Some(Format::Mp3) => Ok((Format::Mp3, mp3_items(b)?)),
         Some(Format::Flac) => Ok((Format::Flac, flac_items(b)?)),
         Some(Format::Wav) => Ok((Format::Wav, wav_items(b)?)),
-        None => Err("MP3 / FLAC / WAV ではありません".into()),
+        None => Err(crate::lang::tr("MP3 / FLAC / WAV ではありません", "Not an MP3 / FLAC / WAV file").into()),
     }
 }
 
@@ -155,7 +155,7 @@ pub fn write(b: &[u8], text: &str) -> Result<Patch, String> {
         Some(Format::Mp3) => write_mp3(b, &items),
         Some(Format::Flac) => write_flac(b, &items),
         Some(Format::Wav) => write_wav(b, &items),
-        None => Err("MP3 / FLAC / WAV ではありません".into()),
+        None => Err(crate::lang::tr("MP3 / FLAC / WAV ではありません", "Not an MP3 / FLAC / WAV file").into()),
     }
 }
 
@@ -190,7 +190,7 @@ fn synchsafe(b: &[u8]) -> Option<usize> {
 
 fn synchsafe_enc(n: usize) -> Result<[u8; 4], String> {
     if n >= 1 << 28 {
-        return Err("タグが大きすぎます".into());
+        return Err(crate::lang::tr("タグが大きすぎます", "Tag is too large").into());
     }
     Ok([(n >> 21) as u8 & 0x7F, (n >> 14) as u8 & 0x7F, (n >> 7) as u8 & 0x7F, n as u8 & 0x7F])
 }
@@ -201,10 +201,10 @@ fn parse_v2(b: &[u8]) -> Result<Option<V2>, String> {
     }
     let ver = b[3];
     let flags = b[5];
-    let size = synchsafe(&b[6..10]).ok_or("ID3 のヘッダーが壊れています")?;
+    let size = synchsafe(&b[6..10]).ok_or(crate::lang::tr("ID3 のヘッダーが壊れています", "Broken ID3 header"))?;
     let region = 10 + size + if ver == 4 && flags & 0x10 != 0 { 10 } else { 0 };
     if 10 + size > b.len() {
-        return Err("ID3 タグが途中で切れています".into());
+        return Err(crate::lang::tr("ID3 タグが途中で切れています", "ID3 tag is truncated").into());
     }
     if ver != 3 && ver != 4 {
         return Ok(Some(V2 { ver, region: region.min(b.len()), frames: Vec::new(), clean: false }));
@@ -229,11 +229,11 @@ fn parse_v2(b: &[u8]) -> Result<Option<V2>, String> {
     if flags & 0x40 != 0 {
         // 拡張ヘッダーは読み飛ばす（書き直すときは付けない）
         if body.len() < 4 {
-            return Err("ID3 の拡張ヘッダーが壊れています".into());
+            return Err(crate::lang::tr("ID3 の拡張ヘッダーが壊れています", "Broken ID3 extended header").into());
         }
-        i = if ver == 4 { synchsafe(&body[..4]).ok_or("ID3 の拡張ヘッダーが壊れています")? } else { 4 + u32be(&body) as usize };
+        i = if ver == 4 { synchsafe(&body[..4]).ok_or(crate::lang::tr("ID3 の拡張ヘッダーが壊れています", "Broken ID3 extended header"))? } else { 4 + u32be(&body) as usize };
         if i > body.len() {
-            return Err("ID3 の拡張ヘッダーが壊れています".into());
+            return Err(crate::lang::tr("ID3 の拡張ヘッダーが壊れています", "Broken ID3 extended header").into());
         }
     }
     let mut frames = Vec::new();
@@ -464,10 +464,10 @@ fn write_mp3(b: &[u8], items: &[(String, String)]) -> Result<Patch, String> {
     for (k, v) in items {
         let key = k.to_lowercase();
         if !MP3_KEYS.contains(&key.as_str()) {
-            return Err(format!("`{k}` は MP3 では使えないキーです（{}）", MP3_KEYS.join(", ")));
+            return Err(if crate::lang::is_en() { format!("`{k}` cannot be used in MP3 (usable keys: {})", MP3_KEYS.join(", ")) } else { format!("`{k}` は MP3 では使えないキーです（{}）", MP3_KEYS.join(", ")) });
         }
         if values.iter().any(|(x, _)| *x == key) {
-            return Err(format!("`{key}` が 2 回以上あります"));
+            return Err(if crate::lang::is_en() { format!("`{key}` appears more than once") } else { format!("`{key}` が 2 回以上あります") });
         }
         values.push((key, v.clone()));
     }
@@ -475,10 +475,10 @@ fn write_mp3(b: &[u8], items: &[(String, String)]) -> Result<Patch, String> {
     let (ver, region, mut frames, lang) = match &old {
         Some(v) => {
             if v.ver != 3 && v.ver != 4 {
-                return Err(format!("ID3v2.{} のタグは編集できません（v2.3 / v2.4 のみ）", v.ver));
+                return Err(if crate::lang::is_en() { format!("ID3v2.{} tags cannot be edited (v2.3 / v2.4 only)", v.ver) } else { format!("ID3v2.{} のタグは編集できません（v2.3 / v2.4 のみ）", v.ver) });
             }
             if !v.clean {
-                return Err("ID3 タグに読めない部分があるため、壊さないよう編集しません".into());
+                return Err(crate::lang::tr("ID3 タグに読めない部分があるため、壊さないよう編集しません", "Not editing, because the ID3 tag has unreadable parts and editing could damage it").into());
             }
             let lang = v.frames.iter().find(|f| managed(f).is_some_and(|(k, _)| k == "comment")).and_then(|f| comm_parse(&f.data)).map(|(l, _, _)| l);
             (v.ver, v.region, v.frames.iter().filter(|f| managed(f).is_none()).cloned().collect::<Vec<_>>(), lang.unwrap_or(*b"eng"))
@@ -496,7 +496,7 @@ fn write_mp3(b: &[u8], items: &[(String, String)]) -> Result<Patch, String> {
                     frames.push(text_frame(ver, b"TDRC", v));
                 } else {
                     if v.len() != 4 || !v.bytes().all(|c| c.is_ascii_digit()) {
-                        return Err("year は 4 桁の数字で書いてください（ID3v2.3）".into());
+                        return Err(crate::lang::tr("year は 4 桁の数字で書いてください（ID3v2.3）", "Write the year as 4 digits (ID3v2.3)").into());
                     }
                     frames.push(text_frame(ver, b"TYER", v));
                 }
@@ -530,7 +530,7 @@ fn write_mp3(b: &[u8], items: &[(String, String)]) -> Result<Patch, String> {
         None => (b.len(), Vec::new()),
     };
     if region > tail_from {
-        return Err("ID3 タグと ID3v1 が重なっています".into());
+        return Err(crate::lang::tr("ID3 タグと ID3v1 が重なっています", "ID3 tag overlaps ID3v1").into());
     }
     Ok(Patch { head_skip: region, head, tail_from, tail, in_place })
 }
@@ -639,18 +639,18 @@ fn mp3_find_frame(b: &[u8], start: usize) -> Option<(usize, Hdr)> {
 
 fn flac_blocks(b: &[u8]) -> Result<(Vec<(u8, &[u8])>, usize), String> {
     if !b.starts_with(b"fLaC") {
-        return Err("FLAC ではありません".into());
+        return Err(crate::lang::tr("FLAC ではありません", "Not a FLAC file").into());
     }
     let mut pos = 4;
     let mut v = Vec::new();
     loop {
         if pos + 4 > b.len() {
-            return Err("FLAC のメタデータが途中で切れています".into());
+            return Err(crate::lang::tr("FLAC のメタデータが途中で切れています", "FLAC metadata is truncated").into());
         }
         let h = b[pos];
         let len = ((b[pos + 1] as usize) << 16) | ((b[pos + 2] as usize) << 8) | b[pos + 3] as usize;
         if pos + 4 + len > b.len() {
-            return Err("FLAC のメタデータが途中で切れています".into());
+            return Err(crate::lang::tr("FLAC のメタデータが途中で切れています", "FLAC metadata is truncated").into());
         }
         v.push((h & 0x7F, &b[pos + 4..pos + 4 + len]));
         pos += 4 + len;
@@ -682,7 +682,7 @@ fn flac_items(b: &[u8]) -> Result<Vec<(String, String)>, String> {
     let (blocks, _) = flac_blocks(b)?;
     let mut out = Vec::new();
     for (_, d) in blocks.iter().filter(|(t, _)| *t == 4) {
-        let (_, cs) = vorbis_parse(d).ok_or("FLAC の Vorbis コメントが壊れています")?;
+        let (_, cs) = vorbis_parse(d).ok_or(crate::lang::tr("FLAC の Vorbis コメントが壊れています", "Broken FLAC Vorbis comment"))?;
         for c in cs {
             let s = String::from_utf8_lossy(&c).into_owned();
             if let Some((k, v)) = s.split_once('=') {
@@ -716,7 +716,7 @@ fn write_flac(b: &[u8], items: &[(String, String)]) -> Result<Patch, String> {
     let mut comments: Vec<Vec<u8>> = Vec::new();
     for (k, v) in items {
         if k.is_empty() || !k.bytes().all(|c| (0x20..=0x7D).contains(&c)) {
-            return Err(format!("`{k}` は Vorbis コメントのキーに使えません（半角の英数字・記号、`=` 以外）"));
+            return Err(if crate::lang::is_en() { format!("`{k}` cannot be used as a Vorbis comment key (ASCII letters, digits and symbols, except `=`)") } else { format!("`{k}` は Vorbis コメントのキーに使えません（半角の英数字・記号、`=` 以外）") });
         }
         comments.push(format!("{k}={v}").into_bytes());
     }
@@ -749,7 +749,7 @@ fn write_flac(b: &[u8], items: &[(String, String)]) -> Result<Patch, String> {
         list.insert(at, (4, vc));
     }
     if list.iter().any(|(_, d)| d.len() >= 1 << 24) {
-        return Err("FLAC のブロックが大きすぎます".into());
+        return Err(crate::lang::tr("FLAC のブロックが大きすぎます", "FLAC block is too large").into());
     }
     let need: usize = list.iter().map(|(_, d)| 4 + d.len()).sum();
     let old_total = meta_end - 4;
@@ -787,7 +787,7 @@ struct Chunk<'a> {
 /// RIFF のチャンクを順に読む。戻り値は (チャンク, RIFF の終わり)。
 fn wav_chunks(b: &[u8]) -> Result<(Vec<Chunk<'_>>, usize), String> {
     if format_of(b) != Some(Format::Wav) {
-        return Err("WAV ではありません".into());
+        return Err(crate::lang::tr("WAV ではありません", "Not a WAV file").into());
     }
     let declared = 8 + u32le(&b[4..]) as usize;
     let end = declared.min(b.len());
@@ -831,7 +831,7 @@ fn wav_key_id(k: &str) -> Result<[u8; 4], String> {
         let b = k.as_bytes();
         return Ok([b[0], b[1], b[2], b[3]]);
     }
-    Err(format!("`{k}` は WAV では使えないキーです（{}、または 4 文字の ID）", WAV_KEYS.iter().map(|(n, _)| *n).collect::<Vec<_>>().join(", ")))
+    Err(if crate::lang::is_en() { format!("`{k}` cannot be used in WAV (usable keys: {}, or a 4-character ID)", WAV_KEYS.iter().map(|(n, _)| *n).collect::<Vec<_>>().join(", ")) } else { format!("`{k}` は WAV では使えないキーです（{}、または 4 文字の ID）", WAV_KEYS.iter().map(|(n, _)| *n).collect::<Vec<_>>().join(", ")) })
 }
 
 fn is_info_list(c: &Chunk<'_>) -> bool {
@@ -883,7 +883,7 @@ fn wav_info(b: &[u8]) -> Result<Info, String> {
 fn write_wav(b: &[u8], items: &[(String, String)]) -> Result<Patch, String> {
     let (chunks, end) = wav_chunks(b)?;
     if chunks.iter().any(|c| c.cut) || 8 + u32le(&b[4..]) as usize > b.len() {
-        return Err("WAV が途中で切れている（または大きさの記録が正しくない）ため、壊さないよう編集しません".into());
+        return Err(crate::lang::tr("WAV が途中で切れている（または大きさの記録が正しくない）ため、壊さないよう編集しません", "Not editing, because the WAV is truncated (or its size record is wrong) and editing could damage it").into());
     }
     let mut info = b"INFO".to_vec();
     for (k, v) in items.iter().filter(|(_, v)| !v.is_empty()) {
@@ -922,7 +922,7 @@ fn write_wav(b: &[u8], items: &[(String, String)]) -> Result<Patch, String> {
         put(b"LIST", &info, &mut body);
     }
     if body.len() > u32::MAX as usize - 8 {
-        return Err("WAV が大きすぎます".into());
+        return Err(crate::lang::tr("WAV が大きすぎます", "WAV is too large").into());
     }
     let mut out = b"RIFF".to_vec();
     out.extend_from_slice(&(body.len() as u32).to_le_bytes());
@@ -960,7 +960,7 @@ pub fn format_time(secs: f64) -> String {
 /// 情報の行（ラベル, 値）。
 pub fn info_rows(i: &Info) -> Vec<(&'static str, String)> {
     let mut v = vec![("Format", i.format.label().to_string())];
-    let a = if i.approx { "約 " } else { "" };
+    let a = if i.approx { crate::lang::tr("約 ", "about ") } else { "" };
     if let Some(s) = i.seconds {
         v.push(("Length", format!("{a}{}", format_time(s))));
     }

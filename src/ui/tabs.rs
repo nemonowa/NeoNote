@@ -20,7 +20,7 @@ pub const CHIP_W: i32 = 104;
 /// 表示（Text・Preview・HEX）のチップの幅。
 pub const VIEW_CHIP_W: i32 = 96;
 const MIN_W: i32 = 48;
-const MAX_W: i32 = 220;
+const MAX_W: i32 = 160;
 const CLOSE_W: i32 = 24;
 const PLUS_W: i32 = 32;
 /// これ以上横に動かしたら、クリックではなくドラッグ（並べ替え）と見なす。
@@ -50,9 +50,13 @@ pub fn tab_label(path: Option<&Path>, dirty: bool, loading: bool) -> String {
     let name = path
         .map(|p| crate::log::file_name(&p.to_string_lossy()).to_string())
         .filter(|n| !n.is_empty())
-        .unwrap_or_else(|| "Untitled".to_string());
+        .unwrap_or_else(|| crate::lang::tr("無題", "Untitled").to_string());
     let mark = if dirty { "*" } else { "" };
-    if loading { format!("Loading... {name}") } else { format!("{mark}{name}") }
+    if loading {
+        if crate::lang::is_en() { format!("Loading... {name}") } else { format!("読込中... {name}") }
+    } else {
+        format!("{mark}{name}")
+    }
 }
 
 /// FLTK のラベルは `&`（ショートカット）と `@`（記号）を特別扱いするので、重ねて無効にする。
@@ -209,25 +213,34 @@ fn style(b: &mut Button, active: bool) {
     }
 }
 
-/// ドラッグ中、落とす先のタブをアクセント色にする（`target` が None なら元の色に戻す）。
-/// バーの子は「名前, ×」の組が並ぶ（先頭から `actives.len()` 組）。
-fn paint_target(bar: &impl GroupExt, actives: &[bool], target: Option<usize>) {
+thread_local! {
+    /// ドラッグ中に、落とす先へ引く縦線の x（ウィンドウ内の座標）。None なら引かない。
+    static DROP_X: Cell<Option<i32>> = const { Cell::new(None) };
+}
+
+/// ドラッグ中の見た目: 掴んでいるタブ（`from`）を沈んだ色にし、入る先に縦線を引く。
+/// `target` が None なら元に戻す。バーの子は「名前, ×」の組が並ぶ（先頭から `actives.len()` 組）。
+fn paint_target(bar: &mut impl GroupExt, actives: &[bool], from: usize, target: Option<usize>, tab_w: i32) {
     for (i, &active) in actives.iter().enumerate() {
-        let (bg, fg) = if Some(i) == target {
-            (rgb(color_accent()), rgb(color_on_accent()))
+        let (bg, fg) = if target.is_some() && i == from {
+            (mix(color_sub(), color_accent(), 25), color_text())
         } else if active {
-            (rgb(color_main()), rgb(color_text()))
+            (color_main(), color_text())
         } else {
-            (rgb(color_tab_inactive()), rgb(color_subtext()))
+            (color_tab_inactive(), color_subtext())
         };
         for k in [2 * i, 2 * i + 1] {
             if let Some(mut c) = bar.child(k as i32) {
-                c.set_color(bg);
-                c.set_label_color(fg);
+                c.set_color(rgb(bg));
+                c.set_label_color(rgb(fg));
                 c.redraw();
             }
         }
     }
+    // 入れ終わったあとの位置が target なので、左へ動かすなら target の左端、右へなら右端に線を引く
+    let x = target.filter(|t| *t != from).map(|t| bar.x() + if t < from { t } else { t + 1 } as i32 * tab_w);
+    DROP_X.with(|d| d.set(x));
+    bar.redraw();
 }
 
 /// バーの中身を作り直す。`avail` はバーに使える幅（ウィンドウ幅）。
@@ -242,7 +255,7 @@ pub fn rebuild<F: Fn(TabCmd) + Clone + 'static>(bar: &mut Flex, tabs: &[TabInfo]
     let tabs = &tabs[range];
     let w = tab_width(tabs.len(), avail);
     let actives: Rc<Vec<bool>> = Rc::new(tabs.iter().map(|t| t.active).collect());
-    for t in tabs {
+    for (index, t) in tabs.iter().enumerate() {
         let id = t.id;
 
         let mut name = Button::default().with_label(&escape_label(&format!(" {}", t.label)));
@@ -281,9 +294,9 @@ pub fn rebuild<F: Fn(TabCmd) + Clone + 'static>(bar: &mut Flex, tabs: &[TabInfo]
                         return false;
                     }
                     drag.set(Some((x0, true)));
-                    if let (Some(bar), Some(mut win)) = (btn.parent(), btn.window()) {
+                    if let (Some(mut bar), Some(mut win)) = (btn.parent(), btn.window()) {
                         win.set_cursor(Cursor::Move);
-                        paint_target(&bar, &actives, Some(slot_at_mouse(btn)));
+                        paint_target(&mut bar, &actives, index, Some(slot_at_mouse(btn)), w);
                     }
                     true
                 }
@@ -295,6 +308,7 @@ pub fn rebuild<F: Fn(TabCmd) + Clone + 'static>(bar: &mut Flex, tabs: &[TabInfo]
                     if let Some(mut win) = btn.window() {
                         win.set_cursor(Cursor::Default);
                     }
+                    DROP_X.with(|d| d.set(None));
                     cb(TabCmd::Move(id, first + slot_at_mouse(btn)));
                     true
                 }
@@ -304,7 +318,7 @@ pub fn rebuild<F: Fn(TabCmd) + Clone + 'static>(bar: &mut Flex, tabs: &[TabInfo]
 
         let mut close = Button::default().with_label("×");
         style(&mut close, t.active);
-        close.set_tooltip("Close (Ctrl+W)");
+        close.set_tooltip(crate::lang::tr("閉じる（Ctrl+W）", "Close (Ctrl+W)"));
         bar.fixed(&close, CLOSE_W);
         let cb = on_cmd.clone();
         close.set_callback(move |_| cb(TabCmd::Close(id)));
@@ -312,7 +326,7 @@ pub fn rebuild<F: Fn(TabCmd) + Clone + 'static>(bar: &mut Flex, tabs: &[TabInfo]
 
     let mut plus = Button::default().with_label("+");
     style(&mut plus, false);
-    plus.set_tooltip("New tab (Ctrl+T)");
+    plus.set_tooltip(crate::lang::tr("新しいタブ（Ctrl+T）", "New tab (Ctrl+T)"));
     bar.fixed(&plus, PLUS_W);
     let cb = on_cmd;
     plus.set_callback(move |_| cb(TabCmd::New));
@@ -322,6 +336,12 @@ pub fn rebuild<F: Fn(TabCmd) + Clone + 'static>(bar: &mut Flex, tabs: &[TabInfo]
     rest.set_color(rgb(color_sub()));
 
     bar.end();
+    DROP_X.with(|d| d.set(None));
+    bar.draw(|b| {
+        if let Some(x) = DROP_X.with(|d| d.get()) {
+            draw::draw_rect_fill(x - 1, b.y(), 3, b.h(), rgb(color_accent()));
+        }
+    });
     Group::set_current(None::<&Group>); // 実行中に begin / end した後は、現在のグループを空に戻す
     bar.layout();
     bar.redraw();
@@ -333,11 +353,11 @@ mod tests {
 
     #[test]
     fn label_shows_name_dirty_mark_and_loading() {
-        assert_eq!(tab_label(None, false, false), "Untitled");
-        assert_eq!(tab_label(None, true, false), "*Untitled");
+        assert_eq!(tab_label(None, false, false), "無題");
+        assert_eq!(tab_label(None, true, false), "*無題");
         assert_eq!(tab_label(Some(Path::new("/a/b/c.txt")), true, false), "*c.txt");
         assert_eq!(tab_label(Some(Path::new("C:\\x\\y.json")), false, false), "y.json");
-        assert_eq!(tab_label(Some(Path::new("/a/b/c.txt")), true, true), "Loading... c.txt");
+        assert_eq!(tab_label(Some(Path::new("/a/b/c.txt")), true, true), "読込中... c.txt");
     }
 
     #[test]
@@ -349,7 +369,7 @@ mod tests {
     #[test]
     fn width_shrinks_to_fit_with_floor_and_ceiling() {
         assert_eq!(tab_width(1, 800), MAX_W);
-        assert_eq!(tab_width(4, 800), (800 - PLUS_W) / 4);
+        assert_eq!(tab_width(6, 800), (800 - PLUS_W) / 6);
         assert_eq!(tab_width(100, 800), MIN_W);
         assert_eq!(tab_width(0, 800), MAX_W);
     }

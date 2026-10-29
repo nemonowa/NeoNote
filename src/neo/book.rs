@@ -31,7 +31,7 @@ pub fn is_ods(p: &Path) -> bool {
 /// zip 全体のバイト列から、全シートを読む。
 pub fn read(bytes: &[u8], ods: bool) -> Result<Vec<Sheet>, String> {
     if bytes.len() > MAX_BYTES {
-        return Err(format!("ファイルが大きすぎます（上限 {} MiB）", MAX_BYTES / 1024 / 1024));
+        return Err(if crate::lang::is_en() { format!("File is too large (limit {} MiB)", MAX_BYTES / 1024 / 1024) } else { format!("ファイルが大きすぎます（上限 {} MiB）", MAX_BYTES / 1024 / 1024) });
     }
     if ods {
         read_ods(bytes)
@@ -494,7 +494,7 @@ fn parse_xlsx_sheet(name: &str, xml: &str, ctx: &XlsxCtx) -> Sheet {
 }
 
 fn read_xlsx(bytes: &[u8]) -> Result<Vec<Sheet>, String> {
-    let wb = entry_text(bytes, "xl/workbook.xml").map_err(|e| format!("xlsx として読めません: {e}"))?;
+    let wb = entry_text(bytes, "xl/workbook.xml").map_err(|e| if crate::lang::is_en() { format!("Cannot read as xlsx: {e}") } else { format!("xlsx として読めません: {e}") })?;
     let mut date1904 = false;
     // (シート名, 関係の id, 非表示か)
     let mut defs: Vec<(String, Option<String>, bool)> = Vec::new();
@@ -546,7 +546,7 @@ fn read_xlsx(bytes: &[u8]) -> Result<Vec<Sheet>, String> {
         }
     }
     if out.is_empty() {
-        Err("表示できるシートがありません".into())
+        Err(crate::lang::tr("表示できるシートがありません", "No sheet to display").into())
     } else {
         Ok(out)
     }
@@ -671,10 +671,10 @@ fn parse_ods(xml: &str) -> Vec<Sheet> {
 }
 
 fn read_ods(bytes: &[u8]) -> Result<Vec<Sheet>, String> {
-    let xml = entry_text(bytes, "content.xml").map_err(|e| format!("ods として読めません: {e}"))?;
+    let xml = entry_text(bytes, "content.xml").map_err(|e| if crate::lang::is_en() { format!("Cannot read as ods: {e}") } else { format!("ods として読めません: {e}") })?;
     let sheets = parse_ods(&xml);
     if sheets.is_empty() {
-        Err("表示できるシートがありません".into())
+        Err(crate::lang::tr("表示できるシートがありません", "No sheet to display").into())
     } else {
         Ok(sheets)
     }
@@ -697,7 +697,7 @@ pub fn to_html(sheets: &[Sheet], bg: &str, fg: &str, sub: &str) -> String {
         }
         body.push_str(&format!("<p><font color=\"{sub}\">── </font><b>{name}</b><font color=\"{sub}\"> ──</font></p>"));
         if s.rows.is_empty() {
-            body.push_str("<p>（空のシートです）</p>");
+            body.push_str(crate::lang::tr("<p>（空のシートです）</p>", "<p>(Empty sheet)</p>"));
         } else {
             body.push_str(&sheet::table_html(&s.rows, s.truncated, s.cut_cols, false, sub, false));
         }

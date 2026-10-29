@@ -27,8 +27,26 @@ pub struct Palette {
     pub subtext: Rgb,
 }
 
-/// ダーク（SwingNeoNote 由来の配色。本文の文字だけ、subtext から text に変えた）。
+/// ダークの既定「濡羽色」（#000B00 を地に、緑の文字とアクセント）。
 pub const DARK: Palette = Palette {
+    main: (0, 11, 0),
+    sub: (10, 32, 16), // 地が黒に近く一段暗くできないので、バーは一段明るい緑にする
+    accent: (40, 230, 120),
+    text: (140, 228, 150),
+    subtext: (72, 150, 90),
+};
+
+/// ライトの既定「月白色」（#EAF4FC を地に、紺の文字と青のアクセント）。
+pub const LIGHT: Palette = Palette {
+    main: (234, 244, 252),
+    sub: (214, 229, 242),
+    accent: (30, 100, 190),
+    text: (22, 34, 52),
+    subtext: (84, 102, 126),
+};
+
+/// 以前のダーク（SwingNeoNote 由来の配色。本文の文字だけ、subtext から text に変えた）。
+pub const CLASSIC_DARK: Palette = Palette {
     main: (43, 43, 43),
     sub: (30, 30, 30),
     accent: (0, 120, 215),
@@ -36,8 +54,8 @@ pub const DARK: Palette = Palette {
     subtext: (128, 128, 128),
 };
 
-/// ライト。
-pub const LIGHT: Palette = Palette {
+/// 以前のライト。
+pub const CLASSIC_LIGHT: Palette = Palette {
     main: (250, 250, 250),
     sub: (232, 232, 232),
     accent: (0, 120, 215),
@@ -55,8 +73,10 @@ pub struct Named {
 /// 使えるパレット。先頭の 2 つがダークとライト（Toggle Theme はこの 2 つを行き来する）。
 /// 3 つ目からは見比べ用の候補（起動時に環境変数 NEONOTE_THEME=名前 で選べる）。
 pub const PALETTES: &[Named] = &[
-    Named { name: "dark", palette: DARK, light: false },
-    Named { name: "light", palette: LIGHT, light: true },
+    Named { name: "nureba", palette: DARK, light: false },
+    Named { name: "geppaku", palette: LIGHT, light: true },
+    Named { name: "classic_dark", palette: CLASSIC_DARK, light: false },
+    Named { name: "classic_light", palette: CLASSIC_LIGHT, light: true },
     Named { name: "nord", palette: Palette { main: (38, 42, 51), sub: (29, 32, 40), accent: (94, 129, 172), text: (229, 233, 240), subtext: (140, 150, 170) }, light: false },
     Named { name: "abyss", palette: Palette { main: (22, 27, 34), sub: (13, 17, 23), accent: (0, 122, 112), text: (214, 222, 230), subtext: (125, 135, 148) }, light: false },
     Named { name: "paper", palette: Palette { main: (247, 241, 227), sub: (233, 224, 204), accent: (166, 90, 30), text: (52, 44, 36), subtext: (110, 96, 80) }, light: true },
@@ -205,7 +225,8 @@ mod tests {
             assert!(contrast(err, p.main) >= 4.5, "{name}: error on main");
             let sum = |c: Rgb| c.0 as u32 + c.1 as u32 + c.2 as u32;
             assert_eq!(n.light, sum(p.main) > sum(p.text), "{name}: light flag");
-            assert!(sum(p.sub) < sum(p.main), "{name}: sub is one step back");
+            // 濡羽は地が黒に近いので、バーを一段明るくして分ける
+            assert!(sum(p.sub) < sum(p.main) || n.name == "nureba", "{name}: sub is one step back");
         }
     }
 
@@ -215,7 +236,7 @@ mod tests {
         assert!(sum(DARK.main) < sum(DARK.text));
         assert!(sum(LIGHT.main) > sum(LIGHT.text));
         // sub は main より一段奥（ダークは暗く、ライトも暗く）
-        assert!(sum(DARK.sub) < sum(DARK.main));
+        assert!(sum(DARK.sub) != sum(DARK.main));
         assert!(sum(LIGHT.sub) < sum(LIGHT.main));
     }
 
@@ -228,7 +249,7 @@ mod tests {
 
     #[test]
     fn derived_colors_match_the_old_dark_look() {
-        set_light(false);
+        assert!(set_named("classic_dark"));
         assert_eq!(color_tab_inactive(), (36, 36, 36));
         assert_eq!(color_selected_row(), (74, 74, 74)); // 以前は 75（誤差 1）
     }

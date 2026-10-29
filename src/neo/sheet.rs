@@ -202,7 +202,7 @@ fn esc_cell(s: &str, out: &mut String) {
 /// `semicolon` は小数点の `,` を数として扱う（`;` 区切りの csv）。`full_hint` は注記に「全体は Text で見られます」を添える（csv / tsv だけ）。
 pub fn table_html(rows: &[Vec<String>], truncated: bool, cut_cols: bool, semicolon: bool, sub: &str, full_hint: bool) -> String {
     if rows.is_empty() {
-        return "<p>（空のファイルです）</p>".into();
+        return crate::lang::tr("<p>（空のファイルです）</p>", "<p>(Empty file)</p>").into();
     }
     let mut body = String::new();
     let cols = rows.iter().map(Vec::len).max().unwrap_or(0).min(MAX_COLS);
@@ -227,13 +227,13 @@ pub fn table_html(rows: &[Vec<String>], truncated: bool, cut_cols: bool, semicol
     body.push_str("</table>");
     let mut note = Vec::new();
     if truncated {
-        note.push(format!("先頭の {} 行だけを表示しています", rows.len()));
+        note.push(if crate::lang::is_en() { format!("Showing only the first {} rows", rows.len()) } else { format!("先頭の {} 行だけを表示しています", rows.len()) });
     }
     if cut_cols {
-        note.push(format!("{MAX_COLS} 列より右は表示していません"));
+        note.push(if crate::lang::is_en() { format!("Columns after {MAX_COLS} are not shown") } else { format!("{MAX_COLS} 列より右は表示していません") });
     }
     if !note.is_empty() {
-        let tail = if full_hint { "全体は Text で見られます。" } else { "" };
+        let tail = if full_hint { crate::lang::tr("全体は Text で見られます。", "The whole file can be viewed in Text.") } else { "" };
         body.push_str(&format!("<p><font color=\"{sub}\">{}。{tail}</font></p>", note.join("。")));
     }
     body

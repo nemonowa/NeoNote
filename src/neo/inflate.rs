@@ -24,7 +24,7 @@ struct Bits<'a> {
 impl Bits<'_> {
     fn bits(&mut self, need: u32) -> R<u32> {
         while self.n < need {
-            let b = *self.d.get(self.pos).ok_or("データが途中で切れています")?;
+            let b = *self.d.get(self.pos).ok_or(crate::lang::tr("データが途中で切れています", "Data is truncated"))?;
             self.pos += 1;
             self.buf |= (b as u32) << self.n;
             self.n += 8;
@@ -48,7 +48,7 @@ impl Bits<'_> {
             first <<= 1;
             code <<= 1;
         }
-        Err("不正な符号です")
+        Err(crate::lang::tr("不正な符号です", "Invalid code"))
     }
 }
 
@@ -69,7 +69,7 @@ impl Huff {
         for c in &count[1..] {
             left = (left << 1) - *c as i32;
             if left < 0 {
-                return Err("ハフマン表が壊れています");
+                return Err(crate::lang::tr("ハフマン表が壊れています", "Broken Huffman table"));
             }
         }
         let mut offs = [0u16; 16];
@@ -93,7 +93,7 @@ fn codes(b: &mut Bits, out: &mut Vec<u8>, lit: &Huff, dist: &Huff, max: usize) -
         let sym = b.decode(lit)? as usize;
         if sym < 256 {
             if out.len() >= max {
-                return Err("展開後が大きすぎます");
+                return Err(crate::lang::tr("展開後が大きすぎます", "Decompressed data is too large"));
             }
             out.push(sym as u8);
         } else if sym == 256 {
@@ -101,19 +101,19 @@ fn codes(b: &mut Bits, out: &mut Vec<u8>, lit: &Huff, dist: &Huff, max: usize) -
         } else {
             let s = sym - 257;
             if s >= 29 {
-                return Err("不正な長さの符号です");
+                return Err(crate::lang::tr("不正な長さの符号です", "Invalid length code"));
             }
             let len = LBASE[s] as usize + b.bits(LEXT[s] as u32)? as usize;
             let ds = b.decode(dist)? as usize;
             if ds >= 30 {
-                return Err("不正な距離の符号です");
+                return Err(crate::lang::tr("不正な距離の符号です", "Invalid distance code"));
             }
             let d = DBASE[ds] as usize + b.bits(DEXT[ds] as u32)? as usize;
             if d > out.len() {
-                return Err("距離が出力より前を指しています");
+                return Err(crate::lang::tr("距離が出力より前を指しています", "Distance points before the start of the output"));
             }
             if out.len() + len > max {
-                return Err("展開後が大きすぎます");
+                return Err(crate::lang::tr("展開後が大きすぎます", "Decompressed data is too large"));
             }
             let start = out.len() - d;
             for i in 0..len {
@@ -127,16 +127,16 @@ fn codes(b: &mut Bits, out: &mut Vec<u8>, lit: &Huff, dist: &Huff, max: usize) -
 fn stored(b: &mut Bits, out: &mut Vec<u8>, max: usize) -> R<()> {
     b.buf = 0; // バイトの残りのビットは捨てる
     b.n = 0;
-    let h = b.d.get(b.pos..b.pos + 4).ok_or("データが途中で切れています")?;
+    let h = b.d.get(b.pos..b.pos + 4).ok_or(crate::lang::tr("データが途中で切れています", "Data is truncated"))?;
     let (len, nlen) = (u16::from_le_bytes([h[0], h[1]]), u16::from_le_bytes([h[2], h[3]]));
     if len != !nlen {
-        return Err("無圧縮ブロックの長さが壊れています");
+        return Err(crate::lang::tr("無圧縮ブロックの長さが壊れています", "Broken uncompressed block length"));
     }
     b.pos += 4;
     let len = len as usize;
-    let data = b.d.get(b.pos..b.pos + len).ok_or("データが途中で切れています")?;
+    let data = b.d.get(b.pos..b.pos + len).ok_or(crate::lang::tr("データが途中で切れています", "Data is truncated"))?;
     if out.len() + len > max {
-        return Err("展開後が大きすぎます");
+        return Err(crate::lang::tr("展開後が大きすぎます", "Decompressed data is too large"));
     }
     out.extend_from_slice(data);
     b.pos += len;
@@ -148,7 +148,7 @@ fn dynamic(b: &mut Bits, out: &mut Vec<u8>, max: usize) -> R<()> {
     let ndist = b.bits(5)? as usize + 1;
     let ncode = b.bits(4)? as usize + 4;
     if nlen > 286 || ndist > 30 {
-        return Err("符号の数が不正です");
+        return Err(crate::lang::tr("符号の数が不正です", "Invalid number of codes"));
     }
     let mut cl = [0u8; 19];
     for &o in CL_ORDER.iter().take(ncode) {
@@ -168,7 +168,7 @@ fn dynamic(b: &mut Bits, out: &mut Vec<u8>, max: usize) -> R<()> {
         let (val, rep) = match sym {
             16 => {
                 if i == 0 {
-                    return Err("繰り返す符号長がありません");
+                    return Err(crate::lang::tr("繰り返す符号長がありません", "No code length to repeat"));
                 }
                 (lengths[i - 1], 3 + b.bits(2)? as usize)
             }
@@ -176,7 +176,7 @@ fn dynamic(b: &mut Bits, out: &mut Vec<u8>, max: usize) -> R<()> {
             _ => (0, 11 + b.bits(7)? as usize),
         };
         if i + rep > total {
-            return Err("符号長の繰り返しがはみ出しています");
+            return Err(crate::lang::tr("符号長の繰り返しがはみ出しています", "Code length repeat overruns"));
         }
         for _ in 0..rep {
             lengths[i] = val;
@@ -184,7 +184,7 @@ fn dynamic(b: &mut Bits, out: &mut Vec<u8>, max: usize) -> R<()> {
         }
     }
     if lengths[256] == 0 {
-        return Err("ブロックの終わりの符号がありません");
+        return Err(crate::lang::tr("ブロックの終わりの符号がありません", "No end-of-block code"));
     }
     let lit = Huff::new(&lengths[..nlen])?;
     let dist = Huff::new(&lengths[nlen..])?;
@@ -211,14 +211,14 @@ pub fn inflate(data: &[u8], max_out: usize) -> Result<Vec<u8>, String> {
                 0 => stored(&mut b, &mut out, max_out)?,
                 1 => fixed(&mut b, &mut out, max_out)?,
                 2 => dynamic(&mut b, &mut out, max_out)?,
-                _ => return Err("不正なブロックの種類です"),
+                _ => return Err(crate::lang::tr("不正なブロックの種類です", "Invalid block type")),
             }
             if last == 1 {
                 return Ok(out);
             }
         }
     };
-    run().map_err(|e| format!("圧縮データを展開できません: {e}"))
+    run().map_err(|e| if crate::lang::is_en() { format!("Cannot expand the compressed data: {e}") } else { format!("圧縮データを展開できません: {e}") })
 }
 
 #[cfg(test)]

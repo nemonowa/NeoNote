@@ -72,11 +72,11 @@ pub fn parse_lines(text: &str) -> Result<Vec<(String, String)>, String> {
             continue;
         }
         let Some((k, val)) = line.split_once('=') else {
-            return Err(format!("{} 行目: `キー=値` の形ではありません", i + 1));
+            return Err(if crate::lang::is_en() { format!("Line {}: not in `key=value` form", i + 1) } else { format!("{} 行目: `キー=値` の形ではありません", i + 1) });
         };
         let k = k.trim();
         if k.is_empty() {
-            return Err(format!("{} 行目: キーが空です", i + 1));
+            return Err(if crate::lang::is_en() { format!("Line {}: the key is empty", i + 1) } else { format!("{} 行目: キーが空です", i + 1) });
         }
         v.push((k.to_string(), unescape(val)));
     }
@@ -109,7 +109,7 @@ pub fn read(bytes: &[u8]) -> Result<(Format, String), String> {
                 jpeg_segments(bytes)?.iter().filter(|s| s.marker == 0xFE).map(|s| ("comment".to_string(), String::from_utf8_lossy(s.data).into_owned())).collect();
             Ok((Format::Jpeg, format!("{HELP_JPEG}{}", format_lines(&items))))
         }
-        None => Err("PNG / JPEG ではありません".into()),
+        None => Err(crate::lang::tr("PNG / JPEG ではありません", "Not a PNG / JPEG file").into()),
     }
 }
 
@@ -119,7 +119,7 @@ pub fn write(bytes: &[u8], text: &str) -> Result<Vec<u8>, String> {
     match format_of(bytes) {
         Some(Format::Png) => write_png(bytes, &items),
         Some(Format::Jpeg) => write_jpeg(bytes, &items),
-        None => Err("PNG / JPEG ではありません".into()),
+        None => Err(crate::lang::tr("PNG / JPEG ではありません", "Not a PNG / JPEG file").into()),
     }
 }
 
@@ -138,7 +138,7 @@ fn png_chunks(b: &[u8]) -> Result<Vec<Chunk<'_>>, String> {
         let kind = [b[i + 4], b[i + 5], b[i + 6], b[i + 7]];
         let end = i + 8 + len;
         if end + 4 > b.len() {
-            return Err("PNG が壊れています（チャンクが途中で切れています）".into());
+            return Err(crate::lang::tr("PNG が壊れています（チャンクが途中で切れています）", "Broken PNG (chunk is truncated)").into());
         }
         v.push(Chunk { kind, data: &b[i + 8..end] });
         i = end + 4;
@@ -147,7 +147,7 @@ fn png_chunks(b: &[u8]) -> Result<Vec<Chunk<'_>>, String> {
         }
     }
     if v.last().map(|c| c.kind) != Some(*b"IEND") {
-        return Err("PNG が壊れています（IEND がありません）".into());
+        return Err(crate::lang::tr("PNG が壊れています（IEND がありません）", "Broken PNG (no IEND)").into());
     }
     Ok(v)
 }
@@ -208,7 +208,7 @@ fn write_png(b: &[u8], items: &[(String, String)]) -> Result<Vec<u8>, String> {
         if c.kind == *b"IEND" {
             for (k, v) in items {
                 let kb = to_latin1(k).filter(|kb| !kb.is_empty() && kb.len() <= 79 && !kb.contains(&0));
-                let Some(kb) = kb else { return Err(format!("キー「{k}」は PNG では使えません（1〜79 文字・Latin-1）")) };
+                let Some(kb) = kb else { return Err(if crate::lang::is_en() { format!("Key '{k}' cannot be used in PNG (1-79 characters, Latin-1)") } else { format!("キー「{k}」は PNG では使えません（1〜79 文字・Latin-1）") }) };
                 match to_latin1(v).filter(|vb| !vb.contains(&0)) {
                     Some(vb) => {
                         let mut d = kb;
@@ -252,7 +252,7 @@ fn jpeg_split(b: &[u8]) -> Result<(Vec<Segment<'_>>, usize), String> {
     let mut i = 2; // SOI の次
     loop {
         if i + 4 > b.len() || b[i] != 0xFF {
-            return Err("JPEG が壊れています（マーカーが見つかりません）".into());
+            return Err(crate::lang::tr("JPEG が壊れています（マーカーが見つかりません）", "Broken JPEG (marker not found)").into());
         }
         let marker = b[i + 1];
         if marker == 0xDA {
@@ -264,7 +264,7 @@ fn jpeg_split(b: &[u8]) -> Result<(Vec<Segment<'_>>, usize), String> {
         }
         let len = u16::from_be_bytes([b[i + 2], b[i + 3]]) as usize;
         if len < 2 || i + 2 + len > b.len() {
-            return Err("JPEG が壊れています（セグメントが途中で切れています）".into());
+            return Err(crate::lang::tr("JPEG が壊れています（セグメントが途中で切れています）", "Broken JPEG (segment is truncated)").into());
         }
         v.push(Segment { marker, data: &b[i + 4..i + 2 + len] });
         i += 2 + len;
@@ -278,10 +278,10 @@ fn write_jpeg(b: &[u8], items: &[(String, String)]) -> Result<Vec<u8>, String> {
     let put_comments = |out: &mut Vec<u8>| -> Result<(), String> {
         for (k, v) in items {
             if k != "comment" {
-                return Err(format!("JPEG で使えるキーは `comment` だけです（「{k}」）"));
+                return Err(if crate::lang::is_en() { format!("Only the `comment` key can be used in JPEG (got '{k}')") } else { format!("JPEG で使えるキーは `comment` だけです（「{k}」）") });
             }
             if v.len() > 65533 {
-                return Err("コメントが長すぎます（65533 バイトまで）".into());
+                return Err(crate::lang::tr("コメントが長すぎます（65533 バイトまで）", "Comment is too long (up to 65533 bytes)").into());
             }
             out.extend_from_slice(&[0xFF, 0xFE]);
             out.extend_from_slice(&((v.len() + 2) as u16).to_be_bytes());

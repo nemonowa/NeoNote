@@ -135,9 +135,9 @@ fn clean(name: &str, dir: bool) -> Option<(String, bool)> {
 
 /// tar（ファイル全体のバイト列）の項目を一覧にする。
 pub fn list_tar(b: &[u8]) -> Result<Vec<Entry>, String> {
-    const CUT: &str = "tar が途中で切れています";
+    let cut: &str = crate::lang::tr("tar が途中で切れています", "tar is truncated");
     if b.is_empty() {
-        return Err("空のファイルです".into());
+        return Err(crate::lang::tr("空のファイルです", "Empty file").into());
     }
     let mut out: Vec<Entry> = Vec::new();
     let mut p = 0usize;
@@ -151,13 +151,13 @@ pub fn list_tar(b: &[u8]) -> Result<Vec<Entry>, String> {
             break; // 終端
         }
         if !header_ok(h) {
-            let msg = if seen { "tar が壊れています（ヘッダーの検査が合いません）" } else { "tar ではありません（ヘッダーの検査が合いません）" };
+            let msg = if seen { crate::lang::tr("tar が壊れています（ヘッダーの検査が合いません）", "Broken tar (header checksum mismatch)") } else { crate::lang::tr("tar ではありません（ヘッダーの検査が合いません）", "Not a tar file (header checksum mismatch)") };
             return Err(msg.into());
         }
         seen = true;
         let typ = h[156];
         let is_file = matches!(typ, 0 | b'0' | b'7');
-        let mut size = octal(&h[124..136]).ok_or("tar が壊れています（大きさを読めません）")?;
+        let mut size = octal(&h[124..136]).ok_or(crate::lang::tr("tar が壊れています（大きさを読めません）", "Broken tar (cannot read the size)"))?;
         if is_file {
             if let Some(s) = pax_size.take() {
                 size = s;
@@ -166,9 +166,9 @@ pub fn list_tar(b: &[u8]) -> Result<Vec<Entry>, String> {
         // リンク・フォルダ・デバイス・FIFO は本文を持たない（大きさ欄は当てにしない）
         let data_len = if matches!(typ, b'1'..=b'6') { 0 } else { size };
         let data_start = p + 512;
-        let end = (data_start as u64).checked_add(data_len).ok_or(CUT)?;
+        let end = (data_start as u64).checked_add(data_len).ok_or(cut)?;
         if end > b.len() as u64 {
-            return Err(CUT.into());
+            return Err(cut.into());
         }
         let data = &b[data_start..end as usize];
         match typ {
@@ -209,7 +209,7 @@ pub fn list_tar(b: &[u8]) -> Result<Vec<Entry>, String> {
                 if let Some((path, is_dir)) = clean(&decode(&raw), typ == b'5') {
                     out.push(Entry { path, is_dir, size: if is_dir { 0 } else { size }, packed: None });
                     if out.len() > MAX_ENTRIES {
-                        return Err(format!("項目が多すぎます（{MAX_ENTRIES} 件まで）"));
+                        return Err(if crate::lang::is_en() { format!("Too many entries (up to {MAX_ENTRIES})") } else { format!("項目が多すぎます（{MAX_ENTRIES} 件まで）") });
                     }
                 }
             }
@@ -230,26 +230,26 @@ pub fn list_tar(b: &[u8]) -> Result<Vec<Entry>, String> {
 
 /// gzip の先頭（10 バイト + 任意項目）を読み、(圧縮データの開始位置, ヘッダーにある元のファイル名) を返す。
 fn gz_header(b: &[u8]) -> Result<(usize, Option<String>), String> {
-    const BAD: &str = "gzip が壊れています（ヘッダーが途中で切れています）";
+    let bad: &str = crate::lang::tr("gzip が壊れています（ヘッダーが途中で切れています）", "Broken gzip (header is truncated)");
     if b.len() < 18 || b[0] != 0x1f || b[1] != 0x8b {
-        return Err("gzip ではありません".into());
+        return Err(crate::lang::tr("gzip ではありません", "Not a gzip file").into());
     }
     if b[2] != 8 {
-        return Err("gzip の圧縮方式に対応していません".into());
+        return Err(crate::lang::tr("gzip の圧縮方式に対応していません", "gzip compression method is not supported").into());
     }
     let flg = b[3];
     let mut p = 10usize;
     if flg & 4 != 0 {
         if p + 2 > b.len() {
-            return Err(BAD.into());
+            return Err(bad.into());
         }
         p += 2 + u16::from_le_bytes([b[p], b[p + 1]]) as usize;
     }
     let mut name = None;
     for bit in [8u8, 16] {
         if flg & bit != 0 {
-            let rest = b.get(p..).ok_or(BAD)?;
-            let n = rest.iter().position(|&c| c == 0).ok_or(BAD)?;
+            let rest = b.get(p..).ok_or(bad)?;
+            let n = rest.iter().position(|&c| c == 0).ok_or(bad)?;
             if bit == 8 {
                 name = Some(decode(&rest[..n]));
             }
@@ -260,7 +260,7 @@ fn gz_header(b: &[u8]) -> Result<(usize, Option<String>), String> {
         p += 2;
     }
     if p + 8 > b.len() {
-        return Err(BAD.into());
+        return Err(bad.into());
     }
     Ok((p, name))
 }
@@ -268,7 +268,7 @@ fn gz_header(b: &[u8]) -> Result<(usize, Option<String>), String> {
 /// gzip（ファイル全体）を展開して一覧にする。`fallback` は、ヘッダーに名前が無い 1 ファイルのときの名前。
 pub fn list_gz(b: &[u8], fallback: &str) -> Result<Vec<Entry>, String> {
     let (p, name) = gz_header(b)?;
-    let out = inflate(&b[p..b.len() - 8], MAX_OUT).map_err(|e| format!("gzip を展開できません: {e}"))?;
+    let out = inflate(&b[p..b.len() - 8], MAX_OUT).map_err(|e| if crate::lang::is_en() { format!("Cannot expand the gzip: {e}") } else { format!("gzip を展開できません: {e}") })?;
     if out.len() >= 512 && header_ok(&out[..512]) {
         return list_tar(&out); // tar.gz。途中で壊れていればそのエラーを返す
     }
@@ -284,7 +284,7 @@ pub fn list_file(path: &Path, kind: Kind) -> Result<Vec<Entry>, String> {
     let ctx = |e: std::io::Error| format!("{}\n{e}", path.display());
     let len = std::fs::metadata(path).map_err(ctx)?.len();
     if len > MAX_FILE {
-        return Err(format!("大きすぎます（{} MiB まで）", MAX_FILE >> 20));
+        return Err(if crate::lang::is_en() { format!("Too large (up to {} MiB)", MAX_FILE >> 20) } else { format!("大きすぎます（{} MiB まで）", MAX_FILE >> 20) });
     }
     let b = std::fs::read(path).map_err(ctx)?;
     match kind {

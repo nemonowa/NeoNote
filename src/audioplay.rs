@@ -45,7 +45,7 @@ mod imp {
             #[cfg(not(windows))]
             let p = {
                 use std::os::unix::ffi::OsStrExt;
-                let c = std::ffi::CString::new(path.as_os_str().as_bytes()).map_err(|_| "パスに NUL が含まれています".to_string())?;
+                let c = std::ffi::CString::new(path.as_os_str().as_bytes()).map_err(|_| crate::lang::tr("パスに NUL が含まれています", "path contains a NUL character").to_string())?;
                 unsafe { neo_audio_open(c.as_ptr(), err.as_mut_ptr(), err.len() as c_int) }
             };
             #[cfg(windows)]
@@ -56,7 +56,7 @@ mod imp {
             };
             if p.is_null() {
                 let e = err_text(&err);
-                return Err(if e.is_empty() { "音声を開けません".into() } else { e });
+                return Err(if e.is_empty() { crate::lang::tr("音声を開けません", "Cannot open the audio").into() } else { e });
             }
             Ok(Player { p })
         }
@@ -98,10 +98,10 @@ mod imp {
 
     impl Player {
         pub fn open(_: &Path) -> Result<Player, String> {
-            Err("このビルドには音声の再生が含まれていません（audio feature なし）".into())
+            Err(crate::lang::tr("このビルドには音声の再生が含まれていません（audio feature なし）", "This build does not include audio playback (no audio feature)").into())
         }
         pub fn play(&mut self) -> Result<(), String> {
-            Err("再生は含まれていません".into())
+            Err(crate::lang::tr("再生は含まれていません", "Playback is not included").into())
         }
         pub fn stop(&mut self) {}
         pub fn poll(&mut self) -> (State, f64) {

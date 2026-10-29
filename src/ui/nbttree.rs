@@ -113,7 +113,12 @@ impl NbtTree {
         if cut {
             if let Some(top) = tree.root() {
                 let n = top.children();
-                if let Some(mut it) = tree.insert(&top, &format!("…（項目が {MAX_ITEMS} を超えたため、残りは省略。Text で編集してください）"), n) {
+                let note = if crate::lang::is_en() {
+                    format!("… (more than {MAX_ITEMS} items, the rest is omitted. Edit in Text)")
+                } else {
+                    format!("…（項目が {MAX_ITEMS} を超えたため、残りは省略。Text で編集してください）")
+                };
+                if let Some(mut it) = tree.insert(&top, &note, n) {
                     it.set_label_fgcolor(rgb(color_subtext()));
                 }
             }

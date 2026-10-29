@@ -13,7 +13,8 @@
 //   resume=false                  前回のタブと未保存の変更を、次の起動で戻さない（既定は戻す。true のときは書かない）
 //   gutter_extra=20               行番号欄を桁数で決まる幅より広げる分（0 のときは書かない）
 //   side_w=260                    右端の欄の幅（既定 200 のときは書かない）
-//   theme=dark                    配色。dark（既定）・light・nord・abyss・paper・sakura・custom
+//   lang=en                       画面の言葉。ja（既定。ja のときは書かない）・en
+//   theme=nureba                  配色。dark（＝濡羽。既定）・light（＝月白）・nureba・geppaku・classic_dark・classic_light・nord・abyss・paper・sakura・custom
 //   custom_main=#2b2b2b           theme=custom の色（custom_main・custom_sub・custom_accent・custom_text・custom_subtext）
 //   history=C:\a\b.txt            過去に読み込んだファイルのパス履歴（新しい順に 1 行ずつ。最大 pathlog::MAX 件）
 //   session=C:\a\b.txt            終了時に開いていたタブ（左から順に 1 行ずつ。最大 SESSION_MAX 件）。引数なしで起動したとき開き直す
@@ -45,6 +46,8 @@ pub struct Config {
     pub side_w: Option<i32>,
     /// 前回のタブと未保存の変更を、引数なしの起動で戻す（既定は戻す）。
     pub resume: bool,
+    /// 画面の言葉（ja・en）。
+    pub lang: String,
     /// 行番号欄を広げる分。None なら 0。
     pub gutter_extra: Option<i32>,
     /// ライトモード（false ならダーク）。theme に知らない名前が書かれていたときの行き先。
@@ -76,6 +79,7 @@ impl Default for Config {
             side_w: None,
             gutter_extra: None,
             resume: true,
+            lang: "ja".into(),
             light: false,
             theme: Some("dark".into()),
             custom: None,
@@ -153,6 +157,7 @@ pub fn parse(text: &str) -> Config {
             "side_w" => cfg.side_w = v.parse::<i32>().ok(),
             "gutter_extra" => cfg.gutter_extra = v.parse::<i32>().ok(),
             "resume" => cfg.resume = parse_bool(v),
+            "lang" => cfg.lang = v.trim().to_ascii_lowercase(),
             "theme" => {
                 cfg.light = v.eq_ignore_ascii_case("light");
                 cfg.theme = (!v.is_empty()).then(|| v.to_ascii_lowercase());
@@ -209,6 +214,8 @@ pub fn render(existing: &str, cfg: &Config) -> String {
     let mut seen_gutter_extra = false;
     let resume_line = format!("resume={}", cfg.resume);
     let mut seen_resume = false;
+    let lang_line = format!("lang={}", cfg.lang);
+    let mut seen_lang = false;
     // dark / light は light の値で決める（名前の付いた配色のときだけ、その名前を書く）
     let named = cfg.theme.as_deref().filter(|t| !matches!(*t, "dark" | "light"));
     let theme_line = format!("theme={}", named.unwrap_or(if cfg.light { "light" } else { "dark" }));
@@ -258,6 +265,12 @@ pub fn render(existing: &str, cfg: &Config) -> String {
                     out.push(resume_line.clone());
                 }
                 seen_resume = true;
+            }
+            Some("lang") => {
+                if !seen_lang {
+                    out.push(lang_line.clone());
+                }
+                seen_lang = true;
             }
             Some("gutter_extra") => {
                 if !seen_gutter_extra {
@@ -351,6 +364,9 @@ pub fn render(existing: &str, cfg: &Config) -> String {
     if !seen_resume && !cfg.resume {
         out.push(resume_line);
     }
+    if !seen_lang && cfg.lang != "ja" {
+        out.push(lang_line);
+    }
     if !seen_font {
         out.push(font_line);
     }
@@ -396,7 +412,7 @@ mod tests {
     use super::*;
 
     fn cfg() -> Config {
-        Config { autosave: true, wrap: true, gutter_pin: true, side_pin: false, side_w: None, gutter_extra: None, resume: true, light: true, theme: Some("light".into()), custom: None, size: Some(18), font: Some(PathBuf::from("/f/Mono.ttf")), recent: vec![PathBuf::from("/a/1.txt"), PathBuf::from("/a/2.txt")], history: vec![PathBuf::from("/h/1.txt"), PathBuf::from("/h/2.txt"), PathBuf::from("/h/3.txt")], session: vec![PathBuf::from("/s/1.txt"), PathBuf::from("/s/2.txt")], session_active: Some(PathBuf::from("/s/2.txt")) }
+        Config { autosave: true, wrap: true, gutter_pin: true, side_pin: false, side_w: None, gutter_extra: None, resume: true, light: true, theme: Some("light".into()), custom: None, lang: "ja".into(), size: Some(18), font: Some(PathBuf::from("/f/Mono.ttf")), recent: vec![PathBuf::from("/a/1.txt"), PathBuf::from("/a/2.txt")], history: vec![PathBuf::from("/h/1.txt"), PathBuf::from("/h/2.txt"), PathBuf::from("/h/3.txt")], session: vec![PathBuf::from("/s/1.txt"), PathBuf::from("/s/2.txt")], session_active: Some(PathBuf::from("/s/2.txt")) }
     }
 
     #[test]

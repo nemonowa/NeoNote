@@ -8,11 +8,11 @@ pub const MAX_BYTES: usize = 64 * 1024 * 1024;
 /// ページごとの文字（ページ番号は 1 から）。
 pub fn extract(bytes: &[u8]) -> Result<Vec<String>, String> {
     if bytes.len() > MAX_BYTES {
-        return Err(format!("PDF が大きすぎます（上限 {} MiB）", MAX_BYTES / 1024 / 1024));
+        return Err(if crate::lang::is_en() { format!("PDF is too large (limit {} MiB)", MAX_BYTES / 1024 / 1024) } else { format!("PDF が大きすぎます（上限 {} MiB）", MAX_BYTES / 1024 / 1024) });
     }
-    let doc = Document::load_mem(bytes).map_err(|e| format!("PDF を読めません: {e}"))?;
+    let doc = Document::load_mem(bytes).map_err(|e| if crate::lang::is_en() { format!("Cannot read the PDF: {e}") } else { format!("PDF を読めません: {e}") })?;
     if doc.is_encrypted() {
-        return Err("暗号化された PDF は表示できません".into());
+        return Err(crate::lang::tr("暗号化された PDF は表示できません", "Encrypted PDFs cannot be shown").into());
     }
     let nums: Vec<u32> = doc.get_pages().keys().copied().collect();
     // 1 ページずつ取る（取れなかったページだけ空にして、残りは出す）
@@ -37,7 +37,7 @@ pub fn to_html(pages: &[String], bg: &str, fg: &str, dim: &str) -> String {
     let total = pages.len();
     let empty = pages.iter().all(|p| p.trim().is_empty());
     if empty {
-        body.push_str("<p>文字を取り出せませんでした（画像だけのページ、または対応していないフォントです）。</p>");
+        body.push_str(crate::lang::tr("<p>文字を取り出せませんでした（画像だけのページ、または対応していないフォントです）。</p>", "<p>Could not extract text (the page is images only, or the font is not supported).</p>"));
     }
     for (i, p) in pages.iter().enumerate() {
         body.push_str(&format!("<p><font color=\"{dim}\">── {} / {total} ──</font></p>", i + 1));

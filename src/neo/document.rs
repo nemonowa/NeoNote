@@ -102,12 +102,17 @@ fn load_inner(path: &Path, forced: Option<Mode>) -> Result<Loaded, String> {
     let body = &bytes[skip..];
     match encoding.decode(body) {
         Ok(text) => Ok(Loaded { text, encoding, bom, auto, hex: false, truncated: false, stamp: None, nbt: None, region: false }),
-        Err(off) => Err(format!(
+        Err(off) => Err(if crate::lang::is_en() { format!(
+            "{}\nCannot read as {} (invalid at byte {}).\nPlease choose a different character encoding.",
+            path.display(),
+            encoding.label(),
+            off + skip
+        ) } else { format!(
             "{}\n{} として読めません（{} バイト目で不正）。\n別の文字コードを選んでください。",
             path.display(),
             encoding.label(),
             off + skip
-        )),
+        ) }),
     }
 }
 

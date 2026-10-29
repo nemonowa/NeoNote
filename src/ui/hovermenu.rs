@@ -172,6 +172,8 @@ pub fn open(owner: &Button, entries: &'static [MenuEntry], skip: Option<Action>,
     win.end();
     win.set_border(false);
     win.show();
+    // 本体が最前面に固定されていても後ろに隠れないように
+    crate::platform::set_topmost(win.raw_handle() as *mut std::ffi::c_void, true);
     let gen = bump();
     OPEN.with(|o| *o.borrow_mut() = Some(Open { win: win.clone(), owner: owner.clone() }));
     watch(gen, owner.clone(), win, 0);
@@ -214,7 +216,7 @@ fn sub_entries(entries: &'static [MenuEntry], skip: Option<Action>) -> Vec<(&'st
 
 /// 表示する文字。チェックのある項目は、今の状態を ● で添える。左に少し余白を入れる。
 fn label_of(m: &MenuEntry) -> String {
-    let label = m.label.replace('@', "@@"); // FLTK のラベルの @ 記法（記号の描画）を避ける
+    let label = m.text().replace('@', "@@"); // FLTK のラベルの @ 記法（記号の描画）を避ける
     match m.action.and_then(menu::checked) {
         Some(true) => format!("  ● {label}"),
         Some(false) => format!("  \u{3000}{label}"),

@@ -5,6 +5,7 @@ mod app;
 mod audioplay;
 mod neo;
 mod dev;
+mod lang;
 mod log;
 mod platform;
 mod ui;

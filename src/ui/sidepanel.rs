@@ -102,7 +102,10 @@ fn draw_tree(st: &mut State, w: &Widget) {
     }
     let label = match st.hover.and_then(|i| st.cells.get(i)) {
         Some(c) => format!("{}  {}", crate::neo::archive::human_size(c.size), c.path),
-        None => st.tree.as_ref().map_or(String::new(), |t| format!("Total  {}", crate::neo::archive::human_size(t.size))),
+        None => st.tree.as_ref().map_or(String::new(), |t| {
+            let size = crate::neo::archive::human_size(t.size);
+            if crate::lang::is_en() { format!("Total  {size}") } else { format!("合計  {size}") }
+        }),
     };
     draw::set_draw_color(rgb(color_subtext()));
     draw::draw_text2(&label, r.0, r.1 + r.3 + 2, r.2, ROW_H, Align::Left);
@@ -195,7 +198,7 @@ pub fn build(on_jump: impl Fn(i32) + 'static, on_pin: impl Fn() + 'static, on_re
             draw::set_font(font, INFO_SIZE);
             let mut y = w.y() + PAD;
             draw::set_draw_color(rgb(color_subtext()));
-            draw::draw_text2("Info", x + PAD, y, 60, ROW_H, Align::Left);
+            draw::draw_text2(crate::lang::tr("情報", "Info"), x + PAD, y, 60, ROW_H, Align::Left);
             // 固定中はアクセント色の押しピンと下線で示す（行番号欄の押しピンと同じ）
             draw::set_draw_color(rgb(if st.pinned { color_accent() } else { color_subtext() }));
             let px = x + w_w - PAD - super::icons::SIZE;
