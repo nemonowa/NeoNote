@@ -1,5 +1,5 @@
 // 過去に読み込んだ（開いた・保存した）ファイルのパス履歴。View History / Restore From History で使う。
-// neodir/config.txt の `history=` に保存され、終了後も残る（core/config.rs）。最大 MAX 件、新しい順。
+// config.txt の `history=` に保存され、終了後も残る（core/config.rs）。最大 MAX 件、新しい順。
 // 「最近開いたファイル」（core/recent.rs、最大 10 件）とは別の、長い履歴。
 use std::path::{Path, PathBuf};
 

@@ -1,4 +1,5 @@
-// 状態の保存先: 実行ファイルと同じ階層の `neodir/config.txt`（普通のテキスト）。
+// 状態の保存先: OS の設定の場所の `config.txt`（普通のテキスト。場所は `dir_for`）。
+// 実行ファイルの隣に `neonote` フォルダがあるときだけ、そこを使う（USB メモリなどで持ち歩く使い方）。
 // NeoNote 自身で開いて編集でき、保存すると反映される（Load の右クリック → Open Config）。
 //
 // 形式は `キー=値` を 1 行ずつ。`#` で始まる行と空行は無視する。
@@ -9,6 +10,9 @@
 //   recent=C:\a\b.txt             最近開いたファイル（新しい順に 1 行ずつ。最大 recent::MAX 件）
 //   gutter_pin=true               行番号欄を常に表示（固定）する。false なら、カーソルが左端のときだけ出す
 //   side_pin=true                 右端の情報・縮小表示の欄を常に表示（固定）する。false なら、マウスが右端のときだけ出す
+//   resume=false                  前回のタブと未保存の変更を、次の起動で戻さない（既定は戻す。true のときは書かない）
+//   gutter_extra=20               行番号欄を桁数で決まる幅より広げる分（0 のときは書かない）
+//   side_w=260                    右端の欄の幅（既定 200 のときは書かない）
 //   theme=dark                    配色。dark（既定）・light・nord・abyss・paper・sakura・custom
 //   custom_main=#2b2b2b           theme=custom の色（custom_main・custom_sub・custom_accent・custom_text・custom_subtext）
 //   history=C:\a\b.txt            過去に読み込んだファイルのパス履歴（新しい順に 1 行ずつ。最大 pathlog::MAX 件）
@@ -21,8 +25,9 @@ use std::{
     path::{Path, PathBuf},
 };
 
-/// 実行ファイル（Linux / macOS では `neonote`）と同名にならないよう、フォルダ名は `neodir`。
-pub const DIR_NAME: &str = "neodir";
+/// 設定のフォルダ名。OS の設定の場所でも、持ち歩き用（実行ファイルの隣）でも同じ名前にする。
+/// Linux / macOS で実行ファイルが `neonote` という名前のときは、同じ場所に同名のフォルダを置けないので、持ち歩き用は使えない（OS の場所を使う）。
+pub const DIR_NAME: &str = "neonote";
 pub const FILE_NAME: &str = "config.txt";
 /// 覚えておくタブの最大数（読み込みと書き出しの両方で切る）。
 pub const SESSION_MAX: usize = 50;
@@ -36,6 +41,12 @@ pub struct Config {
     pub gutter_pin: bool,
     /// 右端の情報・縮小表示の欄を常に表示する（固定）。
     pub side_pin: bool,
+    /// 右端の欄の幅。None なら既定。
+    pub side_w: Option<i32>,
+    /// 前回のタブと未保存の変更を、引数なしの起動で戻す（既定は戻す）。
+    pub resume: bool,
+    /// 行番号欄を広げる分。None なら 0。
+    pub gutter_extra: Option<i32>,
     /// ライトモード（false ならダーク）。theme に知らない名前が書かれていたときの行き先。
     pub light: bool,
     /// theme= に書かれた配色の名前（無ければ light / dark だけで決める）。
@@ -62,6 +73,9 @@ impl Default for Config {
             wrap: true,
             gutter_pin: false,
             side_pin: false,
+            side_w: None,
+            gutter_extra: None,
+            resume: true,
             light: false,
             theme: Some("dark".into()),
             custom: None,
@@ -75,14 +89,29 @@ impl Default for Config {
     }
 }
 
-/// 実行ファイルの隣の `neodir/config.txt`。
-pub fn path_for_exe(exe: &Path) -> Option<PathBuf> {
-    Some(exe.parent()?.join(DIR_NAME).join(FILE_NAME))
+/// 設定のフォルダ。実行ファイルの隣に `neonote` フォルダがあればそこ（持ち歩き用）、無ければ OS の設定の場所:
+/// Windows は `%APPDATA%\neonote`、macOS は `~/Library/Application Support/neonote`、
+/// それ以外は `$XDG_CONFIG_HOME/neonote`（無ければ `~/.config/neonote`）。決められなければ None（保存しない）。
+/// `os` は `std::env::consts::OS`、`env` は環境変数の読み出し、`portable` は隣のフォルダがあるか（テストで差し替える）。
+pub fn dir_for(exe: Option<&Path>, os: &str, env: &dyn Fn(&str) -> Option<String>, portable: &dyn Fn(&Path) -> bool) -> Option<PathBuf> {
+    if let Some(p) = exe.and_then(Path::parent).map(|d| d.join(DIR_NAME)) {
+        if portable(&p) {
+            return Some(p);
+        }
+    }
+    let var = |k: &str| env(k).filter(|v| !v.trim().is_empty()).map(PathBuf::from);
+    match os {
+        "windows" => var("APPDATA").map(|d| d.join(DIR_NAME)),
+        "macos" => var("HOME").map(|h| h.join("Library").join("Application Support").join(DIR_NAME)),
+        _ => var("XDG_CONFIG_HOME").or_else(|| var("HOME").map(|h| h.join(".config"))).map(|d| d.join(DIR_NAME)),
+    }
 }
 
 /// この実行ファイルの設定ファイルの場所。
 pub fn path() -> Option<PathBuf> {
-    path_for_exe(&std::env::current_exe().ok()?)
+    let exe = std::env::current_exe().ok();
+    let dir = dir_for(exe.as_deref(), std::env::consts::OS, &|k| std::env::var(k).ok(), &|p| p.is_dir())?;
+    Some(dir.join(FILE_NAME))
 }
 
 fn parse_bool(v: &str) -> bool {
@@ -121,6 +150,9 @@ pub fn parse(text: &str) -> Config {
             "wrap" => cfg.wrap = parse_bool(v),
             "gutter_pin" => cfg.gutter_pin = parse_bool(v),
             "side_pin" => cfg.side_pin = parse_bool(v),
+            "side_w" => cfg.side_w = v.parse::<i32>().ok(),
+            "gutter_extra" => cfg.gutter_extra = v.parse::<i32>().ok(),
+            "resume" => cfg.resume = parse_bool(v),
             "theme" => {
                 cfg.light = v.eq_ignore_ascii_case("light");
                 cfg.theme = (!v.is_empty()).then(|| v.to_ascii_lowercase());
@@ -171,6 +203,12 @@ pub fn render(existing: &str, cfg: &Config) -> String {
     let pin_line = format!("gutter_pin={}", cfg.gutter_pin);
     let side_line = format!("side_pin={}", cfg.side_pin);
     let mut seen_side = false;
+    let side_w_line = cfg.side_w.map(|w| format!("side_w={w}"));
+    let mut seen_side_w = false;
+    let gutter_extra_line = cfg.gutter_extra.map(|w| format!("gutter_extra={w}"));
+    let mut seen_gutter_extra = false;
+    let resume_line = format!("resume={}", cfg.resume);
+    let mut seen_resume = false;
     // dark / light は light の値で決める（名前の付いた配色のときだけ、その名前を書く）
     let named = cfg.theme.as_deref().filter(|t| !matches!(*t, "dark" | "light"));
     let theme_line = format!("theme={}", named.unwrap_or(if cfg.light { "light" } else { "dark" }));
@@ -214,6 +252,24 @@ pub fn render(existing: &str, cfg: &Config) -> String {
                     out.push(side_line.clone());
                 }
                 seen_side = true;
+            }
+            Some("resume") => {
+                if !seen_resume {
+                    out.push(resume_line.clone());
+                }
+                seen_resume = true;
+            }
+            Some("gutter_extra") => {
+                if !seen_gutter_extra {
+                    out.extend(gutter_extra_line.iter().cloned());
+                }
+                seen_gutter_extra = true;
+            }
+            Some("side_w") => {
+                if !seen_side_w {
+                    out.extend(side_w_line.iter().cloned());
+                }
+                seen_side_w = true;
             }
             Some("theme") => {
                 if !seen_theme {
@@ -285,6 +341,16 @@ pub fn render(existing: &str, cfg: &Config) -> String {
     if !seen_side && cfg.side_pin {
         out.push(side_line);
     }
+    if !seen_side_w {
+        out.extend(side_w_line);
+    }
+    if !seen_gutter_extra {
+        out.extend(gutter_extra_line);
+    }
+    // 既定（true）のときは行を足さない
+    if !seen_resume && !cfg.resume {
+        out.push(resume_line);
+    }
     if !seen_font {
         out.push(font_line);
     }
@@ -330,7 +396,7 @@ mod tests {
     use super::*;
 
     fn cfg() -> Config {
-        Config { autosave: true, wrap: true, gutter_pin: true, side_pin: false, light: true, theme: Some("light".into()), custom: None, size: Some(18), font: Some(PathBuf::from("/f/Mono.ttf")), recent: vec![PathBuf::from("/a/1.txt"), PathBuf::from("/a/2.txt")], history: vec![PathBuf::from("/h/1.txt"), PathBuf::from("/h/2.txt"), PathBuf::from("/h/3.txt")], session: vec![PathBuf::from("/s/1.txt"), PathBuf::from("/s/2.txt")], session_active: Some(PathBuf::from("/s/2.txt")) }
+        Config { autosave: true, wrap: true, gutter_pin: true, side_pin: false, side_w: None, gutter_extra: None, resume: true, light: true, theme: Some("light".into()), custom: None, size: Some(18), font: Some(PathBuf::from("/f/Mono.ttf")), recent: vec![PathBuf::from("/a/1.txt"), PathBuf::from("/a/2.txt")], history: vec![PathBuf::from("/h/1.txt"), PathBuf::from("/h/2.txt"), PathBuf::from("/h/3.txt")], session: vec![PathBuf::from("/s/1.txt"), PathBuf::from("/s/2.txt")], session_active: Some(PathBuf::from("/s/2.txt")) }
     }
 
     #[test]
@@ -385,8 +451,24 @@ mod tests {
     }
 
     #[test]
-    fn path_is_next_to_the_executable() {
-        assert_eq!(path_for_exe(Path::new("/opt/x/neonote")), Some(PathBuf::from("/opt/x/neodir/config.txt")));
+    fn config_dir_is_the_os_place_unless_a_portable_folder_exists() {
+        let env = |k: &str| match k {
+            "APPDATA" => Some("/w/Roaming".to_string()),
+            "HOME" => Some("/home/a".to_string()),
+            _ => None,
+        };
+        let no = |_: &Path| false;
+        let exe = Path::new("/opt/x/neonote");
+        assert_eq!(dir_for(Some(exe), "windows", &env, &no), Some(Path::new("/w/Roaming").join("neonote")));
+        assert_eq!(dir_for(Some(exe), "macos", &env, &no), Some(Path::new("/home/a").join("Library").join("Application Support").join("neonote")));
+        assert_eq!(dir_for(Some(exe), "linux", &env, &no), Some(Path::new("/home/a").join(".config").join("neonote")));
+        let xdg = |k: &str| (k == "XDG_CONFIG_HOME").then(|| "/x/cfg".to_string());
+        assert_eq!(dir_for(None, "linux", &xdg, &no), Some(Path::new("/x/cfg").join("neonote")));
+        // 隣に neonote フォルダがあれば、OS に関係なくそこ
+        let exe_win = Path::new("/opt/x/neonote.exe");
+        assert_eq!(dir_for(Some(exe_win), "windows", &env, &|p| p == Path::new("/opt/x/neonote")), Some(Path::new("/opt/x").join("neonote")));
+        // 決められない（環境変数が空）
+        assert_eq!(dir_for(None, "windows", &|_| Some(" ".into()), &no), None);
     }
 
     #[test]

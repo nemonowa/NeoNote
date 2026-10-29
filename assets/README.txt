@@ -41,14 +41,17 @@ Project of "NEXUS"
 
 [=== NeoNote 操作 ===]
   Ctrl+O 開く / Ctrl+S 保存 / Ctrl+Shift+S 名前を付けて保存
-  Ctrl+E 文字コード切替 / Ctrl+T 新規タブ / Ctrl+W タブを閉じる
+  Ctrl+E 文字コード / Ctrl+T 新規タブ / Ctrl+W タブを閉じる
   Ctrl+Tab タブ切替 / Ctrl+Shift+PageUp・PageDown タブを左右へ動かす（ドラッグでも並べ替え）
   Ctrl+F 検索バー（Enter 次 / Shift+Enter 前 / Esc 編集へ） / F3・Shift+F3 次・前の一致
   Ctrl+H 置換 / Ctrl+G 行へ移動 / F11 全画面
   Alt 左右の欄（行番号・情報と縮小表示）を開く・閉じる。マウスを本文の左端・右端に寄せても出ます
   Ctrl+ホイール・Ctrl++・Ctrl+- 文字の大きさ / Ctrl+0 既定の大きさ
-  ツールバーのボタンは右クリックでメニューを開きます。
+  ツールバーのボタンは押すと主な操作、マウスを乗せる（または右クリック）と関連する操作の一覧が開きます。
+  一覧の項目にマウスを乗せると説明が出ます。
+  左上の押しピンでウィンドウを最前面に固定、その下の # で行番号を常に表示します。
+  前回のタブと未保存の変更は、次の起動で戻ります（Load の Resume で切れます）。
 
 フォント:
-  既定は同梱の NeoFont（作者: nemo）。Choose Font で .ttf / .otf のパスを指定すると読み込めます。
-  Default Font で NeoFont に戻せます。
+  既定は同梱の NeoFont（作者: nemo）。Load または Run の Font で .ttf / .otf を選ぶと読み込めます。
+  Run の Reset Font で NeoFont に戻せます。

@@ -420,3 +420,27 @@ mod tests {
         assert!(std::fs::read_to_string(&p).unwrap().contains("Exec=\"/x/neonote\" %F"));
     }
 }
+
+/// ウィンドウを、ほかのウィンドウより常に手前に出す（on）／戻す（off）。できたら true。
+/// `handle` は FLTK の `raw_handle()`（Windows では HWND）。Windows 以外は今は対応していない（false）。
+#[cfg(windows)]
+pub fn set_topmost(handle: *mut std::ffi::c_void, on: bool) -> bool {
+    #[link(name = "user32")]
+    extern "system" {
+        fn SetWindowPos(hwnd: *mut std::ffi::c_void, after: isize, x: i32, y: i32, cx: i32, cy: i32, flags: u32) -> i32;
+    }
+    const HWND_TOPMOST: isize = -1;
+    const HWND_NOTOPMOST: isize = -2;
+    const SWP_NOSIZE: u32 = 0x0001;
+    const SWP_NOMOVE: u32 = 0x0002;
+    const SWP_NOACTIVATE: u32 = 0x0010;
+    if handle.is_null() {
+        return false;
+    }
+    unsafe { SetWindowPos(handle, if on { HWND_TOPMOST } else { HWND_NOTOPMOST }, 0, 0, 0, 0, SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE) != 0 }
+}
+
+#[cfg(not(windows))]
+pub fn set_topmost(_handle: *mut std::ffi::c_void, _on: bool) -> bool {
+    false
+}

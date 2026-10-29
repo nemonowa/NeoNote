@@ -1,4 +1,5 @@
 // メニューの表（MenuEntry）。新機能は表に 1 行足すだけで、ボタンと右クリックの両方に出せる。
+// ツールバーのサブメニューの表記はなるべく 1 語にし、何をするかはツールチップ（describe）で伝える。
 // `action: None` の項目は「見た目だけ」で、グレーアウトして押せない。
 // ラベルに `/` と `&` は使わない（FLTK のメニューが階層・ショートカットとして解釈する）。
 use crate::ui::theme::{color_main, color_text, mix};
@@ -15,6 +16,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 static AUTOSAVE_ON: AtomicBool = AtomicBool::new(false);
 /// Word Wrap の状態（同上）。
 static WRAP_ON: AtomicBool = AtomicBool::new(false);
+/// 続きから（前回のタブと未保存の変更を戻す）の状態（同上）。
+static RESUME_ON: AtomicBool = AtomicBool::new(true);
+
+pub fn set_resume_checked(on: bool) {
+    RESUME_ON.store(on, Ordering::Relaxed);
+}
 
 pub fn set_wrap_checked(on: bool) {
     WRAP_ON.store(on, Ordering::Relaxed);
@@ -43,6 +50,7 @@ pub enum Action {
     OpenImageUrl,
     RunCmd,
     ChangeEncoding,
+    ChangeView,
     CopyPath,
     CopyFileName,
     CutLine,
@@ -81,6 +89,7 @@ pub enum Action {
     CopyLine,
     PasteBefore,
     PasteAfter,
+    ToggleResume,
 }
 
 pub struct MenuEntry {
@@ -107,6 +116,7 @@ pub const CONTEXT: &[MenuEntry] = &[
     e("Search In web", Action::SearchWeb),
     ed("Open Image URL", Action::OpenImageUrl),
     ed("Select All", Action::SelectAll),
+    e("Change View", Action::ChangeView),
     e("Change Encoding", Action::ChangeEncoding),
     ed("Format JSON", Action::FormatJson),
     e("Run In CMD", Action::RunCmd),
@@ -116,67 +126,69 @@ pub const CONTEXT: &[MenuEntry] = &[
 ];
 
 pub const LOAD: &[MenuEntry] = &[
-    e("New Tab", Action::NewTab),
-    e("Open...", Action::Open),
-    e("Open Folder...", Action::OpenFolder),
-    ed("Close Tab", Action::CloseTab),
-    e("Open Recent", Action::OpenRecent),
-    e("Open README", Action::OpenReadme), // 中身は assets/README.txt
-    e("Open HomePage", Action::OpenHomePage),
-    e("Open Settings", Action::ChooseFont), // フォント選択（Java 版と同じ）
-    e("Open Config", Action::OpenConfig),   // neodir/config.txt をタブで開く
-    e("Make Shortcut", Action::MakeShortcut),
-    ed("Check Update", Action::CheckUpdate),
+    e("New", Action::NewTab),
+    e("Open", Action::Open),
+    e("Folder", Action::OpenFolder),
+    ed("Close", Action::CloseTab),
+    e("Recent", Action::OpenRecent),
+    e("Readme", Action::OpenReadme), // 中身は assets/README.txt
+    e("Homepage", Action::OpenHomePage),
+    e("Font", Action::ChooseFont),
+    e("Config", Action::OpenConfig),
+    e("Resume", Action::ToggleResume),   // config.txt をタブで開く
+    e("Shortcut", Action::MakeShortcut),
+    ed("Update", Action::CheckUpdate),
     e("Exit", Action::Exit),
 ];
 pub const SAVE: &[MenuEntry] = &[
     ed("Save", Action::Save),
-    e("Save As...", Action::SaveAs),
-    e("Enable Auto Save", Action::ToggleAutoSave),
+    e("Save As", Action::SaveAs),
+    e("Autosave", Action::ToggleAutoSave),
 ];
 pub const UNDO: &[MenuEntry] = &[
     ed("Undo", Action::Undo),
-    e("Undo Last", Action::Undo), // Undo と同じ 1 回分（Java 版にある名前なので残している）
-    e("Undo All", Action::UndoAll),
-    e("View History", Action::ViewHistory),
+    e("Last", Action::Undo), // Undo と同じ 1 回分（Java 版にある名前なので残している）
+    e("All", Action::UndoAll),
+    e("History", Action::ViewHistory),
 ];
 pub const REDO: &[MenuEntry] = &[
     ed("Redo", Action::Redo),
-    e("Redo Last", Action::Redo), // Redo と同じ 1 回分
-    e("Redo All", Action::RedoAll),
-    e("Restore From History", Action::RestoreHistory),
+    e("Last", Action::Redo), // Redo と同じ 1 回分
+    e("All", Action::RedoAll),
+    e("Restore", Action::RestoreHistory),
 ];
 pub const EDIT: &[MenuEntry] = &[
-    ed("Select", Action::SelectWord),
-    e("Select All", Action::SelectAll),
-    e("Magic Select", Action::MagicSelect),
+    ed("Word", Action::SelectWord),
+    e("All", Action::SelectAll),
+    e("Magic", Action::MagicSelect),
     e("Deselect", Action::Deselect),
-    e("Copy Selection", Action::CopySelection),
+    e("Copy", Action::CopySelection),
 ];
 pub const COPY: &[MenuEntry] = &[
     ed("Copy", Action::Copy),
-    e("Copy Line", Action::CopyLine),
-    e("Cut Line", Action::CutLine),
-    e("Copy File Name", Action::CopyFileName),
-    e("Copy to Clipboard History", Action::CopyToHistory),
+    e("Line", Action::CopyLine),
+    e("Cut", Action::CutLine),
+    e("Name", Action::CopyFileName),
+    e("Stash", Action::CopyToHistory),
 ];
 pub const PASTE: &[MenuEntry] = &[
     ed("Paste", Action::Paste),
-    e("Paste Before", Action::PasteBefore),
-    e("Paste After", Action::PasteAfter),
-    e("Paste From History", Action::PasteFromHistory),
+    e("Before", Action::PasteBefore),
+    e("After", Action::PasteAfter),
+    e("History", Action::PasteFromHistory),
 ];
 pub const RUN: &[MenuEntry] = &[
-    ed("Run In CMD", Action::RunCmd),
-    e("Format JSON", Action::FormatJson),
-    e("Change Encoding", Action::ChangeEncoding),
-    e("Choose Font", Action::ChooseFont),
-    e("Default Font", Action::ResetFont),
-    e("Change Size", Action::ChangeSize),
-    e("Toggle Full Screen", Action::ToggleFullScreen),
-    e("Word Character Count", Action::CountText),
-    e("Toggle Theme", Action::ToggleTheme),
-    e("Choose Theme", Action::ChooseTheme),
+    ed("Run", Action::RunCmd),
+    e("JSON", Action::FormatJson),
+    e("View", Action::ChangeView),
+    e("Encoding", Action::ChangeEncoding),
+    e("Font", Action::ChooseFont),
+    e("Reset Font", Action::ResetFont),
+    e("Size", Action::ChangeSize),
+    e("Fullscreen", Action::ToggleFullScreen),
+    e("Count", Action::CountText),
+    e("Mode", Action::ToggleTheme),
+    e("Theme", Action::ChooseTheme),
 ];
 
 /// ポップアップの 1 行分。ラベルはそのまま表示される（`/` `&` などは中で退避するので、パスを含んでいてもよい）。
@@ -267,6 +279,80 @@ pub fn pick_width(rows: &[Row]) -> i32 {
     w.ceil() as i32 + 30 // 左右の余白（チェック欄を含む）
 }
 
+/// チェックの付く項目の今の状態（チェックの無い項目は None）。
+pub fn checked(a: Action) -> Option<bool> {
+    match a {
+        Action::ToggleAutoSave => Some(AUTOSAVE_ON.load(Ordering::Relaxed)),
+        Action::ToggleWrap => Some(WRAP_ON.load(Ordering::Relaxed)),
+        Action::ToggleResume => Some(RESUME_ON.load(Ordering::Relaxed)),
+        _ => None,
+    }
+}
+
+/// メニューの項目のツールチップ（その項目で何が起きるか）。
+pub fn describe(a: Action) -> &'static str {
+    use Action::*;
+    match a {
+        Open => "ファイルを選んで開く（Ctrl+O）",
+        OpenFolder => "フォルダを選んで、中身の一覧を開く",
+        Save => "上書き保存する（Ctrl+S）",
+        SaveAs => "名前を付けて保存する",
+        Exit => "NeoNote を終了する",
+        Undo => "直前の編集を 1 回取り消す（Ctrl+Z）",
+        Redo => "取り消した編集を 1 回やり直す（Ctrl+Y）",
+        UndoAll => "開いてから今までの編集を全部取り消す",
+        RedoAll => "取り消した編集を全部やり直す",
+        ViewHistory => "過去に読み込んだファイルの一覧を見る",
+        RestoreHistory => "履歴から以前の内容を選んで戻す",
+        Cut => "選択範囲を切り取る",
+        Copy => "選択範囲をコピーする（Ctrl+C）",
+        Paste => "クリップボードの内容を貼り付ける（Ctrl+V）",
+        PasteBefore => "今の行の前に貼り付ける",
+        PasteAfter => "今の行の後に貼り付ける",
+        PasteFromHistory => "コピーした履歴から選んで貼り付ける",
+        CopyLine => "今の行をまるごとコピーする",
+        CutLine => "今の行をまるごと切り取る",
+        CopyFileName => "開いているファイルの名前をコピーする",
+        CopyPath => "開いているファイルの場所をコピーする",
+        CopyToHistory => "選択範囲をコピーの履歴に残す",
+        CopySelection => "選択範囲をコピーする",
+        SelectAll => "全文を選択する（Ctrl+A）",
+        SelectWord => "カーソルのある単語を選択する",
+        MagicSelect => "押すたびに選択を 単語 → 行 → 段落 → 全体 と広げる",
+        Deselect => "選択を外す",
+        Replace => "検索欄の文字を置換する",
+        Search => "選択範囲の文字で検索する",
+        SearchWeb => "選択範囲の文字をブラウザで検索する",
+        OpenImageUrl => "選択範囲の画像の URL を開く",
+        RunCmd => "選択範囲をコマンドとして実行する。選択が無ければ今のフォルダを開く",
+        ChangeView => "表示（Text・Preview・HEX）と Preview の形式を切り替える",
+        ChangeEncoding => "文字コード・改行コードを切り替える（Ctrl+E）",
+        ChangeSize => "文字の大きさを変える（Ctrl+ホイールでも変えられる）",
+        ToggleFullScreen => "全画面表示を切り替える（F11）",
+        CountText => "文字数・単語数・行数を数える",
+        ChooseTheme => "配色を一覧から選ぶ",
+        ToggleTheme => "明るい配色と暗い配色を切り替える",
+        ChooseFont => "表示に使うフォントを選ぶ",
+        ResetFont => "フォントを同梱の NeoFont に戻す",
+        OpenReadme => "使い方の説明（README）を開く",
+        NewTab => "新しい空のタブを開く",
+        CloseTab => "今のタブを閉じる",
+        NextTab => "右隣のタブへ移る",
+        PrevTab => "左隣のタブへ移る",
+        OpenHomePage => "NeoNote のホームページをブラウザで開く",
+        CheckUpdate => "新しい版が出ているか確かめる",
+        MakeShortcut => "デスクトップに NeoNote のショートカットを作る",
+        OpenRecent => "最近開いたファイルから選んで開く",
+        OpenConfig => "設定ファイル（config.txt）をタブで開く。保存すると反映される",
+        FormatJson => "選択範囲（無ければ全文）の JSON を整形する",
+        ToggleAutoSave => "編集を自動で保存するかを切り替える",
+        ToggleWrap => "右端で折り返すかを切り替える",
+        GotoLine => "行番号を入れて、その行へ移る",
+        ConvertEol => "改行コード（CRLF・LF）を変換する",
+        ToggleResume => "次の起動で、前回のタブと未保存の変更を戻す（切ると、終了時に未保存の変更の保存を確認する）",
+    }
+}
+
 /// ポップアップを出し、選ばれた Action を返す。グレーの項目は選べない。
 pub fn popup(entries: &[MenuEntry], x: i32, y: i32) -> Option<Action> {
     let rows: Vec<Row> = entries
@@ -275,11 +361,7 @@ pub fn popup(entries: &[MenuEntry], x: i32, y: i32) -> Option<Action> {
             label: m.label,
             active: m.action.is_some(),
             divider: m.divider,
-            check: match m.action {
-                Some(Action::ToggleAutoSave) => Some(AUTOSAVE_ON.load(Ordering::Relaxed)),
-                Some(Action::ToggleWrap) => Some(WRAP_ON.load(Ordering::Relaxed)),
-                _ => None,
-            },
+            check: m.action.and_then(checked),
         })
         .collect();
     entries.get(pick(&rows, x, y)?).and_then(|m| m.action)

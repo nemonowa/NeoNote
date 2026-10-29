@@ -17,6 +17,8 @@ use std::{cell::Cell, path::Path, rc::Rc};
 pub const HEIGHT: i32 = 28;
 /// 右端の表示モードのチップの幅。
 pub const CHIP_W: i32 = 104;
+/// 表示（Text・Preview・HEX）のチップの幅。
+pub const VIEW_CHIP_W: i32 = 96;
 const MIN_W: i32 = 48;
 const MAX_W: i32 = 220;
 const CLOSE_W: i32 = 24;
@@ -111,7 +113,13 @@ pub fn build_chip() -> Button {
         draw::draw_box(b.frame(), b.x(), b.y(), b.w(), b.h(), b.color());
         draw::set_draw_color(b.label_color());
         draw::set_font(b.label_font(), b.label_size());
-        draw::draw_text2(&b.label(), b.x() + 8, b.y(), b.w() - 26, b.h(), Align::Left | Align::Inside | Align::Clip);
+        let label = b.label();
+        let mut tx = b.x() + 8;
+        if label == "Preview" {
+            super::icons::draw(super::icons::Icon::Eye, tx, b.y() + (b.h() - super::icons::SIZE) / 2);
+            tx += super::icons::SIZE + 4;
+        }
+        draw::draw_text2(&label, tx, b.y(), b.x() + b.w() - 18 - tx, b.h(), Align::Left | Align::Inside | Align::Clip);
         let (cx, cy) = (b.x() + b.w() - 14, b.y() + b.h() / 2);
         draw::draw_polygon(cx - 4, cy - 2, cx + 4, cy - 2, cx, cy + 3);
     });
@@ -119,6 +127,63 @@ pub fn build_chip() -> Button {
 }
 
 /// 配色を切り替えたあと、チップの色を今のパレットに合わせ直す。
+/// タブ行の左端、行番号欄の真上に置く `#`（行番号欄を常に出すかの切り替え）。幅は行番号欄に合わせて呼び出し側が決める。
+/// 右の境目をドラッグすると `on_resize(幅, 離した)` を呼ぶ（行番号欄の幅の調整）。押すと callback（固定の切り替え）。
+pub fn build_gutter_pin(on_resize: impl Fn(i32, bool) + 'static) -> Button {
+    const GRIP: i32 = 5;
+    let mut b = Button::default();
+    b.set_frame(FrameType::FlatBox);
+    b.set_down_frame(FrameType::FlatBox);
+    b.clear_visible_focus();
+    b.super_draw(false);
+    b.draw(|b| {
+        draw::draw_box(FrameType::FlatBox, b.x(), b.y(), b.w(), b.h(), rgb(color_sub()));
+        let pinned = b.value();
+        draw::set_draw_color(rgb(if pinned { color_accent() } else { color_subtext() }));
+        draw::set_font(fltk::enums::Font::HelveticaBold, 14);
+        let tw = draw::width("#") as i32;
+        let x = b.x() + (b.w() - tw) / 2;
+        draw::draw_text2("#", x, b.y(), tw + 2, b.h(), Align::Left);
+        if pinned {
+            draw::draw_rect_fill(b.x() + (b.w() - 12) / 2, b.y() + b.h() - 3, 12, 2, rgb(color_accent()));
+        }
+        draw::draw_rect_fill(b.x() + b.w() - 1, b.y() + 6, 1, b.h() - 12, rgb(mix(color_sub(), color_text(), 14)));
+    });
+    let resizing = Rc::new(Cell::new(false));
+    b.super_handle_first(false);
+    b.handle(move |w, ev| {
+        let edge = app::event_x() >= w.x() + w.w() - GRIP;
+        match ev {
+            Event::Push if edge => {
+                resizing.set(true);
+                true
+            }
+            Event::Drag | Event::Released if resizing.get() => {
+                let done = ev == Event::Released;
+                if done {
+                    resizing.set(false);
+                }
+                on_resize(app::event_x() - w.x(), done);
+                true
+            }
+            Event::Move | Event::Enter => {
+                if let Some(mut win) = w.window() {
+                    win.set_cursor(if edge { Cursor::WE } else { Cursor::Default });
+                }
+                true
+            }
+            Event::Leave => {
+                if let Some(mut win) = w.window() {
+                    win.set_cursor(Cursor::Default);
+                }
+                true
+            }
+            _ => false,
+        }
+    });
+    b
+}
+
 pub fn restyle_chip(b: &mut Button) {
     b.set_color(rgb(color_sub()));
     b.set_selection_color(rgb(color_accent()));

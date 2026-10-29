@@ -53,27 +53,43 @@ Windows 11 でビルド・ユニットテスト・簡単な操作を確認済み
 | 12 検索バーの常駐 / タブの並べ替え（ドラッグ・`Ctrl+Shift+PageUp/Down`）/ セッション復元（引数なしの起動で前回のタブを開き直す） | 完了（DESIGN.md「第12段階」参照） |
 | 6 フォント・アイコン・Java 側の置換 | 一部完了（フォント選択・Java 側の置換は完了。アイコン・README 表示は資料が無く未着手） |
 
-操作: `Ctrl+O` 開く（複数選択可） / `Ctrl+S` 保存 / `Ctrl+Shift+S` 名前を付けて保存 / `Ctrl+E` 文字コード切替 / `Ctrl+T`・`Ctrl+N` 新規タブ / `Ctrl+W` タブを閉じる / `Ctrl+F` 検索バーを開く（使うときだけ開く。入力すると強調、`Enter`・`Shift+Enter` で次・前、`Esc` で閉じる） / `F3`・`Shift+F3` 次・前の検索結果 / `Ctrl+Shift+PageUp`・`PageDown` タブを左・右へ / `Ctrl+H` 置換（検索バーの置換欄。`Enter` で全置換） / `Ctrl+G` 指定行へ移動 / `Ctrl++`・`Ctrl+-`・`Ctrl+ホイール` 文字サイズ / `Ctrl+0` 文字サイズを既定に / `Ctrl+Z` 元に戻す / `Ctrl+Y`・`Ctrl+Shift+Z` やり直し / `Ctrl+A` 全選択 / `Ctrl+C`・`Ctrl+X`・`Ctrl+V`（macOS は Cmd）。`Ctrl+Tab` / `Ctrl+Shift+Tab` でタブを切り替える。`Tab`（複数行を選択中）・`Shift+Tab` で字下げ / 字下げを外す。Enter は前の行の字下げを引き継ぐ。`Ctrl+F` の検索は、小文字だけで打つと大文字小文字を区別せず、大文字を含めると区別する。
+操作: `Ctrl+O` 開く（複数選択可） / `Ctrl+S` 保存 / `Ctrl+Shift+S` 名前を付けて保存 / `Ctrl+E` 文字コード・改行コード / `Ctrl+T`・`Ctrl+N` 新規タブ / `Ctrl+W` タブを閉じる / `Ctrl+F` 検索バーを開く（使うときだけ開く。入力すると強調、`Enter`・`Shift+Enter` で次・前、`Esc` で閉じる） / `F3`・`Shift+F3` 次・前の検索結果 / `Ctrl+Shift+PageUp`・`PageDown` タブを左・右へ / `Ctrl+H` 置換（検索バーの置換欄。`Enter` で全置換） / `Ctrl+G` 指定行へ移動 / `Ctrl++`・`Ctrl+-`・`Ctrl+ホイール` 文字サイズ / `Ctrl+0` 文字サイズを既定に / `Ctrl+Z` 元に戻す / `Ctrl+Y`・`Ctrl+Shift+Z` やり直し / `Ctrl+A` 全選択 / `Ctrl+C`・`Ctrl+X`・`Ctrl+V`（macOS は Cmd）。`Ctrl+Tab` / `Ctrl+Shift+Tab` でタブを切り替える。`Tab`（複数行を選択中）・`Shift+Tab` で字下げ / 字下げを外す。Enter は前の行の字下げを引き継ぐ。`Ctrl+F` の検索は、小文字だけで打つと大文字小文字を区別せず、大文字を含めると区別する。
 
-タブはツールバーの下に並ぶ。ファイルを開くと新しいタブになり、同じファイルはそのタブへ移る。起動引数に複数のパスを渡すとそれぞれタブで開く。`×` か中クリックで閉じる（未保存なら保存 / 破棄 / キャンセル）。最後のタブを閉じると終了する。タブはドラッグで並べ替えられる。引数なしで起動すると、前回終了時に開いていたタブを同じ並びで開き直す（`neodir/config.txt` の `session=`。最後のタブを閉じて終了したときは空）。
+タブはツールバーの下に並ぶ。ファイルを開くと新しいタブになり、同じファイルはそのタブへ移る。起動引数に複数のパスを渡すとそれぞれタブで開く。`×` か中クリックで閉じる。閉じると失う変更があるときだけ、保存 / 破棄 / キャンセルを聞く（名前の無いタブが空白だけのとき、ファイルのタブを元に戻したときは聞かない）。確認はアプリのウィンドウの中に出し、`Enter` で保存、`Esc` でキャンセル。最後のタブを閉じると終了する。タブはドラッグで並べ替えられる。
 
-既定のフォントは同梱の NeoFont（`assets/NeoFont.ttf`、バイナリに埋め込み済み。作者: nemo の自作フォント）。他のフォントは `Open Settings`（Load の右クリックメニュー）または `Choose Font`（Run の右クリックメニュー）で `.ttf` / `.otf` のパスを指定して読み込む。選んだフォントはその起動の間だけ有効で、次の起動では NeoFont に戻る。`Default Font`（Run の右クリックメニュー）でも NeoFont に戻せる。
+**続きから**: 引数なしで起動すると、前回終了時に開いていたタブを同じ並びで開き直し、未保存だった変更も未保存の印付きで戻す。タブの並びは `config.txt` の `session=`、未保存の本文は設定フォルダの `unsaved/` に、終了時と 2 分ごと（中身が変わったときだけ）に書く。有効な間は、終了しても保存を確認しない。Load の `Resume`（または `config.txt` の `resume=false`）で切ると、控えを消し、終了時に保存を確認するふつうのメモ帳の動きになる。
 
-ツールバーは左クリックで主な動作、右クリックでそのボタンのメニュー。右の余白をクリックすると現在のパスをコピーする。編集領域の右クリックメニューは Cut / Copy / Paste / Replace / Search / Search In web / Select All / Change Encoding / Run In CMD。Search は選択した文字列と同じ箇所を黄色にし、何も選ばずに実行すると消える。
+**設定の場所**: OS の設定の場所の `neonote` フォルダ（Windows は `%APPDATA%\neonote`、macOS は `~/Library/Application Support/neonote`、Linux は `$XDG_CONFIG_HOME/neonote` か `~/.config/neonote`）。実行ファイルの横に `neonote` フォルダがあれば、そちらを使う（持ち歩き用）。
 
-文字コードは開くときに自動判定する（既定。UTF-8 / UTF-16 は BOM も見る。BOM なしの UTF-16 は ASCII の多い文書だけ推定し、EUC-JP は Windows-31J として読めないときの次点。外れたら手動で選ぶ）。`Ctrl+E` のメニューは上から HEX / UTF-8 / Windows-31J / EUC-JP / UTF-16LE / UTF-16BE / ISO-8859-1 / US-ASCII / Auto で、固定するとディスクから読み直し、Auto で自動判定に戻る。保存時に表せない文字があれば、保存前に「キャンセル / UTF-8 に変えて保存 / ? に置き換えて保存」を選ぶ。
+既定のフォントは同梱の NeoFont（`assets/NeoFont.ttf`、バイナリに埋め込み済み。作者: nemo の自作フォント）。他のフォントは Load または Run のメニューの `Font` で `.ttf` / `.otf` を選んで読み込む（`config.txt` の `font=` に残り、次の起動でも使う）。Run の `Reset Font` で NeoFont に戻せる。
+
+ツールバーのボタンは押すと主な動作。マウスを乗せる（または右クリック）と、ボタンの真下にそのボタンのサブメニューが開く。サブメニューには、ボタンを押したときと同じ動作は出さない。項目の表記はなるべく 1 語で、マウスを乗せると説明がツールチップで出る。右の余白をクリックすると現在のパスをコピーする。
+
+左端の列は、上からツールバーの押しピン（ウィンドウを最前面に固定。Windows のみ）、タブ行の `#`（行番号を常に表示）、本文の行番号で、3 つとも同じ幅。`#` の右の境目をドラッグすると行番号欄を広げられる（`config.txt` の `gutter_extra`）。右パネルは左の境目をドラッグして幅を変えられる（`side_w`）。
+
+編集領域の右クリックメニューは Cut / Copy / Paste / Replace / Search / Search In web / Select All / Change View / Change Encoding / Run In CMD など。Search は選択した文字列と同じ箇所をアクセント色で強調し、何も選ばずに実行すると消える。
+
+タブ行の右端は 2 つのチップ。左は表示（Text / Preview / HEX）で、文字の文書は `Preview as Markdown` / `Preview as HTML` / `Preview as CSV / TSV` で、拡張子に関係なく形式を選んでプレビューできる（タブを閉じるまで覚える）。右は文字コード・改行コード。
+
+**乗せて確かめる**: 本文の次の値にマウスを約 0.3 秒乗せると、小さな窓で中身を見せる。カラーコード（`#rgb`・`#rrggbb`・`#rrggbbaa`・`rgb()` / `rgba()`、css・html・svg・xml・json では `red` などの色の名前も）は色の見本、文字参照（`&hearts;`・`&#x3042;`）と `あ` などのエスケープはその文字と U+XXXX、UNIX 時刻（10 桁の秒・13 桁のミリ秒、2001〜2100 年）は日時、画像ファイルのパス（開いているファイルの場所から見て実在する物）は縮小画像。
+
+**右パネル**: ファイルの情報と本文の縮小表示。フォルダ・zip・tar では、縮小表示の代わりに中身の大きさを面積で表す図（ツリーマップ）を出す。フォルダは入れ子の枠、ファイルは拡張子ごとの色で、マウスを乗せると大きさとパスが下に出る。
+
+文字コードは開くときに自動判定する（既定。UTF-8 / UTF-16 は BOM も見る。BOM なしの UTF-16 は ASCII の多い文書だけ推定し、EUC-JP は Windows-31J として読めないときの次点。外れたら手動で選ぶ）。`Ctrl+E`（文字コードのチップ）のメニューは上から UTF-8 / Windows-31J / EUC-JP / UTF-16LE / UTF-16BE / ISO-8859-1 / US-ASCII / Auto / 改行コードで（HEX は表示のチップ）、固定するとディスクから読み直し、Auto で自動判定に戻る。保存時に表せない文字があれば、保存前に「キャンセル / UTF-8 に変えて保存 / ? に置き換えて保存」を選ぶ。
 
 HEX 表示は 1 行 16 バイトで、`オフセット  HEX×16  |ASCII|`。編集できるのは HEX 部分だけで、オフセットと ASCII 欄は保存時に読み飛ばし、保存後に作り直す。2 桁の 16 進数（空白区切り）以外が混ざると、その行・列にカーソルを移して保存を中止する（ファイルは書き換えない）。16 MiB を超えるファイルは先頭だけ読み、保存は無効。
 
 ## 第7段階の使い方（要点）
 
-- **Edit** ボタンの左クリック = Magic Select。押すたびに、選択が 単語 → 行 → 段落 → 全体 と広がる。右クリックで Select / Select All / Magic Select / Deselect / Copy Selection。
-- **Copy** の右クリック: Copy / Copy Line / Copy to Clipboard History（選択か行を履歴に貯める。最大 10 件）。**Paste** の右クリック: Paste / Paste Before / Paste After（選択を置き換えず、前 / 後ろへ貼る）/ Paste From History。
-- **Format JSON**（編集領域の右クリック、Run の右クリック）: 選択範囲、無ければ全文を JSON として整形する。不正な JSON は書き換えず、位置を示す。
-- **Undo** / **Redo** の右クリック: Undo All / Redo All で戻せなくなるまで繰り返す。View History（過去に読み込んだファイルの履歴をファイル名で一覧し、ダブルクリックか Enter でタブに開く）/ Restore From History（いま開いていない最新の 1 件をすぐ開く）。存在しないファイルは自動で履歴から消える。履歴は全文書で共通・新しい順・最大 100 件で、`neodir/config.txt` の `history=` に保存され終了後も残る。
-- **Save** の右クリック: Enable Auto Save（チェック式。30 秒ごとに未保存のファイルを上書き。状態は設定ファイルに残る）。
-- **Load** の右クリック: Open Recent（最近開いたファイル。終了後も残る）/ Open Config（設定ファイルをタブで開く）/ Open HomePage / Make Shortcut（デスクトップにショートカット）/ Check Update（配布ページを開く）。
-- **行番号欄**: 普通は隠れていて、マウスが左端にあるか、文字カーソルが行頭にあるときだけ出る。ツールバーの `#` で常に表示に固定できる（次回起動も引き継ぐ）。
+項目の名前は今の表記（1 語）で書く。かっこの中は以前の名前。
+
+- **Edit** ボタンを押す = Magic Select。押すたびに、選択が 単語 → 行 → 段落 → 全体 と広がる。サブメニューは Word（Select）/ All（Select All）/ Deselect / Copy（Copy Selection）。
+- **Copy** のサブメニュー: Line（Copy Line）/ Cut（Cut Line）/ Name（Copy File Name）/ Stash（Copy to Clipboard History。選択か行を履歴に貯める。最大 10 件）。**Paste** のサブメニュー: Before / After（選択を置き換えず、前 / 後ろへ貼る）/ History（Paste From History）。
+- **JSON**（Format JSON。Run のサブメニュー、編集領域の右クリック）: 選択範囲、無ければ全文を JSON として整形する。不正な JSON は書き換えず、位置を示す。
+- **Undo** / **Redo** のサブメニュー: All（Undo All / Redo All）で戻せなくなるまで繰り返す。History（View History。過去に読み込んだファイルの履歴をファイル名で一覧し、ダブルクリックか Enter でタブに開く）/ Restore（Restore From History。いま開いていない最新の 1 件をすぐ開く）。存在しないファイルは自動で履歴から消える。履歴は全文書で共通・新しい順・最大 100 件で、`config.txt` の `history=` に保存され終了後も残る。
+- **Save** のサブメニュー: Save As / Autosave（Enable Auto Save。チェック式。30 秒ごとに未保存のファイルを上書き。状態は設定ファイルに残る）。
+- **Load** のサブメニュー: New / Folder / Close / Recent（最近開いたファイル。終了後も残る）/ Readme / Homepage / Font / Config（設定ファイルをタブで開く）/ Resume（続きから）/ Shortcut（デスクトップにショートカット）/ Update（配布ページを開く）/ Exit。
+- **行番号欄**: 普通は隠れていて、マウスが左端にあるときだけ出る。タブ行の左端の `#` で常に表示に固定できる（次回起動も引き継ぐ）。
 
 ## csv / tsv の表示（簡易対応）
 
@@ -89,7 +105,11 @@ HEX 表示は 1 行 16 バイトで、`オフセット  HEX×16  |ASCII|`。編�
 
 ## html / htm の表示（簡易対応・未検証）
 
-`.html` / `.htm` / `.xhtml` は文字として開く（編集はふつうのテキスト）。タブ右端のチップ → **Preview** で見られる。CSS・JavaScript は効かず、`HelpView` が描ける形にタグを絞って出す: 見出し・段落・リスト・表（罫線つき）・太字 / 斜体 / 下線・コード・`pre`・引用。`div` などの入れ物は改行になるだけで、色・フォント・レイアウトは出さない（配色は NeoNote のダーク・ライトに従う）。`head`（`title` を含む）・`script`・`style`・フォーム・動画・iframe・svg は出さず、`display:none` で隠された要素も出る。リンクは辿れず、文字のあとに「 (URL)」を添える。画像は html のあるフォルダのローカルの画像（png / jpg / gif / bmp）だけ出し、URL の画像は `[alt]` の文字になる。閉じタグの省略は補う。文字コードは開くときに決めたもの（`<meta charset>` は見ない）。読む上限は約 4 MB で、超えると注記が出る（全体は Text で見られる）。読み取り専用で、Preview の中では編集しない。**ビルド・動作とも未検証。**
+`.html` / `.htm` / `.xhtml` は文字として開く（編集はふつうのテキスト）。表示のチップ → **Preview** で見られる。JavaScript は効かず、`HelpView` が描ける形にタグを絞って出す: 見出し・段落・リスト・表（罫線つき）・太字 / 斜体 / 下線・コード・`pre`・引用。`div` などの入れ物は改行になるだけ。
+
+色と揃えは、`<style>`（`head` の中も）・`style` 属性・古い属性（`bgcolor`・`text`・`color`・`align`）から読んで出す: ページの背景色・文字色・リンクの色、文字の色、表・行・セルの背景色、段落・見出し・セル・`div` の左右揃え。`<style>` はタグ名・`.class`・`#id`・`tag.class` の単純な指定だけを読む。読めない値（`var()`・`hsl()`・`transparent` など）は捨ててテーマの色のまま描き、背景に溶けて読めない文字色は黒か白にする。余白・枠線・フォント・横並びのレイアウトは出さない。
+
+`head` の中の文字（`title` を含む）・`script`・フォーム・動画・iframe・svg は出さず、`display:none` で隠された要素も出る。リンクは辿れず、文字のあとに「 (URL)」を添える。画像は html のあるフォルダのローカルの画像（png / jpg / gif / bmp）だけ出し、URL の画像は `[alt]` の文字になる。閉じタグの省略は補う。文字コードは開くときに決めたもの（`<meta charset>` は見ない）。読む上限は約 4 MB で、超えると注記が出る（全体は Text で見られる）。読み取り専用で、Preview の中では編集しない。**ビルド・動作とも未検証。**
 
 ## tar / tar.gz / gz の一覧（簡易対応・未検証）
 
