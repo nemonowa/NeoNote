@@ -64,7 +64,7 @@ pub const PALETTES: &[Named] = &[
 ];
 
 static CURRENT: AtomicUsize = AtomicUsize::new(0);
-/// 自分で決めた配色（neodir/config.txt の custom_main などから作る）。CURRENT がこの番号のときに使う。
+/// 自分で決めた配色（config.txt の custom_main などから作る）。CURRENT がこの番号のときに使う。
 static CUSTOM: Mutex<Option<Palette>> = Mutex::new(None);
 const CUSTOM_INDEX: usize = usize::MAX;
 pub const CUSTOM_NAME: &str = "custom";

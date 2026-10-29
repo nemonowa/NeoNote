@@ -2,8 +2,13 @@
 /target/
 /dist/
 
-# 実行時にできるもの（実行ファイルの隣の neodir/ と、ログ）
+# 実行時にできるもの（実行ファイルの隣の持ち歩き用の設定 neonote/・以前の neodir/ と、ログ）
+/neonote/
 neodir/
+
+# 直下に置いたビルド済みの実行ファイル（配布は Releases）
+/neonote.exe
+/neonote
 *.log
 
 # 開発者ごとのローカルファイル（共有しない）

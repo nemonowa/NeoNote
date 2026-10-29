@@ -1,4 +1,4 @@
-// 最近開いたファイルの一覧。neodir/config.txt の `recent=` に保存される（core/config.rs）。
+// 最近開いたファイルの一覧。config.txt の `recent=` に保存される（core/config.rs）。
 use std::path::{Path, PathBuf};
 
 pub const MAX: usize = 10;

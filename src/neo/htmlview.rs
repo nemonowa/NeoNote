@@ -3,9 +3,12 @@
 // 「HelpView が描けるタグだけ」に作り直す（タグの対応を取り直し、描けないものは中身の文字だけ残す）。
 //
 // 出すもの: 見出し・段落・リスト・表（罫線つき）・太字 / 斜体 / 下線・コード・pre・引用・中央寄せ・ローカルの画像。
-// 出さないもの: CSS・JS・色・フォント・レイアウト（div は改行になるだけ）、フォーム、動画・音声・iframe・svg、head の中身（title を含む）。
+// 色と揃え: htmlstyle.rs が <style>・style 属性・古い属性から読んだ分だけ、HelpView の属性（body の bgcolor、font color、td の bgcolor、align）にして出す。
+//   読めない値は捨ててテーマの色のまま描く。文字が背景に溶けて読めなくなる色は使わず、読める色（黒か白）にする。
+// 出さないもの: JS・フォント・レイアウト（div は改行になるだけ）、フォーム、動画・音声・iframe・svg、head の中身（title を含む）。
 // リンクは辿らせない（HelpView は辿るとファイルとして読みに行って失敗する）。文字として残し、リンク先は「 (URL)」で後ろに添える。
 // 文字コードは NeoNote が開くときに決めたものに従う（`<meta charset>` は見ない）。
+use super::htmlstyle::{self, Css, Rgb, Style};
 use super::imagefile;
 use super::markdown::Images;
 
@@ -70,7 +73,7 @@ fn keep_name(n: &str) -> Option<&'static str> {
 
 /// 改行のあとに閉じる（段落の切れ目になる）タグか。
 fn is_block(k: &str) -> bool {
-    !matches!(k, "b" | "i" | "u" | "code" | "kbd" | "var")
+    !matches!(k, "b" | "i" | "u" | "code" | "kbd" | "var" | "font")
 }
 
 fn wide(c: char) -> bool {
@@ -129,7 +132,7 @@ fn entity(name: &str) -> Option<char> {
 }
 
 /// 文字参照を文字に戻す。知らない名前・`;` の無いものは `&` のまま残す。
-fn decode_entities(s: &str) -> String {
+pub(crate) fn decode_entities(s: &str) -> String {
     if !s.contains('&') {
         return s.to_string();
     }
@@ -251,6 +254,17 @@ struct Out {
     s: String,
     /// いま開いている（出力に開きタグを書いた）要素。
     stack: Vec<&'static str>,
+    /// stack と同じ並びで、その要素を開かせた元のタグ名（span の色のための font なら "span"）。
+    owners: Vec<String>,
+    /// 色を付けた要素の (stack の位置, 背景色) と (stack の位置, 文字色)。閉じたら外す。
+    bgs: Vec<(usize, Rgb)>,
+    fgs: Vec<(usize, Rgb)>,
+    css: Css,
+    /// html・body に書かれた見た目（`<style>` の html・body の規則は page_css。body のタグが無いページにも効かせる）。
+    page: Style,
+    page_css: Style,
+    /// テーマの背景色・文字色・リンクの色。
+    theme: (Rgb, Rgb, Rgb),
     /// 開いている `<a>` の (href, 出力のその時点の長さ)。
     links: Vec<(String, usize)>,
     /// 直前が改行（または先頭）か。改行を重ねないために持つ。
@@ -266,8 +280,8 @@ struct Out {
 }
 
 impl Out {
-    fn new() -> Out {
-        Out { s: String::new(), stack: Vec::new(), links: Vec::new(), brk: true, seen: false, cell_empty: false, last: None, images: 0, truncated: false }
+    fn new(theme: (Rgb, Rgb, Rgb)) -> Out {
+        Out { s: String::new(), stack: Vec::new(), owners: Vec::new(), bgs: Vec::new(), fgs: Vec::new(), css: Css::default(), page: Style::default(), page_css: Style::default(), theme, links: Vec::new(), brk: true, seen: false, cell_empty: false, last: None, images: 0, truncated: false }
     }
 
     fn in_table_gap(&self) -> bool {
@@ -353,6 +367,10 @@ impl Out {
     /// 一番上の要素を閉じる。
     fn close_top(&mut self) {
         let Some(name) = self.stack.pop() else { return };
+        self.owners.pop();
+        let depth = self.stack.len();
+        self.bgs.retain(|(i, _)| *i < depth);
+        self.fgs.retain(|(i, _)| *i < depth);
         if matches!(name, "td" | "th") && self.cell_empty {
             self.s.push_str("&nbsp;");
         }
@@ -383,7 +401,8 @@ impl Out {
         }
     }
 
-    fn open(&mut self, name: &'static str, extra: &str) {
+    /// `owner` は元のタグ名（閉じタグが来たときに、どの要素の分かを見分ける）。
+    fn open_for(&mut self, name: &'static str, extra: &str, owner: &str) {
         // 閉じタグの省略（`<li>a<li>b`・`<p>a<p>b`・`<td>` など）を補う
         match name {
             "li" => self.close_until(&["li"], &["ul", "ol"]),
@@ -399,6 +418,7 @@ impl Out {
             return;
         }
         self.stack.push(name);
+        self.owners.push(owner.to_string());
         self.s.push('<');
         self.s.push_str(name);
         self.s.push_str(extra);
@@ -417,17 +437,86 @@ impl Out {
             self.link_close();
             return;
         }
-        if BREAKS.contains(&name) {
-            self.soft_break();
+        let Some(k) = keep_name(name) else {
+            self.close_owned(name);
+            if BREAKS.contains(&name) {
+                self.soft_break();
+            }
             return;
-        }
-        let Some(k) = keep_name(name) else { return };
+        };
         match k {
             "td" | "th" => self.close_until(&["td", "th"], &["tr", "table"]),
             "tr" => self.close_until(&["tr"], &["table"]),
             "table" => self.close_until(&["table"], &[]),
             "p" | "li" | "dt" | "dd" => self.close_until(&[k], &["table", "td", "th", "ul", "ol", "dl", "blockquote"]),
             _ => self.close_until(&[k], &["td", "th", "table"]),
+        }
+    }
+
+    /// ページの (背景, 文字, リンク) の色。読めない・読めなくなる色はテーマか、背景に合う黒・白にする。
+    fn page_colors(&self) -> (Rgb, Rgb, Rgb) {
+        let (tbg, tfg, tlink) = self.theme;
+        let readable = |c: Rgb, bg: Rgb| htmlstyle::contrast(c, bg) >= htmlstyle::MIN_CONTRAST;
+        let mut page = self.page_css.clone();
+        page.merge(&self.page);
+        let (bg, fg) = match (page.background, page.color) {
+            (Some(bg), Some(fg)) if readable(fg, bg) => (bg, fg),
+            (Some(bg), _) => (bg, if readable(tfg, bg) { tfg } else { htmlstyle::readable_on(bg) }),
+            (None, Some(fg)) if readable(fg, tbg) => (tbg, fg),
+            (None, Some(fg)) => (htmlstyle::readable_on(fg), fg),
+            (None, None) => (tbg, tfg),
+        };
+        let link = [page.link, Some(tlink)].into_iter().flatten().find(|&c| readable(c, bg)).unwrap_or(fg);
+        (bg, fg, link)
+    }
+
+    /// `<style>` を読んだあと: html・body の規則を page_css に取り直す。
+    fn refresh_page_css(&mut self) {
+        let none = |_: &str| None;
+        let mut st = self.css.resolve("html", &none);
+        st.merge(&self.css.resolve("body", &none));
+        self.page_css = st;
+    }
+
+    fn current_bg(&self) -> Rgb {
+        self.bgs.last().map_or_else(|| self.page_colors().0, |b| b.1)
+    }
+
+    fn current_fg(&self) -> Rgb {
+        self.fgs.last().map_or_else(|| self.page_colors().1, |f| f.1)
+    }
+
+    /// 開いたばかりの要素（stack の一番上）の中を、`st` の文字色にする。
+    /// 背景を変えた要素では、文字色が無くても、今の文字色が読めなくなるなら読める色にする。
+    fn apply_color(&mut self, st: &Style, owner: &str, bg_changed: bool) {
+        let bg = self.current_bg();
+        let color = match st.color {
+            Some(c) if htmlstyle::contrast(c, bg) >= htmlstyle::MIN_CONTRAST => Some(c),
+            Some(_) => Some(htmlstyle::readable_on(bg)),
+            None if bg_changed && htmlstyle::contrast(self.current_fg(), bg) < htmlstyle::MIN_CONTRAST => Some(htmlstyle::readable_on(bg)),
+            None => None,
+        };
+        if let Some(c) = color.filter(|&c| c != self.current_fg()) {
+            let depth = self.stack.len();
+            self.open_for("font", &format!(" color=\"{}\"", htmlstyle::hex(c)), owner);
+            if self.stack.len() > depth {
+                self.fgs.push((self.stack.len() - 1, c));
+            }
+        }
+    }
+
+    /// 元のタグ `owner` のために開いた要素（色の font・揃えの center）を閉じる。表や項目の外までは閉じに行かない。
+    fn close_owned(&mut self, owner: &str) {
+        for idx in (0..self.stack.len()).rev() {
+            if self.owners[idx] == owner && matches!(self.stack[idx], "font" | "center") {
+                while self.stack.len() > idx {
+                    self.close_top();
+                }
+                return;
+            }
+            if matches!(self.stack[idx], "td" | "th" | "tr" | "table" | "li" | "dd" | "blockquote") {
+                return;
+            }
         }
     }
 
@@ -511,12 +600,27 @@ fn limit(src: &str) -> (&str, bool) {
     (&src[..n], true)
 }
 
+/// 捨てる範囲（head の中）にある `<style>` だけを読む。`low` は `src` の ASCII を小文字にしたもの。
+fn add_styles_in(css: &mut Css, src: &str, low: &str) {
+    let mut at = 0;
+    while let Some(p) = low[at..].find("<style") {
+        let Some(gt) = low[at + p..].find('>') else { return };
+        let body = at + p + gt + 1;
+        let end = low[body..].find("</style").map_or(low.len(), |q| body + q);
+        css.add(&src[body..end]);
+        at = end;
+        if at >= low.len() {
+            return;
+        }
+    }
+}
+
 /// 本文の HTML を HelpView 向けに作り直す。戻り値は (本体, 見える内容があるか, 途中で切ったか)。
-fn convert(src: &str, imgs: &Images) -> (String, bool, bool) {
+fn convert(src: &str, imgs: &Images, theme: (Rgb, Rgb, Rgb)) -> (String, bool, bool, (Rgb, Rgb, Rgb)) {
     let (src, cut_in) = limit(src);
     let low = src.to_ascii_lowercase(); // ASCII だけ小文字にするので、バイト位置は src と同じ
     let b = src.as_bytes();
-    let mut o = Out::new();
+    let mut o = Out::new(theme);
     let mut i = 0;
     while i < b.len() {
         if o.s.len() > MAX_OUT {
@@ -576,6 +680,12 @@ fn convert(src: &str, imgs: &Images) -> (String, bool, bool) {
                 match low[i..].find(&pat) {
                     Some(p) => {
                         let from = i + p;
+                        if name == "style" {
+                            o.css.add(&src[i..from]);
+                        } else if name == "head" {
+                            add_styles_in(&mut o.css, &src[i..from], &low[i..from]);
+                        }
+                        o.refresh_page_css();
                         i = match src[from..].find('>') {
                             Some(q) => from + q + 1,
                             None => b.len(),
@@ -596,12 +706,43 @@ fn convert(src: &str, imgs: &Images) -> (String, bool, bool) {
             "hr" => o.hr(),
             "img" => o.image(attrs, imgs),
             "a" => o.link_open(attrs),
+            "html" | "body" => {
+                let st = o.css.resolve(name, &|k| attr(attrs, k));
+                o.page.merge(&st);
+            }
             _ => {
+                let st = o.css.resolve(name, &|k| attr(attrs, k));
                 if let Some(k) = keep_name(name) {
-                    let extra = o.extra_attrs(k, attrs);
-                    o.open(k, &extra);
-                } else if BREAKS.contains(&name) {
-                    o.soft_break();
+                    let mut extra = o.extra_attrs(k, attrs);
+                    // 背景は表・行・セルだけ（HelpView はほかの要素の背景を描けない）。揃えは段落・見出し・セル
+                    let bg = st.background.filter(|_| matches!(k, "table" | "tr" | "td" | "th"));
+                    if let Some(c) = bg {
+                        extra.push_str(&format!(" bgcolor=\"{}\"", htmlstyle::hex(c)));
+                    }
+                    if let Some(a) = st.align.filter(|_| matches!(k, "p" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "td" | "th") && !extra.contains(" align=")) {
+                        extra.push_str(&format!(" align=\"{a}\""));
+                    }
+                    let depth = o.stack.len();
+                    o.open_for(k, &extra, name);
+                    if o.stack.len() > depth {
+                        if let Some(c) = bg {
+                            o.bgs.push((o.stack.len() - 1, c));
+                        }
+                        if !matches!(k, "table" | "tr") {
+                            o.apply_color(&st, name, bg.is_some());
+                        }
+                    }
+                } else {
+                    if BREAKS.contains(&name) {
+                        o.soft_break();
+                    }
+                    if !o.in_table_gap() {
+                        // div などの中央寄せは center で、span・font などの色は font で包む
+                        if st.align == Some("center") && BREAKS.contains(&name) {
+                            o.open_for("center", "", name);
+                        }
+                        o.apply_color(&st, name, false);
+                    }
                 }
             }
         }
@@ -609,12 +750,17 @@ fn convert(src: &str, imgs: &Images) -> (String, bool, bool) {
     while !o.stack.is_empty() {
         o.close_top();
     }
-    (o.s, o.seen, o.truncated || cut_in)
+    let page = o.page_colors();
+    (o.s, o.seen, o.truncated || cut_in, page)
 }
 
 /// html を、HelpView に渡す完全な HTML にする。色は `#rrggbb`。
+/// ページの色（body・html の指定）が読めればそれを、読めなければテーマの色を使う。
 pub fn to_html(src: &str, bg: &str, fg: &str, link: &str, sub: &str, imgs: &Images) -> String {
-    let (mut body, seen, cut) = convert(src, imgs);
+    let c = |s: &str, d: Rgb| htmlstyle::parse_color(s).unwrap_or(d);
+    let theme = (c(bg, (255, 255, 255)), c(fg, (0, 0, 0)), c(link, (0, 0, 238)));
+    let (mut body, seen, cut, (pbg, pfg, plink)) = convert(src, imgs, theme);
+    let (bg, fg, link) = (htmlstyle::hex(pbg), htmlstyle::hex(pfg), htmlstyle::hex(plink));
     if !seen {
         body = "<p>表示できる内容がありません（本文が空、または script・style などだけです）。</p>".to_string();
     }
@@ -632,7 +778,61 @@ mod tests {
     fn conv(h: &str) -> String {
         let f = |_: &Path| -> Option<(i32, i32)> { None };
         let imgs = Images { base: None, max_w: 400, size_of: &f };
-        convert(h, &imgs).0
+        convert(h, &imgs, ((17, 17, 17), (238, 238, 238), (51, 153, 255))).0
+    }
+
+    fn page(h: &str) -> String {
+        let f = |_: &Path| -> Option<(i32, i32)> { None };
+        let imgs = Images { base: None, max_w: 400, size_of: &f };
+        to_html(h, "#111111", "#eeeeee", "#3399ff", "#888888", &imgs)
+    }
+
+    #[test]
+    fn page_colors_come_from_body_style_and_attributes() {
+        assert!(page("<body bgcolor=white text=navy><p>a</p></body>").starts_with("<html><body bgcolor=\"#ffffff\" text=\"#000080\""));
+        let r = page("<style>body { background: #fffff0 }</style><body><p>a</p>");
+        // 背景だけ: テーマの明るい文字色は読めないので、黒にする
+        assert!(r.starts_with("<html><body bgcolor=\"#fffff0\" text=\"#000000\""), "{r}");
+        // 文字色だけで、テーマの背景では読めない: 背景を文字に合う色にする
+        let r = page("<body style=\"color:#222\"><p>a</p>");
+        assert!(r.starts_with("<html><body bgcolor=\"#ffffff\" text=\"#222222\""), "{r}");
+        // 読めない値はテーマのまま
+        assert!(page("<body bgcolor=\"var(--bg)\" style=\"color: nope\"><p>a</p>").starts_with("<html><body bgcolor=\"#111111\" text=\"#eeeeee\""));
+    }
+
+    #[test]
+    fn text_colors_wrap_in_font_and_close_with_their_element() {
+        assert_eq!(conv("<p style=\"color:red\">a</p>b"), "<p><font color=\"#ff0000\">a</font></p>b");
+        assert_eq!(conv("<p>x<span style=\"color:#0f0\">y</span>z</p>"), "<p>x<font color=\"#00ff00\">y</font>z</p>");
+        assert_eq!(conv("<style>.w{color:orange}</style><p class=w>a"), "<p><font color=\"#ffa500\">a</font></p>");
+        // 閉じ忘れた span はセルの外まで漏らさない
+        let r = conv("<table><tr><td><span style=color:red>a</td><td>b</td></tr></table>");
+        assert!(r.contains("<td><font color=\"#ff0000\">a</font></td><td>b</td>"), "{r}");
+        // 背景に溶ける文字色（暗いテーマに黒）は読める色にする
+        assert_eq!(conv("<p style=\"color:#000\">a</p>"), "<p><font color=\"#ffffff\">a</font></p>");
+        // 読めない色は何もしない
+        assert_eq!(conv("<p style=\"color:inherit\">a</p>"), "<p>a</p>");
+    }
+
+    #[test]
+    fn space_after_a_colored_span_is_kept() {
+        assert_eq!(conv("<p>a <span style=color:red>b</span> c</p>"), "<p>a <font color=\"#ff0000\">b</font> c</p>");
+    }
+
+    #[test]
+    fn styles_inside_head_are_read() {
+        assert_eq!(conv("<head><title>t</title><style>p{color:red}</style></head><p>a"), "<p><font color=\"#ff0000\">a</font></p>");
+        assert!(page("<head><style>body{background:white}</style></head><p>a").starts_with("<html><body bgcolor=\"#ffffff\""));
+    }
+
+    #[test]
+    fn cell_backgrounds_and_alignment() {
+        let r = conv("<table><tr><td style=\"background:#ffffcc;text-align:right\">a</td><td bgcolor=navy>b</td></tr></table>");
+        // 明るいセルでは、テーマの明るい文字が読めないので黒にする
+        assert!(r.contains("<td align=\"right\" bgcolor=\"#ffffcc\"><font color=\"#000000\">a</font></td>") || r.contains("<td bgcolor=\"#ffffcc\" align=\"right\"><font color=\"#000000\">a</font></td>"), "{r}");
+        assert!(r.contains("<td bgcolor=\"#000080\">b</td>"), "{r}");
+        assert_eq!(conv("<div style=\"text-align:center\">a</div>b"), "<center>a</center>b");
+        assert_eq!(conv("<p align=center>a</p>"), "<p align=\"center\">a</p>");
     }
 
     #[test]
@@ -640,6 +840,7 @@ mod tests {
         let h = "<html><head><title>T</title><style>p{}</style></head><body><p>Hi</p><script>var a='<b>';</script></body></html>";
         assert_eq!(conv(h), "<p>Hi</p>");
     }
+
 
     #[test]
     fn comments_and_doctype_are_dropped() {
