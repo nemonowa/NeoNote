@@ -2,6 +2,7 @@
 pub mod archive;
 pub mod audiometa;
 pub mod book;
+pub mod code;
 pub mod config;
 pub mod doctext;
 pub mod document;
@@ -22,6 +23,7 @@ pub mod indent;
 pub mod inflate;
 pub mod json;
 pub mod markdown;
+pub mod mcfunction;
 pub mod pathlog;
 pub mod pdftext;
 pub mod recent;

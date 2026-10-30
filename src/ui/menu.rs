@@ -151,7 +151,9 @@ pub const THEME: &[MenuEntry] = &[
     e("Nord", "ノルド", Action::SetTheme(4)),
     e("Abyss", "アビス", Action::SetTheme(5)),
     e("Paper", "ペーパー", Action::SetTheme(6)),
-    ed("Sakura", "サクラ", Action::SetTheme(7)),
+    e("Sakura", "サクラ", Action::SetTheme(7)),
+    e("Discord", "ディスコード", Action::SetTheme(8)),
+    ed("GitHub", "ギットハブ", Action::SetTheme(9)),
     e("Custom", "カスタム", Action::EditCustomTheme),
 ];
 
