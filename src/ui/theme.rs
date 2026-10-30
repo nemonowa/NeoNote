@@ -81,6 +81,8 @@ pub const PALETTES: &[Named] = &[
     Named { name: "abyss", palette: Palette { main: (22, 27, 34), sub: (13, 17, 23), accent: (0, 122, 112), text: (214, 222, 230), subtext: (125, 135, 148) }, light: false },
     Named { name: "paper", palette: Palette { main: (247, 241, 227), sub: (233, 224, 204), accent: (166, 90, 30), text: (52, 44, 36), subtext: (110, 96, 80) }, light: true },
     Named { name: "sakura", palette: Palette { main: (253, 246, 248), sub: (242, 226, 232), accent: (196, 64, 110), text: (48, 34, 40), subtext: (120, 96, 106) }, light: true },
+    Named { name: "discord", palette: Palette { main: (43, 45, 49), sub: (30, 31, 34), accent: (88, 101, 242), text: (219, 222, 225), subtext: (148, 155, 164) }, light: false },
+    Named { name: "github", palette: Palette { main: (13, 17, 23), sub: (1, 4, 9), accent: (31, 111, 235), text: (230, 237, 243), subtext: (125, 133, 144) }, light: false },
 ];
 
 static CURRENT: AtomicUsize = AtomicUsize::new(0);

@@ -14,7 +14,7 @@
 //   gutter_extra=20               行番号欄を桁数で決まる幅より広げる分（0 のときは書かない）
 //   side_w=260                    右端の欄の幅（既定 200 のときは書かない）
 //   lang=en                       画面の言葉。ja（既定。ja のときは書かない）・en
-//   theme=nureba                  配色。dark（＝濡羽。既定）・light（＝月白）・nureba・geppaku・classic_dark・classic_light・nord・abyss・paper・sakura・custom
+//   theme=nureba                  配色。dark（＝濡羽。既定）・light（＝月白）・nureba・geppaku・classic_dark・classic_light・nord・abyss・paper・sakura・discord・github・custom
 //   custom_main=#2b2b2b           theme=custom の色（custom_main・custom_sub・custom_accent・custom_text・custom_subtext）
 //   history=C:\a\b.txt            過去に読み込んだファイルのパス履歴（新しい順に 1 行ずつ。最大 pathlog::MAX 件）
 //   session=C:\a\b.txt            終了時に開いていたタブ（左から順に 1 行ずつ。最大 SESSION_MAX 件）。引数なしで起動したとき開き直す

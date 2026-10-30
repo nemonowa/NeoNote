@@ -4,7 +4,7 @@
 // タブ: 文書ごとの状態は Doc に持ち、Ui は文書の一覧と「いま表示している文書」を持つ。
 // 検索バー（常駐）・タブの並べ替え・セッション復元: 設計書の「検索バー」「タブの並べ替え」「セッション復元」の節を参照。
 use crate::audioplay;
-use crate::neo::{unsaved, archive, audiometa, book, nbt, nbtedit::{self, Seg}, region, doctext, htmlview, imgmeta, peek, imagefile, pdftext, markdown, config, document::{self, Mode}, dropped, encoding::Encoding, eol::{self, Eol}, goto, hex, history::{self, History}, indent, json, pathlog, zoom, recent, replace, selection, sheet, viewmode};
+use crate::neo::{unsaved, archive, audiometa, book, nbt, nbtedit::{self, Seg}, region, doctext, htmlview, imgmeta, peek, imagefile, pdftext, markdown, code, config, document::{self, Mode}, dropped, encoding::Encoding, eol::{self, Eol}, goto, hex, history::{self, History}, indent, json, pathlog, zoom, recent, replace, selection, sheet, viewmode};
 use crate::ui::{confirm, menu::{self, Action}, nbttree::NbtTree, peekwin, searchbar::{self, FindCmd, SearchBar}, sidepanel::{self, SidePanel}, skin, tabs::{self, TabCmd, TabInfo}, toolbar, treemap};
 use crate::{dev, log, platform, ui::theme::{self, *}};
 use fltk::{
@@ -868,6 +868,9 @@ impl Ui {
         let n = if d.st.borrow().hex { hex::byte_count(&text) } else { document::char_count(&text) };
         d.st.borrow_mut().chars = n;
         self.refresh_title();
+        if code::has_syntax(d.st.borrow().path.as_deref()) {
+            self.refresh_find(); // 書き換えた所の色分けを付け直す
+        }
     }
 
     /// 入力のたびに全文を数えないよう、0.3 秒に 1 回へまとめる。
@@ -2045,7 +2048,11 @@ impl Ui {
         } else if !is_pdf {
             let base = path.as_deref().and_then(|p| p.parent());
             let imgs = markdown::Images { base, max_w, size_of: &image_size };
-            markdown::to_html(&d.buf.text(), &bg, &fg, &hex(color_accent()), &imgs)
+            let (link, subtext) = (hex(color_accent()), hex(color_subtext()));
+            let sub = hex(mix(color_main(), color_text(), 7));
+            let border = hex(mix(color_main(), color_text(), 25));
+            let c = markdown::Colors { bg: &bg, fg: &fg, link: &link, sub: &sub, subtext: &subtext, border: &border };
+            markdown::to_html(&d.buf.text(), &c, &imgs)
         } else if let Some(pages) = d.pdf_text.borrow().as_ref() {
             pdftext::to_html(pages, &bg, &fg, &hex(color_subtext()))
         } else if let Some(e) = d.pdf_error.borrow().as_ref() {
@@ -2914,7 +2921,21 @@ impl Ui {
         vec![
             StyleTableEntryExt { color: rgb(color_text()), font, size, attr: TextAttr::None, bgcolor: rgb(color_main()) },
             StyleTableEntryExt { color: rgb(color_text()), font, size, attr: TextAttr::BgColor, bgcolor: rgb(mix(color_main(), color_accent(), 40)) },
+            // 'C' 以降はコードの色分け（mcfunction.rs の定数と同じ順。code.rs も同じ文字を使う）
+            Self::syntax(color_subtext(), font, size),
+            Self::syntax(color_accent(), font, size),
+            Self::syntax(mix(color_text(), (200, 120, 230), 80), font, size),
+            Self::syntax(mix(color_text(), (90, 170, 240), 80), font, size),
+            Self::syntax(mix(color_text(), (230, 170, 60), 80), font, size),
+            Self::syntax(mix(color_text(), (120, 200, 120), 80), font, size),
+            Self::syntax(mix(color_text(), (240, 110, 110), 80), font, size),
+            // 'J' 確実な誤り: 色は変えずに下線だけ
+            StyleTableEntryExt { color: rgb(mix(color_text(), (240, 80, 80), 70)), font, size, attr: TextAttr::Underline, bgcolor: rgb(color_main()) },
         ]
+    }
+
+    fn syntax(color: (u8, u8, u8), font: Font, size: i32) -> StyleTableEntryExt {
+        StyleTableEntryExt { color: rgb(color), font, size, attr: TextAttr::None, bgcolor: rgb(color_main()) }
     }
 
     /// フォントファイル（.ttf / .otf）を選び、編集領域・行番号・ハイライトに適用する。
@@ -3098,7 +3119,9 @@ impl Ui {
     /// `smart` なら大文字小文字を（小文字だけで探すときは）無視する。
     fn highlight(&self, needle: &str, smart: bool) -> usize {
         let d = self.doc();
-        if needle.is_empty() {
+        let path = d.st.borrow().path.clone();
+        let syntax = code::has_syntax(path.as_deref()) && !d.st.borrow().hex;
+        if needle.is_empty() && !syntax {
             if let Some(sb) = d.sbuf.borrow().as_ref() {
                 let mut sb = sb.clone();
                 sb.set_text(&"A".repeat(d.buf.length() as usize));
@@ -3106,13 +3129,19 @@ impl Ui {
             return 0;
         }
         let text = d.buf.text();
-        let hits = if smart { replace::find_all_smart(&text, needle) } else { replace::find_all(&text, needle) };
-        let mut styles = vec![b'A'; text.len()];
+        let hits = if needle.is_empty() {
+            Vec::new()
+        } else if smart {
+            replace::find_all_smart(&text, needle)
+        } else {
+            replace::find_all(&text, needle)
+        };
+        let mut styles = if syntax { code::syntax_styles(path.as_deref(), &text) } else { None }.unwrap_or_else(|| vec![b'A'; text.len()]);
         for &(s, e) in &hits {
             styles[s..e].fill(b'B');
         }
         let mut sb = self.style_buffer();
-        // 'A' と 'B' だけなので常に有効な UTF-8
+        // 英字だけなので常に有効な UTF-8
         sb.set_text(std::str::from_utf8(&styles).unwrap_or(""));
         self.editor.clone().redraw();
         hits.len()
@@ -3144,7 +3173,9 @@ impl Ui {
     /// 検索中なら、いまの文書に強調を付け直す（タブの切替・読込の後）。選択は動かさない。
     fn refresh_find(&self) {
         let needle = self.last_search.borrow().clone();
-        if needle.is_empty() || self.doc().buf.length() > LIVE_COUNT_LIMIT {
+        let d = self.doc();
+        let syntax = code::has_syntax(d.st.borrow().path.as_deref());
+        if (needle.is_empty() && !syntax) || d.buf.length() > LIVE_COUNT_LIMIT {
             return;
         }
         let n = self.highlight(&needle, self.last_smart.get());
