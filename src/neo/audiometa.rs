@@ -935,6 +935,12 @@ fn write_wav(b: &[u8], items: &[(String, String)]) -> Result<Patch, String> {
 // Preview の HTML
 // =====================================================================
 
+fn escaped(s: &str) -> String {
+    let mut out = String::new();
+    esc(s, &mut out);
+    out
+}
+
 fn esc(s: &str, out: &mut String) {
     for c in s.chars() {
         match c {
@@ -958,6 +964,16 @@ pub fn format_time(secs: f64) -> String {
 }
 
 /// 情報の行（ラベル, 値）。
+/// 右パネルに出す行: タグ（無ければ「タグ: なし」）。情報（形式・長さなど）は呼び出し側がファイルから別に出す。
+pub fn side_rows(items: &[(String, String)]) -> Vec<(String, String)> {
+    let mut v: Vec<(String, String)> = Vec::new();
+    if items.is_empty() {
+        v.push((crate::lang::tr("タグ", "Tags").into(), crate::lang::tr("なし", "none").into()));
+    }
+    v.extend(items.iter().cloned());
+    v
+}
+
 pub fn info_rows(i: &Info) -> Vec<(&'static str, String)> {
     let mut v = vec![("Format", i.format.label().to_string())];
     let a = if i.approx { crate::lang::tr("約 ", "about ") } else { "" };
@@ -984,46 +1000,68 @@ pub fn info_rows(i: &Info) -> Vec<(&'static str, String)> {
 }
 
 /// 音声の Preview。`status` は再生の状態や操作の案内（例: `Stopped — Space: Play`）。
-pub fn page_html(name: &str, info: &Result<Info, String>, items: &[(String, String)], status: &str, bg: &str, fg: &str, dim: &str) -> String {
-    let mut body = String::from("<p><b>");
-    esc(name, &mut body);
-    body.push_str("</b></p>");
-    if !status.is_empty() {
-        body.push_str("<p>");
-        esc(status, &mut body);
-        body.push_str("</p>");
+/// 本文の Preview の見た目（色は `#rrggbb`）。
+pub struct PlayerLook<'a> {
+    pub bg: &'a str,
+    pub fg: &'a str,
+    pub dim: &'a str,
+    /// 再生ボタンと、進み具合の帯の済んだ所。
+    pub accent: &'a str,
+    /// 進み具合の帯の残り。
+    pub track: &'a str,
+}
+
+/// 本文の Preview: 簡単な音楽プレイヤー（曲名・アーティストとアルバム・再生ボタン・進み具合・時間・案内）。
+/// 情報とタグの一覧は右パネル（`side_rows`）に出す。読めなかった時は理由も出す。
+/// `pos` は今の位置（秒。鳴らしていなければ None）、`note` はボタンの下の案内。
+pub fn page_html(name: &str, info: &Result<Info, String>, items: &[(String, String)], playing: bool, pos: Option<f64>, note: &str, look: &PlayerLook) -> String {
+    let PlayerLook { bg, fg, dim, accent, track } = *look;
+    let tag = |k: &str| items.iter().find(|(key, v)| key.eq_ignore_ascii_case(k) && !v.trim().is_empty()).map(|(_, v)| v.trim().to_string());
+    let title = tag("title").unwrap_or_else(|| name.to_string());
+    let sub: Vec<String> = [tag("artist"), tag("album")].into_iter().flatten().collect();
+    let total = info.as_ref().ok().and_then(|i| i.seconds);
+    // HelpView は表の入れ子を扱えない（行が崩れ、2 つ以上あると固まる）。表は進み具合の帯の 1 つだけにする
+    let center = |inner: &str| format!("<p align=\"center\">{inner}</p>");
+    let mut head = format!("<br><font size=\"7\">{}</font>", escaped(&title));
+    if !sub.is_empty() {
+        head.push_str(&format!("<br><font color=\"{dim}\">{}</font>", escaped(&sub.join(" — "))));
     }
-    match info {
-        Ok(i) => {
-            body.push_str("<table>");
-            for (k, v) in info_rows(i) {
-                body.push_str(&format!("<tr><td><font color=\"{dim}\">{k}</font></td><td>"));
-                esc(&v, &mut body);
-                body.push_str("</td></tr>");
-            }
-            body.push_str("</table>");
-        }
-        Err(e) => {
-            body.push_str("<p>");
-            esc(e, &mut body);
-            body.push_str("</p>");
-        }
+    if title != name {
+        head.push_str(&format!("<br><font color=\"{dim}\" size=\"2\">{}</font>", escaped(name)));
     }
-    body.push_str(&format!("<p><font color=\"{dim}\">── Tags ──</font></p>"));
-    if items.is_empty() {
-        body.push_str("<p>(no tags)</p>");
-    } else {
-        body.push_str("<table>");
-        for (k, v) in items {
-            body.push_str("<tr><td><font color=\"");
-            body.push_str(dim);
-            body.push_str("\">");
-            esc(k, &mut body);
-            body.push_str("</font></td><td>");
-            esc(v, &mut body);
-            body.push_str("</td></tr>");
-        }
-        body.push_str("</table>");
+    let mut body = center(&head);
+    // 再生ボタン（大きな記号）
+    let mark = if playing { "\u{25A0}" } else { "\u{25B6}" };
+    body.push_str(&center(&format!("<font color=\"{accent}\" size=\"7\">{mark}</font>")));
+    // 進み具合の帯: 左右の余白（各 15%）の間に、済んだ所と残り（合わせて 70%）
+    let done = match (pos, total) {
+        (Some(p), Some(t)) if t > 0.0 => ((p / t).clamp(0.0, 1.0) * 70.0).round() as u32,
+        _ => 0,
+    };
+    let cell = |w: u32, color: Option<&str>| {
+        let bg = color.map(|c| format!(" bgcolor=\"{c}\"")).unwrap_or_default();
+        format!("<td width=\"{w}%\"{bg}><font size=\"1\">&nbsp;</font></td>")
+    };
+    body.push_str("<table width=\"100%\" border=\"0\" cellspacing=\"0\" cellpadding=\"0\"><tr>");
+    body.push_str(&cell(15, None));
+    if done > 0 {
+        body.push_str(&cell(done, Some(accent)));
+    }
+    if done < 70 {
+        body.push_str(&cell(70 - done, Some(track)));
+    }
+    body.push_str(&cell(15, None));
+    body.push_str("</tr></table>");
+    let time = match total {
+        Some(t) => format!("{} / {}", format_time(pos.unwrap_or(0.0)), format_time(t)),
+        None => format_time(pos.unwrap_or(0.0)),
+    };
+    body.push_str(&center(&format!("<font color=\"{dim}\">{time}</font>")));
+    if !note.is_empty() {
+        body.push_str(&center(&format!("<font color=\"{dim}\" size=\"2\">{}</font>", escaped(note))));
+    }
+    if let Err(e) = info {
+        body.push_str(&center(&escaped(e)));
     }
     format!("<html><body bgcolor=\"{bg}\" text=\"{fg}\">{body}</body></html>")
 }
@@ -1405,9 +1443,14 @@ mod tests {
     #[test]
     fn html_escapes_and_shows_rows() {
         let i = info(&audio_frames(10)).unwrap();
-        let h = page_html("a<b>.mp3", &Ok(i), &[("title".into(), "<&>".into())], "Stopped", "#000", "#fff", "#888");
-        assert!(h.contains("a&lt;b&gt;.mp3") && h.contains("&lt;&amp;&gt;") && h.contains("Stopped") && h.contains("128 kbps"));
-        assert!(page_html("x", &Err("e".into()), &[], "", "#000", "#fff", "#888").contains("(no tags)"));
+        assert!(side_rows(&[("title".into(), "<&>".into())]).iter().any(|(k, v)| k == "title" && v == "<&>"));
+        assert!(side_rows(&[]).iter().any(|(k, _)| k == "タグ" || k == "Tags"));
+        let look = PlayerLook { bg: "#000", fg: "#fff", dim: "#888", accent: "#0f0", track: "#333" };
+        let h = page_html("a<b>.mp3", &Ok(i), &[("title".into(), "<&>".into())], false, None, "Stopped", &look);
+        assert!(h.contains("&lt;&amp;&gt;") && h.contains("a&lt;b&gt;.mp3") && h.contains("Stopped") && !h.contains("128 kbps")); // 情報は右パネル
+        assert!(h.contains("\u{25B6}") && h.contains("0:00"));
+        let h = page_html("x", &Err("e".into()), &[], true, Some(1.0), "", &look);
+        assert!(h.contains("\u{25A0}") && h.contains("<p align=\"center\">e</p>"));
         assert_eq!(format_time(65.4), "1:05");
         assert_eq!(format_time(3725.0), "1:02:05");
     }

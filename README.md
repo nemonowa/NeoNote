@@ -171,7 +171,7 @@ cargo build --release
 ## ❱ 権利【License】
 
 - NeoNote は無償で使える。許可のない再配布・改変は禁止（[LICENSE](LICENSE)）。
-- 使っている第三者のソフトウェアとフォントのライセンスは [THIRD_PARTY_LICENSES.txt](assets/THIRD_PARTY_LICENSES.txt)。アプリの「説明」の末尾にも出る。
+- 使っている第三者のソフトウェアとフォントのライセンスは [THIRD_PARTY_LICENSES.txt](assets/THIRD_PARTY_LICENSES.txt)。アプリでは「開く」の「ライセンス」で開ける。
 - NeoNote is based in part on the work of the FLTK project (https://www.fltk.org).
 - 同梱のフォント NeoFont は GNU Unifont をもとにした物（SIL Open Font License 1.1）。
 - Discord・GitHub・Minecraft は各社の商標。NeoNote は Discord・GitHub・Mojang・Microsoft と関係がない。

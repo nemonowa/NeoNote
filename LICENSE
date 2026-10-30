@@ -6,7 +6,7 @@ Copyright (c) 2025-2026 nemo (nemonowa). All rights reserved.
    配布はこのリポジトリの Releases など、作者が用意した場所から行います。
 3. NeoNote は現状のまま提供します。使ったことで生じた損害について、作者は責任を負いません。
 4. NeoNote に含まれる第三者のソフトウェアとフォントは、それぞれのライセンスに従います
-   （assets/THIRD_PARTY_LICENSES.txt。アプリの中では「説明」の末尾に表示）。この文書はそれらの条件を変えません。
+   （assets/THIRD_PARTY_LICENSES.txt。アプリの中では「開く」の「ライセンス」で表示）。この文書はそれらの条件を変えません。
 
 NeoNote is free to use for personal and commercial purposes.
 Redistribution or modification of NeoNote (executables, source code and bundled files)

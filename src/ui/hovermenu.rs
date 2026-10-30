@@ -73,6 +73,7 @@ pub fn is_open() -> bool {
 pub fn close() {
     bump(); // 開く前の待ちも取り消す
     let Some(open) = OPEN.with(|o| o.borrow_mut().take()) else { return };
+    super::peekwin::hide(); // 項目の説明も消す
     let mut win = open.win;
     win.hide();
     app::add_timeout3(0.0, move |_| MenuWindow::delete(win.clone()));
@@ -139,9 +140,6 @@ pub fn open(owner: &Button, entries: &'static [MenuEntry], skip: Option<Action>,
         b.set_label_color(rgb(color_subtext()));
         b.clear_visible_focus();
         let tip = m.action.map_or("", menu::describe);
-        if !tip.is_empty() {
-            b.set_tooltip(tip);
-        }
         match m.action {
             Some(a) => {
                 let on = on.clone();
@@ -154,6 +152,10 @@ pub fn open(owner: &Button, entries: &'static [MenuEntry], skip: Option<Action>,
                         w.set_color(rgb(if ev == Event::Enter { hover_bg } else { bg }));
                         w.set_label_color(rgb(if ev == Event::Enter { color_text() } else { color_subtext() }));
                         w.redraw();
+                        super::peekwin::hide();
+                        if ev == Event::Enter && !tip.is_empty() {
+                            show_tip_later(w.clone(), tip);
+                        }
                         ev == Event::Enter
                     }
                     _ => false,
@@ -177,6 +179,21 @@ pub fn open(owner: &Button, entries: &'static [MenuEntry], skip: Option<Action>,
     let gen = bump();
     OPEN.with(|o| *o.borrow_mut() = Some(Open { win: win.clone(), owner: owner.clone() }));
     watch(gen, owner.clone(), win, 0);
+}
+
+/// 少し留まったら、項目の説明を最前面の小さな窓で出す（まだその項目の上にいる時だけ）。
+fn show_tip_later(row: Button, tip: &'static str) {
+    let gen = current_gen();
+    app::add_timeout3(0.6, move |_| {
+        if current_gen() != gen || !row.visible_r() {
+            return;
+        }
+        let Some(r) = screen_rect(&row) else { return };
+        if mouse_in(r, 0) {
+            let (mx, my) = app::get_mouse();
+            super::peekwin::show(mx, my, super::peekwin::Content::Note(tip.to_string()));
+        }
+    });
 }
 
 /// 0.1 秒ごとに、マウスがボタンかメニューの上にあるかを見て、離れて少し経ったら閉じる。

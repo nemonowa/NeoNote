@@ -107,7 +107,7 @@ pub fn kind_name(kind: Kind, preview: bool, hex: bool) -> &'static str {
     }
 }
 
-/// そのファイルで選べる表示（並べる順）。pdf は文字として編集できないので Text を出さない。
+/// そのファイルで選べる表示（並べる順）。Preview があるものは、文字や HEX でも開き直せる（手動で何でも選べる）。
 #[cfg(test)]
 pub fn available(path: Option<&Path>) -> Vec<View> {
     available_for(kind_of(path))
@@ -115,9 +115,9 @@ pub fn available(path: Option<&Path>) -> Vec<View> {
 
 pub fn available_for(kind: Kind) -> Vec<View> {
     match kind {
-        Kind::Markdown | Kind::Html | Kind::Sheet | Kind::Nbt => vec![View::Text, View::Preview, View::Hex],
-        Kind::Book | Kind::Doc | Kind::Pdf | Kind::Image | Kind::Audio => vec![View::Preview, View::Hex],
-        Kind::Archive => vec![View::Preview],
+        Kind::Markdown | Kind::Html | Kind::Sheet | Kind::Nbt | Kind::Book | Kind::Doc | Kind::Pdf | Kind::Image | Kind::Audio | Kind::Archive => {
+            vec![View::Text, View::Preview, View::Hex]
+        }
         Kind::Other => vec![View::Text, View::Hex],
     }
 }
@@ -156,14 +156,14 @@ mod tests {
     fn available_views_depend_on_the_kind() {
         assert_eq!(available(None), vec![View::Text, View::Hex]);
         assert_eq!(available(Some(Path::new("a.md"))), vec![View::Text, View::Preview, View::Hex]);
-        assert_eq!(available(Some(Path::new("a.pdf"))), vec![View::Preview, View::Hex]);
-        assert_eq!(available(Some(Path::new("a.xlsx"))), vec![View::Preview, View::Hex]);
+        assert_eq!(available(Some(Path::new("a.pdf"))), vec![View::Text, View::Preview, View::Hex]);
+        assert_eq!(available(Some(Path::new("a.xlsx"))), vec![View::Text, View::Preview, View::Hex]);
         assert_eq!(kind_of(Some(Path::new("a.ODS"))), Kind::Book);
         for ext in ["docx", "DOCM", "odt", "pptx", "pptm", "odp", "EPUB"] {
             let p = format!("a.{ext}");
             assert_eq!(kind_of(Some(Path::new(&p))), Kind::Doc, "{ext}");
             assert!(crate::neo::doctext::format_of(Path::new(&p)).is_some(), "{ext}");
-            assert_eq!(available(Some(Path::new(&p))), vec![View::Preview, View::Hex]);
+            assert_eq!(available(Some(Path::new(&p))), vec![View::Text, View::Preview, View::Hex]);
         }
         for ext in ["html", "HTM", "xhtml"] {
             let p = format!("a.{ext}");
@@ -174,17 +174,17 @@ mod tests {
         assert_eq!(kind_of(Some(Path::new("a.doc"))), Kind::Other);
         assert!(View::Preview.implemented(Kind::Doc));
         assert!(View::Preview.implemented(Kind::Book));
-        assert_eq!(available(Some(Path::new("a.png"))), vec![View::Preview, View::Hex]);
-        assert_eq!(available(Some(Path::new("a.mp3"))), vec![View::Preview, View::Hex]);
+        assert_eq!(available(Some(Path::new("a.png"))), vec![View::Text, View::Preview, View::Hex]);
+        assert_eq!(available(Some(Path::new("a.mp3"))), vec![View::Text, View::Preview, View::Hex]);
         assert!(View::Preview.implemented(Kind::Audio));
         assert!(View::Text.implemented(Kind::Other) && View::Hex.implemented(Kind::Pdf));
         assert!(View::Preview.implemented(Kind::Markdown));
         assert!(View::Preview.implemented(Kind::Pdf));
         assert!(View::Preview.implemented(Kind::Archive));
-        assert_eq!(available(Some(Path::new("a.zip"))), vec![View::Preview]);
+        assert_eq!(available(Some(Path::new("a.zip"))), vec![View::Text, View::Preview, View::Hex]);
         for name in ["a.tar", "a.TAR.GZ", "a.tgz", "a.gz"] {
             assert_eq!(kind_of(Some(Path::new(name))), Kind::Archive, "{name}");
-            assert_eq!(available(Some(Path::new(name))), vec![View::Preview]);
+            assert_eq!(available(Some(Path::new(name))), vec![View::Text, View::Preview, View::Hex]);
         }
         assert_eq!(kind_of(Some(Path::new("a.bz2"))), Kind::Other);
         assert!(!View::Preview.implemented(Kind::Other));

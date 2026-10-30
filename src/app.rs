@@ -9,19 +9,16 @@ use crate::ui::{confirm, menu::{self, Action}, nbttree::NbtTree, peekwin, search
 use crate::{dev, log, platform, ui::theme::{self, *}};
 use fltk::{
     app,
-    browser::{BrowserScrollbar, HoldBrowser},
     button::Button,
     dialog::{self, FileDialogOptions, FileDialogType, NativeFileChooser},
     enums::{Align, Color, Event, Font, FrameType, Key},
     frame::Frame,
     group::Flex,
     misc::HelpView,
-    image::{PngImage, RgbImage},
-    enums::ColorDepth,
+    image::PngImage,
     prelude::*,
-    text::{PositionType, StyleTableEntryExt, TextAttr, TextBuffer, TextDisplay, TextEditor},
+    text::{PositionType, StyleTableEntryExt, TextAttr, TextBuffer, TextEditor},
     window::Window,
-    misc::Tooltip,
 };
 use fltk::prelude::FltkError;
 use std::{
@@ -34,12 +31,14 @@ use std::{
 /// 同梱のアイコンと README（今は仮のファイル。差し替えるには assets/ の同名ファイルを置き換えてビルドし直す）。
 static ICON_PNG: &[u8] = include_bytes!("../assets/icon.png");
 static README_TEXT: &str = include_str!("../assets/README.txt");
-/// 第三者のライセンス表示（admin/third_party_licenses.py で作る）。README の末尾に続けて出す。
+/// 第三者のライセンス表示（admin/third_party_licenses.py で作る）。「ライセンス」でタブに開く。
 static THIRD_PARTY_LICENSES: &str = include_str!("../assets/THIRD_PARTY_LICENSES.txt");
 const TITLE: &str = "NeoNote";
 const TAG: &str = "NeoNote";
 /// これを超える文書では、入力のたびの文字数更新を省く（保存・読込時に更新）。
 const LIVE_COUNT_LIMIT: i32 = 8 * 1024 * 1024;
+/// これより大きい文書は折り返さない（折り返しの計算は文書全体に掛かり、100 MB で数秒固まる）。
+const WRAP_LIMIT: i32 = 8 * 1024 * 1024;
 /// 同梱フォント（NeoFont）を読み込めなかったときの代わりのフォント。
 const FALLBACK_FONT: Font = Font::Courier;
 /// `App::load_font` が読み込んだフォントを入れる枠の番号（fltk-rs の仕様）。
@@ -139,6 +138,8 @@ enum Msg {
     SideJump(i32),
     /// 右端の欄の `Pin` が押された。
     SidePin,
+    /// 面積図の四角の右クリック（一覧の中の相対パス, フォルダか）。
+    SideMenu(String, bool),
     SideWidth(i32, bool),
     GutterWidth(i32, bool),
 }
@@ -177,6 +178,8 @@ struct State {
     eol: Eol,
     /// 画像のメタデータを編集している文書か（値は対象の画像。保存すると画像へ書き戻す）。
     meta_of: Option<PathBuf>,
+    /// 保存先の無い文書のタブに出す名前（同梱の README など）。
+    title: Option<PathBuf>,
     /// フォルダ・zip の名前の一覧を編集している文書か（値は対象のフォルダ / zip。保存すると名前を変更する）。
     arch_of: Option<PathBuf>,
     /// NBT（level.dat など）を SNBT の文字にして編集している。保存するときは NBT に戻す。
@@ -204,6 +207,7 @@ impl Default for State {
             conflict_noted: false,
             eol: Eol::platform_default(),
             meta_of: None,
+            title: None,
             arch_of: None,
             nbt: None,
             region_list: false,
@@ -453,11 +457,16 @@ fn write_audio_patch(path: &Path, old: &[u8], p: &audiometa::Patch) -> std::io::
 /// 編集された名前の一覧をフォルダ・zip に適用する。(変えた件数, 適用後の一覧)。
 /// 開いたあとに中身が変わっていたら、取り違えを避けるため何もしない。
 fn apply_archive_rename(text: &str, root: &Path, old: &[archive::Entry]) -> Result<(usize, Vec<archive::Entry>), String> {
+    let new = archive::parse_edit_text(text, old)?;
+    apply_archive_names(root, old, new)
+}
+
+/// フォルダ・zip の各項目の名前を `new`（`old` と同じ順・同じ数）に変える。(変えた件数, 適用後の一覧)。
+fn apply_archive_names(root: &Path, old: &[archive::Entry], new: Vec<String>) -> Result<(usize, Vec<archive::Entry>), String> {
     let now = archive::list_path(root)?;
     if now.iter().map(|e| &e.path).ne(old.iter().map(|e| &e.path)) {
         return Err(crate::lang::tr("開いたあとに、中身が変わっています。いちど開き直してから編集してください。", "The contents changed after opening. Reopen the file before editing.").into());
     }
-    let new = archive::parse_edit_text(text, old)?;
     let n = archive::changes(old, &new).len();
     if n > 0 {
         if root.is_dir() {
@@ -525,7 +534,7 @@ impl Ui {
     fn view_kind(&self, d: &Doc) -> viewmode::Kind {
         let k = viewmode::kind_of(d.st.borrow().path.as_deref());
         match (k, d.preview_as.get()) {
-            (viewmode::Kind::Other | viewmode::Kind::Markdown | viewmode::Kind::Html | viewmode::Kind::Sheet, Some(f)) => f,
+            (_, Some(f)) => f,
             (viewmode::Kind::Other, None) if d.format_auto.get() && !d.st.borrow().hex => {
                 let buf = &d.buf;
                 viewmode::sniff(&buf.text_range(0, buf.length().min(viewmode::SNIFF_BYTES)).unwrap_or_default())
@@ -617,6 +626,7 @@ impl Ui {
         }
         self.active.set(id);
         let mut ed = self.editor.clone();
+        self.apply_wrap_for(d.buf.length()); // 付け替える前に（大きい文書を折り返しありで付けると固まる）
         ed.set_buffer(d.buf.clone());
         if self.styled.get() {
             let sb = self.ensure_sbuf(&d);
@@ -836,7 +846,7 @@ impl Ui {
             .map(|d| {
                 let st = d.st.borrow();
                 let meta = st.meta_of.as_deref().map(meta_label).or_else(|| st.arch_of.as_deref().map(arch_label)).or_else(|| st.chunk_of.as_ref().map(chunk_label));
-                let shown = st.path.as_deref().or(st.loading_path.as_deref()).or(meta.as_deref());
+                let shown = st.path.as_deref().or(st.loading_path.as_deref()).or(meta.as_deref()).or(st.title.as_deref());
                 TabInfo {
                     id: d.id,
                     label: tabs::tab_label(shown, st.dirty, st.loading),
@@ -1155,6 +1165,9 @@ impl Ui {
                 // CRLF だけの文書は LF にして持つ（FLTK は \r を印として描くため）。保存のときに CRLF へ戻す
                 let eol = if loaded.hex { Eol::platform_default() } else { eol::detect(&loaded.text, Eol::platform_default()) };
                 let text = if !loaded.hex && eol == Eol::Crlf { eol::convert(&loaded.text, Eol::Lf) } else { loaded.text };
+                if self.is_active(&d) {
+                    self.apply_wrap_for(text.len() as i32);
+                }
                 self.set_text_quiet(&d, &text);
                 log::info(
                     TAG,
@@ -1189,6 +1202,10 @@ impl Ui {
                 }
                 // pdf は HEX や文字化けで読むより文字で見たいので、自動判定で開いたときは Preview で始める
                 if loaded.auto && matches!(viewmode::kind_of(Some(&path_for_view)), viewmode::Kind::Book | viewmode::Kind::Doc | viewmode::Kind::Pdf | viewmode::Kind::Image | viewmode::Kind::Audio) {
+                    self.set_preview_for(&d, true);
+                }
+                // Markdown は、Format が Auto なら Markdown の表示で始める（編集は Format の Text で）
+                if !loaded.hex && d.format_auto.get() && d.preview_as.get().is_none() && self.view_kind(&d) == viewmode::Kind::Markdown {
                     self.set_preview_for(&d, true);
                 }
                 if loaded.truncated {
@@ -1242,6 +1259,11 @@ impl Ui {
                 self.refresh_tabs();
                 self.set_preview_for(&d, true);
                 self.refresh_title_if_active(&d);
+                if self.is_active(&d) {
+                    // 一覧の本文は空で、空のタブと見分けが付かないので、右パネル（面積図）を必ず作り直す
+                    self.side_key.set((0, -1, false, 0));
+                    self.refresh_side();
+                }
             }
             Err(msg) => {
                 log::error(TAG, &format!("一覧の読込に失敗: {}", msg.replace('\n', " / ")));
@@ -1847,6 +1869,90 @@ impl Ui {
         }
     }
 
+    /// 面積図の四角の右クリック: 開く・場所を表示・名前の変更・ごみ箱へ・パスのコピー。
+    /// zip の中身は、名前の変更とパスのコピーだけ（取り出し・削除はしない）。
+    fn side_menu(self: &Rc<Self>, rel: &str, is_dir: bool) {
+        let d = self.doc();
+        let Some(root) = d.st.borrow().path.clone() else { return };
+        let Some(old) = d.archive.borrow().clone() else { return };
+        let in_folder = root.is_dir();
+        let full = rel.split('/').fold(root.clone(), |p, c| p.join(c));
+        let rows = [
+            (crate::lang::tr("NeoNote で開く", "Open in NeoNote"), in_folder),
+            (crate::lang::tr("エクスプローラーで表示", "Show in Explorer"), in_folder),
+            (crate::lang::tr("名前の変更", "Rename"), true),
+            (crate::lang::tr("ごみ箱へ移動", "Move to Recycle Bin"), in_folder && cfg!(windows)),
+            (crate::lang::tr("パスをコピー", "Copy Path"), true),
+        ];
+        let menu_rows: Vec<menu::Row> = rows.iter().enumerate().map(|(i, (l, on))| menu::Row { label: l, active: *on, divider: i == 1 || i == 3, check: None }).collect();
+        // 内容の幅で開くので、ウィンドウの右端を超えないように左へ寄せる
+        let x = app::event_x().min(self.win.w() - menu::pick_width(&menu_rows)).max(0);
+        let Some(i) = menu::pick(&menu_rows, x, app::event_y()) else { return };
+        match i {
+            0 => self.open_paths(vec![full]),
+            1 => {
+                if let Err(e) = platform::reveal(&full) {
+                    confirm::alert(&format!("{}\n{e}", full.display()));
+                }
+            }
+            2 => {
+                let name = rel.rsplit('/').next().unwrap_or(rel);
+                let Some(new_name) = dialog::input_default(crate::lang::tr("新しい名前", "New name"), name) else { return };
+                let new_name = new_name.trim();
+                if new_name.is_empty() || new_name == name || new_name.contains(['/', '\\']) {
+                    return;
+                }
+                let parent = rel.rsplit_once('/').map(|(p, _)| format!("{p}/")).unwrap_or_default();
+                let to = format!("{parent}{new_name}");
+                // フォルダなら、その下の項目も前の部分を付け替える
+                let new: Vec<String> = old
+                    .iter()
+                    .map(|e| {
+                        let p = e.path.trim_end_matches('/');
+                        if p == rel {
+                            format!("{to}{}", if e.is_dir { "/" } else { "" })
+                        } else if is_dir && e.path.starts_with(&format!("{rel}/")) {
+                            format!("{to}{}", &e.path[rel.len()..])
+                        } else {
+                            e.path.clone()
+                        }
+                    })
+                    .collect();
+                match apply_archive_names(&root, &old, new) {
+                    Ok(_) => self.load_into(&d, root, None),
+                    Err(e) => confirm::alert(&e),
+                }
+            }
+            3 => {
+                let msg = if crate::lang::is_en() { format!("Move to the Recycle Bin?\n\n{}", full.display()) } else { format!("ごみ箱へ移動しますか？\n\n{}", full.display()) };
+                if confirm::choice(&msg, crate::lang::tr("キャンセル", "Cancel"), crate::lang::tr("ごみ箱へ", "Move"), "") != Some(1) {
+                    return;
+                }
+                match platform::move_to_trash(&full) {
+                    Ok(()) => self.load_into(&d, root, None),
+                    Err(e) => confirm::alert(&format!("{}\n{e}", full.display())),
+                }
+            }
+            4 => {
+                let text = if in_folder { full.display().to_string() } else { rel.to_string() };
+                app::copy(&text);
+                self.flash(crate::lang::tr("パスをコピーしました", "Path copied"));
+            }
+            _ => {}
+        }
+    }
+
+    /// フォルダ・zip の一覧を、開閉できる木で出す。
+    fn render_archive_tree(&self, d: &Rc<Doc>) {
+        self.nbt_tree.restyle(self.font.get(), self.size.get());
+        let path = d.st.borrow().path.clone();
+        let Some(p) = path else { return };
+        let entries = d.archive.borrow();
+        let Some(v) = entries.as_deref() else { return };
+        let packed = archive::is_zip_path(&p) || v.iter().any(|e| e.packed.is_some());
+        self.nbt_tree.show_archive(log::file_name(&p.to_string_lossy()), v, packed, d.tree_open.borrow().as_ref());
+    }
+
     /// 木での編集: 本文の SNBT を読み、`f` で書き換えて、本文を置き換える（元に戻すで 1 回で戻る）。
     /// `f` は選び直す項目の道筋か、書き換えられなかった理由を返す。
     fn edit_nbt(&self, f: impl FnOnce(&mut nbt::Tag) -> Result<Option<Vec<Seg>>, String>) {
@@ -1972,18 +2078,20 @@ impl Ui {
         let mut ed = self.editor.clone();
         let mut pv = self.preview.clone();
         let mut tree = self.nbt_tree.tree.clone();
-        let nbt_view = d.preview.get() && self.is_nbt_doc(d);
+        let arch_view = d.preview.get() && d.archive.borrow().is_some();
+        let nbt_view = d.preview.get() && self.is_nbt_doc(d) || arch_view;
         if nbt_view {
-            self.render_nbt_tree(d, None);
+            if arch_view {
+                self.render_archive_tree(d);
+            } else {
+                self.render_nbt_tree(d, None);
+            }
             tree.show();
             let _ = tree.take_focus();
             ed.hide();
             pv.hide();
-        } else if tree.visible() {
-            if self.is_nbt_doc(d) {
-                *d.tree_open.borrow_mut() = Some(self.nbt_tree.open_paths());
-            }
-            tree.hide();
+        } else if tree.visible() && (self.is_nbt_doc(d) || d.archive.borrow().is_some()) {
+            *d.tree_open.borrow_mut() = Some(self.nbt_tree.open_paths());
         }
         if nbt_view {
         } else if d.preview.get() {
@@ -1996,6 +2104,13 @@ impl Ui {
             ed.show();
             let _ = ed.take_focus();
             pv.hide();
+        }
+        // 木は、ほかの部品へフォーカスを移してから隠す（先に隠すと、フォーカスが検索欄へ移って検索バーが開く）
+        if !nbt_view && tree.visible() {
+            if tree.has_focus() {
+                let _ = if d.preview.get() { pv.take_focus() } else { ed.take_focus() };
+            }
+            tree.hide();
         }
         self.col.clone().layout();
         self.body.clone().layout();
@@ -2018,7 +2133,14 @@ impl Ui {
         } else if kind == viewmode::Kind::Audio {
             let name = path.as_deref().map(|p| log::file_name(&p.to_string_lossy()).to_string()).unwrap_or_default();
             match d.audio.borrow().as_ref() {
-                Some(Ok(a)) => audiometa::page_html(&name, &a.info, &a.items, &self.audio_status(d), &bg, &fg, &hex(color_subtext())),
+                Some(Ok(a)) => {
+                    let (dim, accent, track) = (hex(color_subtext()), hex(color_accent()), hex(mix(color_main(), color_text(), 15)));
+                    let look = audiometa::PlayerLook { bg: &bg, fg: &fg, dim: &dim, accent: &accent, track: &track };
+                    let state = self.audio_state(d);
+                    let playing = matches!(state, Some((audioplay::State::Playing, _)));
+                    let pos = state.map(|(_, p)| p);
+                    audiometa::page_html(&name, &a.info, &a.items, playing, pos, &self.audio_note(), &look)
+                }
                 Some(Err(e)) => pdftext::message_html(e, &bg, &fg),
                 None => pdftext::message_html(crate::lang::tr("読み込み中...", "Loading..."), &bg, &fg),
             }
@@ -2244,6 +2366,11 @@ impl Ui {
         if d.preview.get() && self.is_active(&d) {
             self.render_preview(&d);
         }
+        if self.is_active(&d) {
+            // 情報とタグは右パネルに出す（本文は空なので、空のタブと見分けが付かない。必ず作り直す）
+            self.side_key.set((0, -1, false, 0));
+            self.refresh_side();
+        }
     }
 
     /// 再生の状態と位置。プレーヤーが無ければ None。
@@ -2252,16 +2379,12 @@ impl Ui {
     }
 
     /// Preview の上に出す 1 行（再生の状態と、操作の案内）。
-    fn audio_status(&self, d: &Doc) -> String {
+    /// 音楽プレイヤーの表示の案内。
+    fn audio_note(&self) -> String {
         if !audioplay::AVAILABLE {
             return crate::lang::tr("この build には再生機能が含まれていません", "Playback is not included in this build").into();
         }
-        match self.audio_state(d) {
-            Some((audioplay::State::Playing, pos)) => format!("{} {} ({})", crate::lang::tr("再生中", "Playing"), audiometa::format_time(pos), crate::lang::tr("Space: 停止", "Space: Stop")),
-            Some((audioplay::State::Finished, _)) => crate::lang::tr("再生が終わりました（Space: もう一度再生）", "Finished (Space: Play again)").into(),
-            Some((audioplay::State::Stopped, pos)) => format!("{} {} ({})", crate::lang::tr("停止中", "Stopped"), audiometa::format_time(pos), crate::lang::tr("Space: 再生", "Space: Play")),
-            None => crate::lang::tr("停止中（Space: 再生）", "Stopped (Space: Play)").into(),
-        }
+        crate::lang::tr("クリックか Space で再生 / 停止", "Click or press Space to play / stop").into()
     }
 
     /// 再生 / 停止（表示中の音声の Preview）。別のファイルを鳴らしていれば、そちらは止めて捨てる。
@@ -2418,6 +2541,18 @@ impl Ui {
         }
     }
 
+    /// 文字として見られるようにする。HEX・一覧・音声（本文を読んでいない）なら読み直す。
+    /// 自動で HEX になったファイルや、Preview で開く種類は、自動判定では文字にならないので UTF-8 で開く。
+    fn reopen_as_text(&self, is_hex: bool, is_arch: bool, file_kind: viewmode::Kind) {
+        let d = self.doc();
+        let (auto, empty) = (d.st.borrow().auto, d.buf.length() == 0);
+        if is_hex && !auto && !auto_previews(file_kind) {
+            self.change_to_auto(); // 手で HEX にした文字のファイル
+        } else if is_hex || is_arch || (empty && auto_previews(file_kind)) {
+            self.change_encoding(Encoding::Utf8);
+        }
+    }
+
     /// 自動判定に戻す（ディスクから読み直す）。保存先のない文書は、文字コードを UTF-8 の自動に戻すだけ。
     fn change_to_auto(&self) {
         let d = self.doc();
@@ -2478,21 +2613,27 @@ impl Ui {
         };
         // 一覧を読めていない .zip（壊れている等）は、ふつうのファイルとして扱う
         let is_arch = self.doc().archive.borrow().is_some();
+        // フォルダは一覧しか無い（文字・HEX・文字コードを選べない）
+        let is_folder = path.as_deref().is_some_and(Path::is_dir);
         let file_kind = viewmode::kind_of(path.as_deref());
         let forced = self.doc().preview_as.get();
         let fmt_auto = self.doc().format_auto.get() && forced.is_none();
         let kind = match self.view_kind(&self.doc()) {
             _ if self.is_nbt_doc(&self.doc()) => viewmode::Kind::Nbt,
-            viewmode::Kind::Archive if !is_arch => viewmode::Kind::Other,
+            // 文字や HEX で開き直した zip は Archive のまま（Preview で一覧に戻せる）。一覧を読めない壊れた zip だけ文字のファイル
+            viewmode::Kind::Archive if !is_arch && !path.as_deref().is_some_and(archive::is_zip_path) => viewmode::Kind::Other,
             viewmode::Kind::Nbt if !in_preview => viewmode::Kind::Other, // NBT として読めなかった .dat
             k => k,
         };
         // (選択, 表示名, 選ばれている, 選べる, この行の後に区切りを入れる)
         let mut rows: Vec<(Pick, String, bool, bool, bool)> = Vec::new();
-        if !is_arch {
+        if !is_folder {
             rows.push((Pick::FormatAuto, format!("Auto ({})", viewmode::kind_name(kind, in_preview, is_hex)), fmt_auto, true, true));
         }
         let mut views = viewmode::available_for(kind);
+        if is_folder {
+            views.retain(|v| *v == viewmode::View::Preview);
+        }
         if path.is_none() {
             views.retain(|v| *v != viewmode::View::Hex); // リージョンのチャンクは、HEX で開き直す元のファイルが無い
         }
@@ -2513,17 +2654,18 @@ impl Ui {
             }
         }
         // 文字の文書は、Preview の形式を選べる（拡張子が txt の Markdown など）
-        if !is_hex && matches!(file_kind, viewmode::Kind::Other | viewmode::Kind::Markdown | viewmode::Kind::Html | viewmode::Kind::Sheet) && !self.is_nbt_doc(&self.doc()) {
+        if !is_folder && !self.is_nbt_doc(&self.doc()) {
             if let Some(last) = rows.last_mut() {
                 last.4 = true;
             }
             for (k, name) in [(viewmode::Kind::Markdown, crate::lang::tr("Markdown として表示", "Preview as Markdown")), (viewmode::Kind::Html, crate::lang::tr("HTML として表示", "Preview as HTML")), (viewmode::Kind::Sheet, crate::lang::tr("CSV / TSV として表示", "Preview as CSV / TSV"))] {
+                // HEX で開いている時は、先に文字で開き直す（選ぶと文字で読み直してから表示する）
                 rows.push((Pick::As(k), name.into(), !fmt_auto && in_preview && kind == k && (forced.is_some() || file_kind == k), true, false));
             }
         }
         let is_audio = kind == viewmode::Kind::Audio;
         let view_rows = rows.len();
-        if !is_arch && !(is_audio && in_preview) {
+        if !is_folder {
             let detected = if is_hex { "HEX".to_string() } else { cur.label().to_string() };
             rows.push((Pick::Auto, format!("Auto ({detected})"), auto && !in_preview, true, true));
             for e in [Encoding::Utf8, Encoding::Windows31J, Encoding::EucJp, Encoding::Utf16Le, Encoding::Utf16Be, Encoding::Iso8859_1, Encoding::UsAscii] {
@@ -2593,12 +2735,13 @@ impl Ui {
                 if is_hex && !auto_previews(file_kind) {
                     self.change_to_auto();
                 }
-                if auto_previews(self.view_kind(&d)) {
+                if auto_previews(self.view_kind(&d)) || self.view_kind(&d) == viewmode::Kind::Markdown {
                     self.set_preview(true);
                 }
                 self.refresh_title();
             }
             Pick::View(viewmode::View::Hex) => self.change_to_hex(),
+            Pick::View(viewmode::View::Preview) if kind == viewmode::Kind::Archive && !is_arch => self.change_to_auto(), // 一覧で開き直す
             Pick::View(viewmode::View::Preview) => {
                 // Auto で中身から決めた形式は、選び直した後もそのまま使う
                 self.doc().preview_as.set((file_kind == viewmode::Kind::Other && kind != viewmode::Kind::Other).then_some(kind));
@@ -2607,14 +2750,13 @@ impl Ui {
             Pick::As(k) => {
                 let d = self.doc();
                 self.set_preview(false);
-                d.preview_as.set((k != file_kind).then_some(k));
+                d.preview_as.set(Some(k).filter(|k| *k != file_kind));
+                self.reopen_as_text(is_hex, is_arch, file_kind);
                 self.set_preview(true);
             }
             Pick::View(viewmode::View::Text) => {
                 self.set_preview(false);
-                if is_hex {
-                    self.change_to_auto();
-                }
+                self.reopen_as_text(is_hex, is_arch, file_kind);
             }
             Pick::Text(e) => {
                 self.set_preview(false);
@@ -2674,6 +2816,7 @@ impl Ui {
             Action::ChooseFont => self.choose_font(),
             Action::ResetFont => self.reset_font(),
             Action::OpenReadme => self.open_readme(),
+            Action::OpenLicenses => self.open_licenses(),
             Action::NewTab => self.new_tab(),
             Action::CloseTab => self.close_tab(self.active.get()),
             Action::NextTab => self.activate_relative(1),
@@ -2999,32 +3142,37 @@ impl Ui {
         }
     }
 
-    /// 同梱の README を別ウィンドウ（読み取り専用）で開く。
-    fn open_readme(&self) {
-        let (sw, sh) = app::screen_size();
-        let (w, h) = (640i32.min(sw as i32), 520i32.min(sh as i32));
-        let mut win = Window::default().with_size(w, h).with_label("NeoNote README");
-        // ウィンドウマネージャーが無いと (0, 0) に出てツールバーに重なるので、メインウィンドウの中央に置く（画面からははみ出さない）
-        let x = (self.win.x_root() + (self.win.w() - w) / 2).clamp(0, (sw as i32 - w).max(0));
-        let y = (self.win.y_root() + (self.win.h() - h) / 2).clamp(0, (sh as i32 - h).max(0));
-        win.set_pos(x, y);
-        win.set_color(rgb(color_main()));
-        let mut view = TextDisplay::new(0, 0, w, h, None);
-        let mut buf = TextBuffer::default();
-        buf.set_text(&format!("{README_TEXT}
+    /// 同梱の README を本文のタブとして、Markdown の Preview で開く（すでに開いていればそのタブへ移る）。
+    fn open_readme(self: &Rc<Self>) {
+        let Some(d) = self.open_bundled("README.md", &markdown::readme_to_md(README_TEXT)) else { return };
+        d.format_auto.set(false);
+        d.preview_as.set(Some(viewmode::Kind::Markdown));
+        self.set_preview_for(&d, true);
+    }
 
-{THIRD_PARTY_LICENSES}
-"));
-        view.set_buffer(buf);
-        view.set_color(rgb(color_main()));
-        view.set_text_color(rgb(color_text()));
-        view.set_text_font(self.font.get());
-        view.set_text_size(self.size.get());
-        view.wrap_mode(fltk::text::WrapMode::AtBounds, 0);
-        skin::style_scrollbars(&view);
-        win.end();
-        win.resizable(&view);
-        win.show();
+    /// 第三者のライセンス文を、本文のタブとして文字のまま開く（長いので Preview にはしない）。
+    fn open_licenses(self: &Rc<Self>) {
+        self.open_bundled("THIRD_PARTY_LICENSES.txt", THIRD_PARTY_LICENSES);
+    }
+
+    /// 同梱の文を、保存先の無いタブとして開く。同じ名前のタブがあれば、そこへ移るだけ（None）。
+    fn open_bundled(self: &Rc<Self>, name: &str, text: &str) -> Option<Rc<Doc>> {
+        let title = PathBuf::from(name);
+        let open = self.docs.borrow().iter().find(|d| d.st.borrow().path.is_none() && d.st.borrow().title.as_ref() == Some(&title)).cloned();
+        if let Some(d) = open {
+            self.activate(d.id);
+            return None;
+        }
+        let d = self.new_doc();
+        self.set_text_quiet(&d, text);
+        {
+            let mut st = d.st.borrow_mut();
+            st.title = Some(title);
+            st.chars = document::char_count(text);
+        }
+        self.activate(d.id);
+        self.refresh_tabs();
+        Some(d)
     }
 
     /// 今のパレットに合わせて、画面の色を全部塗り直す（モードの切替・設定ファイルの反映のとき）。
@@ -3401,38 +3549,16 @@ impl Ui {
         });
     }
 
-    fn on_image_fetched(&self, r: Result<(PathBuf, String), String>) {
+    fn on_image_fetched(self: &Rc<Self>, r: Result<(PathBuf, String), String>) {
         match r {
-            Ok((path, url)) => self.show_image_window(path, &url),
+            // 取ってきた画像は一時ファイルとして、本文のタブで開く
+            Ok((path, _url)) => self.open_paths(vec![path]),
             Err(e) => {
                 log::warn(TAG, &format!("image url: {}", e.replace('\n', " / ")));
                 self.flash(crate::lang::tr("画像を取得できません", "Cannot fetch the image"));
                 confirm::alert(&if crate::lang::is_en() { format!("Could not fetch the image.\n\n{e}") } else { format!("画像を取得できませんでした。\n\n{e}") });
             }
         }
-    }
-
-    /// 取ってきた画像だけを出す小さなウィンドウ（Esc か × で閉じ、一時ファイルを消す）。
-    fn show_image_window(&self, path: PathBuf, title: &str) {
-        let size = image_size(&path);
-        let (iw, ih) = size.unwrap_or((400, 120));
-        let ww = (iw + 40).clamp(240, 1000);
-        let wh = (ih + 40).clamp(120, 760);
-        let hex = |(r, g, b): (u8, u8, u8)| format!("#{r:02x}{g:02x}{b:02x}");
-        let mut win = Window::default().with_size(ww, wh).with_label(title);
-        let mut hv = HelpView::new(0, 0, ww, wh, "");
-        hv.set_frame(FrameType::FlatBox);
-        hv.set_color(rgb(color_main()));
-        hv.set_value(&imagefile::page_html(&path, size, ww - 30, &hex(color_main()), &hex(color_text())));
-        win.end();
-        win.resizable(&hv);
-        win.set_color(rgb(color_main()));
-        let p = path.clone();
-        win.set_callback(move |w| {
-            w.hide();
-            let _ = std::fs::remove_file(&p);
-        });
-        win.show();
     }
 
     fn search_web(&self) {
@@ -3780,14 +3906,16 @@ impl Ui {
     fn set_wrap_quiet(&self, on: bool) {
         self.wrap.set(on);
         menu::set_wrap_checked(on);
+        self.apply_wrap_for(self.editor.buffer().map_or(0, |b| b.length()));
         let mut ed = self.editor.clone();
-        if on {
-            ed.wrap_mode(fltk::text::WrapMode::AtBounds, 0);
-        } else {
-            ed.wrap_mode(fltk::text::WrapMode::None, 0);
-        }
         ed.show_insert_position();
         ed.redraw();
+    }
+
+    /// 編集領域の折り返しを、設定と文書の大きさから決める。大きい文書（WRAP_LIMIT 超）は設定がオンでも折り返さない。
+    fn apply_wrap_for(&self, len: i32) {
+        let want = self.wrap.get() && len <= WRAP_LIMIT;
+        self.editor.clone().wrap_mode(if want { fltk::text::WrapMode::AtBounds } else { fltk::text::WrapMode::None }, 0);
     }
 
     /// 文字サイズを `n` にして（範囲に収める）、設定ファイルに残す。
@@ -4176,7 +4304,13 @@ impl Ui {
         }
         let text = d.buf.text();
         let is_arch = d.archive.borrow().is_some();
-        if is_arch {
+        let audio_rows = match d.audio.borrow().as_ref() {
+            Some(Ok(a)) if !hex => Some(audiometa::side_rows(&a.items)),
+            _ => None,
+        };
+        if let Some(r) = audio_rows {
+            rows.extend(r); // 音声は本文を読まないので、文字数の代わりにタグ（情報は上の file_meta_rows）
+        } else if is_arch {
             // フォルダ・zip の本文は一覧なので、文字数などは出さない（大きさは下のツリーマップ）
         } else if hex {
             rows.push((crate::lang::tr("バイト数", "Bytes").into(), hex::byte_count(&text).to_string()));
@@ -4204,7 +4338,8 @@ impl Ui {
 
     /// 縮小表示の「見えている範囲」を、本文のスクロールに合わせる（0.1 秒のタイマーから呼ぶ。変わったときだけ描き直す）。
     fn update_side_view(&self) {
-        if !self.side.widget.visible() || !self.editor.visible() {
+        // 窓を出す前は文字の高さがまだ 0 で、xy_to_position が FLTK の中で 0 除算になる
+        if !self.side.widget.visible() || !self.editor.visible() || !self.win.shown() {
             return;
         }
         let ed = &self.editor;
@@ -4404,99 +4539,19 @@ impl Ui {
             self.flash(crate::lang::tr("履歴はありません（開いたファイルが記録されます）", "No history (opened files are recorded)"));
             return;
         }
-        // 中身に合わせた大きさにする: 幅は一番長い行に合わせ（240〜560）、高さは行数に合わせる（最大 12 行。超えたらスクロール）
-        let row_h = self.size.get() * 2;
-        let step = row_h + 2; // Browser は 1 行ごとに 2px 足す
+        // 別ウィンドウは使わず、押したボタンの真下に一覧のメニューを出す
         let labels: Vec<String> = list.iter().enumerate().map(|(i, p)| pathlog::label(i, p)).collect();
-        fltk::draw::set_font(Font::Helvetica, self.size.get()); // Browser の既定フォントで測る
-        let widest = labels.iter().map(|l| fltk::draw::width(l) as i32).max().unwrap_or(0);
-        let (sw, sh) = app::screen_size();
-        let w = (widest + 40).clamp(240, 560).min(sw as i32);
-        const STRIP: i32 = 3; // 上端のアクセント色の帯（開いたボタンと同じ色）
-        let h = (labels.len().min(12) as i32 * step + 6 + STRIP).min(sh as i32);
-        let mut win = Window::default().with_size(w, h).with_label(&format!("{} ({})", crate::lang::tr("履歴", "History"), list.len()));
-        // 押したボタン（Undo）の真下に出す。画面からはみ出さないよう収める
-        if let Some((bx, by)) = toolbar::last_button_bottom() {
-            win.set_pos(bx.min(sw as i32 - w).max(0), by.min(sh as i32 - h).max(0));
-        }
-        win.set_color(rgb(color_main()));
-        let mut strip = Frame::new(0, 0, w, STRIP, None);
-        strip.set_frame(FrameType::FlatBox);
-        strip.set_color(rgb(color_accent()));
-        let mut browser = HoldBrowser::new(0, STRIP, w, h - STRIP, None);
-        skin::style_scrollbars(&browser);
-        browser.set_color(rgb(color_main()));
-        browser.set_selection_color(rgb(color_selected_row()));
-        browser.set_text_size(self.size.get());
-        browser.set_has_scrollbar(BrowserScrollbar::Vertical); // 横スクロールは出さない（長い名前は省略済み）
-        // 行の高さをそろえて余白を足す: 透明な 1px 幅のアイコンを高さ指定に使う（日本語の行だけ高くなるのを防ぐ）
-
-        let pad = vec![0u8; (row_h * 4) as usize];
-        for i in 0..list.len() {
-            // Browser には文字色の設定が無いので、行ごとに `@C<色>` で指定する（ラベル側の `@` は pathlog::label が潰している）
-            browser.add(&format!("@C{} {}", rgb(color_text()).bits(), labels[i]));
-            if let Ok(img) = RgbImage::new(&pad, 1, row_h, ColorDepth::Rgba8) {
-                browser.set_icon(i as i32 + 1, Some(img));
-            }
-        }
-        let full_paths = list.clone();
-        let mut tips: std::collections::HashMap<i32, &'static std::ffi::CStr> = std::collections::HashMap::new();
-        browser.select(1);
-        win.end();
-        win.resizable(&browser);
-        // 開いている間、元のボタンを強調する。閉じ方（選ぶ・Esc・×）に関わらず元に戻す
-        toolbar::mark_open(true);
-        win.set_callback(|w| {
-            w.hide();
-            toolbar::mark_open(false);
-        });
-
-        let open = {
-            let app = self.clone();
-            let win = win.clone();
-            move |b: &HoldBrowser| {
-                let i = b.value();
-                if i < 1 {
-                    return;
-                }
-                let Some(p) = list.get(i as usize - 1).cloned() else { return };
-                let mut win = win.clone();
-                win.hide();
-                toolbar::mark_open(false);
-                app.open_paths(vec![p]);
-            }
+        let rows: Vec<menu::Row> = labels.iter().map(|l| menu::Row { label: l, active: true, divider: false, check: None }).collect();
+        let (x, y) = match toolbar::last_button_bottom() {
+            Some((bx, by)) => (bx - self.win.x_root(), by - self.win.y_root()),
+            None => (app::event_x(), app::event_y()),
         };
-        let open_on_click = open.clone();
-        browser.set_callback(move |b| {
-            if app::event_clicks() {
-                open_on_click(b);
-            }
-        });
-        browser.handle(move |b, ev| {
-            // 行にマウスを乗せると、その行のフルパスをツールチップで出す
-            if matches!(ev, Event::Move) {
-                let scrolled = b.position();
-                let row = (app::event_y() - b.y() - 2 + scrolled).max(0) / step; // 0 始まり
-                if let Some(p) = full_paths.get(row as usize) {
-                    let top = b.y() + 2 + row * step - scrolled;
-                    let (x, w) = (b.x(), b.w());
-                    // Tooltip は &'static CStr を要求する。行ごとに 1 回だけ作って使い回す（最大 100 件）
-                    let tip = *tips.entry(row).or_insert_with(|| {
-                        let s = std::ffi::CString::new(p.display().to_string().replace('\0', "_")).unwrap_or_default();
-                        &*Box::leak(s.into_boxed_c_str())
-                    });
-                    Tooltip::enter_area(b, x, top, w, step, tip);
-                }
-                return false;
-            }
-            if matches!(ev, Event::KeyDown) && matches!(app::event_key(), Key::Enter | Key::KPEnter) {
-                open(b);
-                true
-            } else {
-                false
-            }
-        });
-        win.show();
+        toolbar::mark_open(true);
+        let picked = menu::pick(&rows, x, y);
+        toolbar::mark_open(false);
+        if let Some(p) = picked.and_then(|i| list.get(i).cloned()) {
+            self.open_paths(vec![p]);
+        }
     }
 
     /// Undo All / Redo All: これ以上できなくなるまで繰り返す。
@@ -4997,6 +5052,7 @@ pub fn run(paths: Vec<String>) -> Result<(), FltkError> {
     skin::style_scrollbars(&preview);
     let tx_jump = tx_bar2.clone();
     let tx_side_pin = tx_bar2.clone();
+    let tx_side_menu = tx_bar2.clone();
     let tx_side_w = tx_bar2.clone();
     let side = sidepanel::build(
         move |line| {
@@ -5009,6 +5065,10 @@ pub fn run(paths: Vec<String>) -> Result<(), FltkError> {
         },
         move |w, done| {
             tx_side_w.send(Msg::SideWidth(w, done));
+            app::awake();
+        },
+        move |rel, is_dir| {
+            tx_side_menu.send(Msg::SideMenu(rel, is_dir));
             app::awake();
         },
     );
@@ -5088,6 +5148,9 @@ pub fn run(paths: Vec<String>) -> Result<(), FltkError> {
         font_path: RefCell::new(start_font_path),
         tx,
     });
+    // 最初のタブは、表示中の文書を見る処理（右パネルの固定など）より先に作る
+    let first = ui.new_doc();
+    ui.active.set(first.id);
     if cfg.wrap {
         ui.set_wrap_quiet(true);
     }
@@ -5109,21 +5172,20 @@ pub fn run(paths: Vec<String>) -> Result<(), FltkError> {
     ui.update_side();
     ui.poll_mouse();
 
-    let first = ui.new_doc();
-    ui.active.set(first.id);
-
     // 音声の Preview では Space で再生 / 停止（HelpView の既定の処理より先に受ける）
     {
         let u = Rc::clone(&ui);
         let mut pv = preview.clone();
         pv.super_handle_first(false);
         pv.handle(move |_, ev| {
-            ev == Event::KeyDown
-                && app::event_key() == Key::from_char(' ')
-                && !app::is_event_command()
-                && !app::is_event_ctrl()
-                && !app::is_event_alt()
-                && u.audio_space()
+            // クリックでも再生 / 停止（音楽プレイヤーの表示）
+            (ev == Event::Push && app::event_mouse_button() == app::MouseButton::Left && u.audio_space())
+                || (ev == Event::KeyDown
+                    && app::event_key() == Key::from_char(' ')
+                    && !app::is_event_command()
+                    && !app::is_event_ctrl()
+                    && !app::is_event_alt()
+                    && u.audio_space())
         });
     }
 
@@ -5152,6 +5214,8 @@ pub fn run(paths: Vec<String>) -> Result<(), FltkError> {
         let u = Rc::clone(&ui);
         let mut tree = nbt_tree.tree.clone();
         tree.handle(move |t, ev| match ev {
+            // 一覧（フォルダ・zip）の木は開閉だけ。編集の操作は NBT の文書の時だけ受ける
+            _ if !u.is_nbt_doc(&u.doc()) => false,
             Event::Push if app::event_mouse_button() == app::MouseButton::Right => {
                 if let Some(it) = t.find_clicked(true) {
                     let _ = t.select_only(&it, false);
@@ -5243,6 +5307,7 @@ pub fn run(paths: Vec<String>) -> Result<(), FltkError> {
                 Msg::Do(a) => ui.perform(a),
                 Msg::SideJump(line) => ui.side_jump(line),
                 Msg::SidePin => ui.toggle_side_pin(),
+                Msg::SideMenu(rel, is_dir) => ui.side_menu(&rel, is_dir),
                 Msg::SideWidth(w, done) => ui.set_side_width(w, done),
                 Msg::GutterWidth(w, done) => ui.drag_gutter_width(w, done),
                 Msg::Tab(TabCmd::Activate(id)) => ui.activate(id),
