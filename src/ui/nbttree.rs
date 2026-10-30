@@ -1,7 +1,9 @@
 // NBT の Preview: NBT Explorer のような階層の木。項目は「名前: 値」で、開閉できる。
+// フォルダ・zip の一覧（`show_archive`）も同じ木で出す（項目は「名前  大きさ」。開閉だけで、編集はしない）。
 // 木は表示だけを受け持ち、編集の操作（ダブルクリック・右クリック・キー）は呼び出し側が受けて、本文（SNBT）を書き換えてから作り直す。
 use super::theme::*;
 use crate::neo::{
+    archive,
     nbt::Tag,
     nbtedit::{self, Seg},
 };
@@ -145,6 +147,65 @@ impl NbtTree {
             tree.show_item_middle(&it);
             it.select(1);
         }
+        tree.redraw();
+    }
+
+    /// フォルダ・zip の一覧を木にする。`open` が None なら 1 段目だけ開く。道筋はフォルダ名を `Seg::Key` で並べた物。
+    pub fn show_archive(&self, title: &str, entries: &[archive::Entry], packed: bool, open: Option<&HashSet<Vec<Seg>>>) {
+        let mut tree = self.tree.clone();
+        if let Some(top) = tree.root() {
+            tree.clear_children(&top);
+        }
+        let mut items = self.items.borrow_mut();
+        items.clear();
+        let Some(top) = tree.root() else { return };
+        // 見出し（名前と合計）。道筋を持たないので、開閉や選択の対象にならない
+        if let Some(mut it) = tree.insert(&top, &format!("{title}    {}", archive::summary(entries, packed)), 0) {
+            it.set_label_fgcolor(rgb(color_subtext()));
+            it.set_label_bgcolor(rgb(color_main()));
+        }
+        let root = archive::build_tree(entries);
+        let mut stack: Vec<(TreeItem, Vec<Seg>, &archive::Node, i32)> = vec![(top, Vec::new(), &root, 1)];
+        let mut cut = false;
+        while let Some((parent, path, node, first)) = stack.pop() {
+            for (pos, c) in node.children.iter().enumerate() {
+                if items.len() >= MAX_ITEMS {
+                    cut = true;
+                    break;
+                }
+                let size = if packed { format!("{}  ({})", archive::human_size(c.size), archive::human_size(c.packed)) } else { archive::human_size(c.size) };
+                // `/` は木の階層の区切りとして読まれるので、名前の中の `/` は使わない（フォルダは末尾の / を付けない）
+                let label = format!("{}    {size}", c.name.replace('/', "\u{2215}"));
+                let Some(mut it) = tree.insert(&parent, &label, first + pos as i32) else { continue };
+                it.set_label_fgcolor(rgb(if c.is_dir { color_text() } else { color_subtext() }));
+                it.set_label_bgcolor(rgb(color_main()));
+                let mut p = path.clone();
+                p.push(Seg::Key(c.name.clone()));
+                if c.is_dir && !c.children.is_empty() {
+                    stack.push((it.clone(), p.clone(), c, 0));
+                }
+                items.push((it, p));
+            }
+        }
+        if cut {
+            if let Some(top) = tree.root() {
+                let n = top.children();
+                let note = if crate::lang::is_en() { format!("… (more than {MAX_ITEMS} items, the rest is omitted)") } else { format!("…（項目が {MAX_ITEMS} を超えたため、残りは省略）") };
+                if let Some(mut it) = tree.insert(&top, &note, n) {
+                    it.set_label_fgcolor(rgb(color_subtext()));
+                }
+            }
+        }
+        for (it, p) in items.iter_mut() {
+            if it.has_children() {
+                let want = match open {
+                    Some(set) => set.contains(p),
+                    None => p.len() == 1,
+                };
+                if want { it.open() } else { it.close() }
+            }
+        }
+        drop(items);
         tree.redraw();
     }
 

@@ -173,12 +173,6 @@ pub fn color_tab_inactive() -> Rgb {
     mix(p.sub, p.main, 50)
 }
 
-/// 一覧で選んでいる行の背景（main に text を少し混ぜる）。
-pub fn color_selected_row() -> Rgb {
-    let p = palette();
-    mix(p.main, p.text, 20)
-}
-
 /// accent の上に載せる文字（押したボタン・固定ボタン）。白で読めない明るい accent のときは黒。
 pub fn color_on_accent() -> Rgb {
     on_accent(palette().accent)
@@ -253,6 +247,5 @@ mod tests {
     fn derived_colors_match_the_old_dark_look() {
         assert!(set_named("classic_dark"));
         assert_eq!(color_tab_inactive(), (36, 36, 36));
-        assert_eq!(color_selected_row(), (74, 74, 74)); // 以前は 75（誤差 1）
     }
 }

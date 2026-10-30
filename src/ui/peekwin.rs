@@ -26,10 +26,14 @@ pub enum Content {
     Text { big: String, note: String },
     /// 画像の縮小と、その下の説明（読めなければ説明だけ）。
     Image(std::path::PathBuf, String),
+    /// 説明の文だけ（メニューの項目のツールチップ。標準のツールチップは最前面のメニューの後ろに隠れるため）。
+    Note(String),
 }
 
 thread_local! {
     static WIN: RefCell<Option<MenuWindow>> = const { RefCell::new(None) };
+    /// 出しているのがメニューの項目の説明（Note）か。本文の値の見回りは、これを消さない。
+    static NOTE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 fn rgb((r, g, b): (u8, u8, u8)) -> Color {
@@ -43,8 +47,9 @@ pub fn hide() {
     }
 }
 
+/// 本文の値の小窓を出しているか（メニューの項目の説明は含めない）。
 pub fn is_shown() -> bool {
-    WIN.with(|w| w.borrow().is_some())
+    WIN.with(|w| w.borrow().is_some()) && !NOTE.with(|n| n.get())
 }
 
 /// 画像を縮小して読む。読めない・大きすぎる・壊れているときは None。
@@ -66,6 +71,7 @@ fn thumb(p: &Path) -> Option<SharedImage> {
 /// 画面の (x, y)（マウスの位置）の右下に出す。画面の端からはみ出すときは左上へ寄せる。
 pub fn show(x: i32, y: i32, content: Content) {
     hide();
+    NOTE.with(|n| n.set(matches!(content, Content::Note(_))));
     Group::set_current(None::<&Group>);
     let (bg, text, sub) = (mix(color_main(), color_text(), 8), color_text(), color_subtext());
     let img = match &content {
@@ -83,6 +89,7 @@ pub fn show(x: i32, y: i32, content: Content) {
             draw::set_font(Font::Helvetica, TEXT_SIZE);
             (PAD * 2 + bw.max(tw(note)), PAD * 2 + TEXT_SIZE * 2 + 6 + TEXT_SIZE + 4)
         }
+        Content::Note(note) => (PAD * 2 + tw(note), PAD * 2 + TEXT_SIZE + 4),
         Content::Image(_, note) => match &img {
             Some(img) => (PAD * 2 + img.w().max(tw(note)), PAD * 3 + img.h() + TEXT_SIZE + 4),
             None => (PAD * 2 + tw(note), PAD * 2 + TEXT_SIZE + 4),
@@ -120,6 +127,7 @@ pub fn show(x: i32, y: i32, content: Content) {
             label_frame(PAD, PAD, w - PAD * 2, TEXT_SIZE * 2 + 6, &big, text, TEXT_SIZE * 2);
             label_frame(PAD, PAD + TEXT_SIZE * 2 + 6, w - PAD * 2, TEXT_SIZE + 4, &note, sub, TEXT_SIZE);
         }
+        Content::Note(note) => label_frame(PAD, PAD, w - PAD * 2, TEXT_SIZE + 4, &note, text, TEXT_SIZE),
         Content::Image(_, note) => {
             let mut y0 = PAD;
             if let Some(img) = img {

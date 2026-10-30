@@ -20,8 +20,27 @@ pub struct Entry {
     pub packed: Option<u64>,
 }
 
+/// zip として一覧で開くか。拡張子が zip か、中身が zip（jar・skill・mcpack・apk など、拡張子の違う zip）。
+/// docx・xlsx・epub なども中身は zip だが、それぞれの Preview があるので除く。
 pub fn is_zip_path(p: &Path) -> bool {
-    p.extension().map(|e| e.to_string_lossy().eq_ignore_ascii_case("zip")).unwrap_or(false)
+    let ext = p.extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+    if ext == "zip" {
+        return true;
+    }
+    if matches!(ext.as_str(), "xlsx" | "xlsm" | "ods" | "docx" | "docm" | "odt" | "pptx" | "pptm" | "odp" | "epub") {
+        return false;
+    }
+    has_zip_magic(p)
+}
+
+/// 先頭が zip の印（`PK`、空の zip は `PK`）か。
+fn has_zip_magic(p: &Path) -> bool {
+    use std::io::Read;
+    if !p.is_file() {
+        return false;
+    }
+    let mut head = [0u8; 4];
+    std::fs::File::open(p).and_then(|mut f| f.read_exact(&mut head)).is_ok() && (head == *b"PK" || head == *b"PK")
 }
 
 /// 一覧（階層ツリーの Preview）で開く対象か。フォルダ・zip・tar・tar.gz・tgz・gz。
@@ -615,15 +634,16 @@ pub fn rename_dir(root: &Path, old: &[Entry], new: &[String]) -> Result<usize, S
 
 // ------------------------------------------------------------------ 階層の表示
 
-struct Node {
-    name: String,
-    is_dir: bool,
-    size: u64,
-    packed: u64,
-    children: Vec<Node>,
+/// 階層の 1 つ（フォルダが先・名前順。フォルダの大きさは中身の合計）。
+pub struct Node {
+    pub name: String,
+    pub is_dir: bool,
+    pub size: u64,
+    pub packed: u64,
+    pub children: Vec<Node>,
 }
 
-fn build_tree(entries: &[Entry]) -> Node {
+pub fn build_tree(entries: &[Entry]) -> Node {
     let mut root = Node { name: String::new(), is_dir: true, size: 0, packed: 0, children: Vec::new() };
     for e in entries {
         let comps: Vec<&str> = e.path.trim_end_matches('/').split('/').filter(|c| !c.is_empty()).collect();
@@ -685,9 +705,8 @@ fn esc(s: &str, out: &mut String) {
     }
 }
 
-/// 階層ツリー（フォルダが先・名前順・フォルダの大きさは中身の合計）を HelpView 向けの HTML にする。
-/// `packed` が true なら圧縮後サイズの列も出す（zip）。色は `#rrggbb`。
-pub fn to_html(title: &str, entries: &[Entry], packed: bool, bg: &str, fg: &str, dim: &str) -> String {
+/// 一覧の見出しの 1 行（ファイル数・フォルダ数・合計の大きさ。`packed` なら圧縮後も）。
+pub fn summary(entries: &[Entry], packed: bool) -> String {
     let root = build_tree(entries);
     let files = entries.iter().filter(|e| !e.is_dir).count();
     let mut dirs = HashSet::new();
@@ -698,13 +717,22 @@ pub fn to_html(title: &str, entries: &[Entry], packed: bool, bg: &str, fg: &str,
             dirs.insert(comps[..k].join("/"));
         }
     }
+    let mut s = format!("{files} files, {} folders, {}", dirs.len(), human_size(root.size));
+    if packed {
+        s.push_str(&format!(" (packed {})", human_size(root.packed)));
+    }
+    s
+}
+
+/// 階層ツリー（フォルダが先・名前順・フォルダの大きさは中身の合計）を HelpView 向けの HTML にする。
+/// `packed` が true なら圧縮後サイズの列も出す（zip）。色は `#rrggbb`。
+pub fn to_html(title: &str, entries: &[Entry], packed: bool, bg: &str, fg: &str, dim: &str) -> String {
+    let root = build_tree(entries);
     let mut head = String::new();
     esc(title, &mut head);
-    let mut body = format!("<p><b>{head}</b><br><font color=\"{dim}\">{files} files, {} folders, {}", dirs.len(), human_size(root.size));
-    if packed {
-        body.push_str(&format!(" (packed {})", human_size(root.packed)));
-    }
-    body.push_str("</font></p>");
+    let mut sum = String::new();
+    esc(&summary(entries, packed), &mut sum);
+    let mut body = format!("<p><b>{head}</b><br><font color=\"{dim}\">{sum}</font></p>");
     if entries.is_empty() {
         body.push_str(crate::lang::tr("<p>（空です）</p>", "<p>(Empty)</p>"));
     } else {
@@ -742,6 +770,23 @@ pub fn changes<'a>(old: &'a [Entry], new: &'a [String]) -> Vec<(&'a str, &'a str
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn zip_with_another_extension_is_found_by_its_content() {
+        let dir = std::env::temp_dir().join(format!("neonote_zipmagic_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let w = |n: &str, b: &[u8]| {
+            std::fs::write(dir.join(n), b).unwrap();
+            dir.join(n)
+        };
+        assert!(is_zip_path(&w("a.jar", b"PKrest")));
+        assert!(is_zip_path(&w("b.skill", b"PK")));
+        assert!(!is_zip_path(&w("c.docx", b"PK"))); // 文書の Preview を使う
+        assert!(!is_zip_path(&w("d.jar", b"not a zip")));
+        assert!(!is_zip_path(&w("e.bin", b"PK")));
+        assert!(is_zip_path(Path::new("missing.zip"))); // 拡張子が zip なら中身を見ない
+        let _ = std::fs::remove_dir_all(&dir);
+    }
     use std::fs;
 
     fn crc32(d: &[u8]) -> u32 {

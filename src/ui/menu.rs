@@ -61,6 +61,7 @@ pub enum Action {
     ChooseFont,
     ResetFont,
     OpenReadme,
+    OpenLicenses,
     NewTab,
     CloseTab,
     NextTab,
@@ -164,6 +165,7 @@ pub const LOAD: &[MenuEntry] = &[
     ed("Close", "閉じる", Action::CloseTab),
     e("Recent", "最近", Action::OpenRecent),
     e("Readme", "説明", Action::OpenReadme), // 中身は assets/README.txt
+    e("Licenses", "ライセンス", Action::OpenLicenses), // 中身は assets/THIRD_PARTY_LICENSES.txt
     e("Homepage", "サイト", Action::OpenHomePage),
     e("Font", "フォント", Action::ChooseFont),
     e("Config", "設定", Action::OpenConfig),
@@ -370,6 +372,7 @@ pub fn describe(a: Action) -> &'static str {
         ChooseFont => crate::lang::tr("表示に使うフォントを選ぶ", "Choose the display font"),
         ResetFont => crate::lang::tr("フォントを同梱の NeoFont に戻す", "Reset the font to the bundled NeoFont"),
         OpenReadme => crate::lang::tr("使い方の説明（README）を開く", "Open the README"),
+        OpenLicenses => crate::lang::tr("使っている第三者のソフトウェアとフォントのライセンスを開く", "Open the third-party licenses"),
         NewTab => crate::lang::tr("新しい空のタブを開く", "Open a new empty tab"),
         CloseTab => crate::lang::tr("今のタブを閉じる", "Close the current tab"),
         NextTab => crate::lang::tr("右隣のタブへ移る", "Go to the tab on the right"),

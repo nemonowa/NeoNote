@@ -90,6 +90,9 @@ pub fn to_html(md: &str, c: &Colors, imgs: &Images) -> String {
             Event::Start(Tag::Link { .. }) => events.push(html_ev(format!("<font color=\"{}\">", c.link))),
             Event::End(TagEnd::Link) => events.push(html_ev("</font>".into())),
             // コードは背景つきの枠に入れる（HelpView が背景を描けるのは表だけ）
+            // 引用の中のコードは、枠（表）に入れない。HelpView は「表の中の表」が 1 ページに 2 つ以上あると固まる
+            Event::Start(Tag::CodeBlock(_)) if !quotes.is_empty() => events.push(html_ev("<pre>".into())),
+            Event::End(TagEnd::CodeBlock) if !quotes.is_empty() => events.push(html_ev("</pre>".into())),
             Event::Start(Tag::CodeBlock(_)) => events.push(html_ev(format!(
                 "<table width=\"100%\" border=\"0\" cellspacing=\"0\" cellpadding=\"10\"><tr><td bgcolor=\"{}\"><pre>",
                 c.sub
@@ -135,9 +138,37 @@ pub fn to_html(md: &str, c: &Colors, imgs: &Images) -> String {
     format!("<html><body bgcolor=\"{}\" text=\"{}\" link=\"{}\">{body}</body></html>", c.bg, c.fg, c.link)
 }
 
+/// 同梱の README（文字）を Markdown にする。`[=== 見出し ===]` は見出しにし、ほかの行は改行をそのまま残す。
+pub fn readme_to_md(readme: &str) -> String {
+    let mut out = String::new();
+    for line in readme.lines() {
+        let t = line.trim().trim_start_matches('#').trim_start();
+        if let Some(h) = t.strip_prefix("[===").and_then(|r| r.strip_suffix("===]")) {
+            out.push_str(&format!("\n## {}\n\n", h.trim()));
+        } else if t.is_empty() {
+            out.push('\n');
+        } else {
+            // 行頭の空白は字下げのコードにならないように落とし、行末の 2 つの空白で改行を保つ
+            out.push_str(&format!("{t}  \n"));
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn readme_becomes_markdown() {
+        let md = readme_to_md("# [=== NEXUS ===]\n[=== Special Thanks ===]\n  Ctrl+O 開く\nb\n");
+        assert!(md.contains("## NEXUS\n"));
+        assert!(md.contains("## Special Thanks"));
+        assert!(md.contains("Ctrl+O 開く  \nb  \n"));
+        let h = conv(&md);
+        assert!(h.contains("<h2>Special Thanks</h2>"));
+        assert!(h.contains("Ctrl+O 開く<br"));
+    }
 
     fn conv(md: &str) -> String {
         conv_in(md, None)
@@ -200,6 +231,19 @@ mod tests {
         assert!(!h.contains("<a "));
         assert!(h.contains("<font color=\"#00ff00\">site</font>"));
         assert!(!h.contains("example.com"));
+    }
+
+    #[test]
+    fn code_in_a_quote_is_not_a_nested_table() {
+        let h = conv("> ```
+> a
+> ```
+
+> ```
+> b
+> ```");
+        assert_eq!(h.matches("<table").count(), 2); // 引用の 2 つだけ（コードの枠を入れ子にしない）
+        assert!(h.contains("<pre>a"));
     }
 
     #[test]

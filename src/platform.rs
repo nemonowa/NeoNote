@@ -228,6 +228,71 @@ pub fn open_folder(path: &Path) -> io::Result<()> {
     spawn_detached(cmd)
 }
 
+/// ファイルマネージャで、そのファイル（フォルダ）を選んだ状態で開く。Windows 以外は、入っているフォルダを開く。
+pub fn reveal(path: &Path) -> io::Result<()> {
+    #[cfg(target_os = "windows")]
+    {
+        let mut c = Command::new("explorer");
+        // explorer は「/select,パス」を 1 つの引数として受ける（空白を含むパスも、そのまま渡せば読める）
+        let mut arg = std::ffi::OsString::from("/select,");
+        arg.push(path.as_os_str());
+        c.arg(arg);
+        spawn_detached(c)
+    }
+    #[cfg(not(target_os = "windows"))]
+    open_folder(path.parent().unwrap_or(path))
+}
+
+/// ファイル・フォルダをごみ箱へ移す（元に戻せる消し方）。Windows 以外は対応していない。
+#[cfg(windows)]
+pub fn move_to_trash(path: &Path) -> io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    #[repr(C)]
+    #[allow(non_snake_case)]
+    struct SHFILEOPSTRUCTW {
+        hwnd: *mut std::ffi::c_void,
+        wFunc: u32,
+        pFrom: *const u16,
+        pTo: *const u16,
+        fFlags: u16,
+        fAnyOperationsAborted: i32,
+        hNameMappings: *mut std::ffi::c_void,
+        lpszProgressTitle: *const u16,
+    }
+    #[link(name = "shell32")]
+    extern "system" {
+        fn SHFileOperationW(op: *mut SHFILEOPSTRUCTW) -> i32;
+    }
+    const FO_DELETE: u32 = 3;
+    const FOF_SILENT: u16 = 0x0004;
+    const FOF_NOCONFIRMATION: u16 = 0x0010;
+    const FOF_ALLOWUNDO: u16 = 0x0040;
+    const FOF_NOERRORUI: u16 = 0x0400;
+    // 終わりは NUL 2 つ（複数のパスを並べる形式）
+    let mut from: Vec<u16> = path.as_os_str().encode_wide().collect();
+    from.extend([0, 0]);
+    let mut op = SHFILEOPSTRUCTW {
+        hwnd: std::ptr::null_mut(),
+        wFunc: FO_DELETE,
+        pFrom: from.as_ptr(),
+        pTo: std::ptr::null(),
+        fFlags: FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_SILENT | FOF_NOERRORUI,
+        fAnyOperationsAborted: 0,
+        hNameMappings: std::ptr::null_mut(),
+        lpszProgressTitle: std::ptr::null(),
+    };
+    let r = unsafe { SHFileOperationW(&mut op) };
+    if r != 0 || op.fAnyOperationsAborted != 0 {
+        return Err(io::Error::other(format!("SHFileOperation: 0x{r:X}")));
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+pub fn move_to_trash(_path: &Path) -> io::Result<()> {
+    Err(io::Error::new(io::ErrorKind::Unsupported, "trash is supported only on Windows"))
+}
+
 /// 文字列をシェルのコマンドとして実行し、標準出力と標準エラーをまとめて返す（終わるまで待つ）。
 /// GUI を塞がないよう、呼び出し側でスレッドに載せること。
 pub fn run_shell(command: &str) -> io::Result<String> {
