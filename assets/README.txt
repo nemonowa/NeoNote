@@ -53,5 +53,10 @@ Project of "NEXUS"
   前回のタブと未保存の変更は、次の起動で戻ります（Load の Resume で切れます）。
 
 フォント:
-  既定は同梱の NeoFont（作者: nemo）。Load または Run の Font で .ttf / .otf を選ぶと読み込めます。
+  既定は同梱の NeoFont（GNU Unifont をもとに nemo が作った物。SIL Open Font License 1.1）。Load または Run の Font で .ttf / .otf を選ぶと読み込めます。
   Run の Reset Font で NeoFont に戻せます。
+
+ライセンス:
+  NeoNote は無償で使えます。許可のない再配布・改変は禁止です（LICENSE）。
+  Discord・GitHub・Minecraft は各社の商標です。NeoNote はそれらの会社と関係がありません。
+  使っている第三者のソフトウェアとフォントのライセンスを、この下に載せます。
