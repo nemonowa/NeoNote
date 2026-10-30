@@ -34,6 +34,8 @@ use std::{
 /// 同梱のアイコンと README（今は仮のファイル。差し替えるには assets/ の同名ファイルを置き換えてビルドし直す）。
 static ICON_PNG: &[u8] = include_bytes!("../assets/icon.png");
 static README_TEXT: &str = include_str!("../assets/README.txt");
+/// 第三者のライセンス表示（admin/third_party_licenses.py で作る）。README の末尾に続けて出す。
+static THIRD_PARTY_LICENSES: &str = include_str!("../assets/THIRD_PARTY_LICENSES.txt");
 const TITLE: &str = "NeoNote";
 const TAG: &str = "NeoNote";
 /// これを超える文書では、入力のたびの文字数更新を省く（保存・読込時に更新）。
@@ -3009,7 +3011,10 @@ impl Ui {
         win.set_color(rgb(color_main()));
         let mut view = TextDisplay::new(0, 0, w, h, None);
         let mut buf = TextBuffer::default();
-        buf.set_text(README_TEXT);
+        buf.set_text(&format!("{README_TEXT}
+
+{THIRD_PARTY_LICENSES}
+"));
         view.set_buffer(buf);
         view.set_color(rgb(color_main()));
         view.set_text_color(rgb(color_text()));

@@ -93,7 +93,7 @@ cargo build --release
 | **abyss** | **paper** | **sakura** |
 | ![abyss](docs/screenshots/theme_abyss.png) | ![paper](docs/screenshots/theme_paper.png) | ![sakura](docs/screenshots/theme_sakura.png) |
 
-ほかに **discord**・**github** の配色もある。
+ほかに **Discord 風**・**GitHub 風** の配色もある（各社の公式の物ではない）。
 
 検索欄の左の月のボタンを押すと濡羽と月白を切り替え、マウスを乗せると一覧から選べる。**custom** を選ぶと、設定ファイルに書いた5色（`#rrggbb`）で独自の配色を作れる。
 どの配色も、文字と背景のコントラスト比をテストで確認済み。
@@ -165,6 +165,16 @@ cargo build --release
 - **最新（v2.1.77）：** Minecraft の NBT をテキストとツリー形式で編集できるようにし、配色の追加と右パネルを加えた。
 - **すべての履歴：** [changelog.md](changelog.md)
 - **Discord：** [更新履歴チャンネル](https://discord.com/channels/1233036571243188296/1363604094895521944)
+
+---
+
+## ❱ 権利【License】
+
+- NeoNote は無償で使える。許可のない再配布・改変は禁止（[LICENSE](LICENSE)）。
+- 使っている第三者のソフトウェアとフォントのライセンスは [THIRD_PARTY_LICENSES.txt](assets/THIRD_PARTY_LICENSES.txt)。アプリの「説明」の末尾にも出る。
+- NeoNote is based in part on the work of the FLTK project (https://www.fltk.org).
+- 同梱のフォント NeoFont は GNU Unifont をもとにした物（SIL Open Font License 1.1）。
+- Discord・GitHub・Minecraft は各社の商標。NeoNote は Discord・GitHub・Mojang・Microsoft と関係がない。
 
 ---
 
