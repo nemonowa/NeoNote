@@ -4,7 +4,7 @@
 // タブ: 文書ごとの状態は Doc に持ち、Ui は文書の一覧と「いま表示している文書」を持つ。
 // 検索バー（常駐）・タブの並べ替え・セッション復元: 設計書の「検索バー」「タブの並べ替え」「セッション復元」の節を参照。
 use crate::audioplay;
-use crate::neo::{unsaved, archive, audiometa, book, nbt, nbtedit::{self, Seg}, region, doctext, htmlview, imgmeta, peek, imagefile, pdftext, markdown, code, config, document::{self, Mode}, dropped, encoding::Encoding, eol::{self, Eol}, goto, hex, history::{self, History}, indent, json, pathlog, zoom, recent, replace, selection, sheet, viewmode};
+use crate::neo::{unsaved, archive, audiometa, book, nbt, nbtedit::{self, Seg}, region, doctext, htmlview, imgmeta, peek, imagefile, pdftext, markdown, code, config, document::{self, Mode}, dropped, encoding::Encoding, eol::{self, Eol}, goto, hex, history::{self, History}, indent, json, mcfunction, mcheader, pathlog, zoom, recent, replace, selection, sheet, viewmode};
 use crate::ui::{confirm, menu::{self, Action}, nbttree::NbtTree, peekwin, searchbar::{self, FindCmd, SearchBar}, sidepanel::{self, SidePanel}, skin, tabs::{self, TabCmd, TabInfo}, toolbar, treemap};
 use crate::{dev, log, platform, ui::theme::{self, *}};
 use fltk::{
@@ -130,6 +130,8 @@ enum Msg {
     DocText(u64, Result<doctext::Text, String>),
     /// URL の画像を保存できた（保存先と URL）、または失敗した理由。
     ImageFetched(Result<(PathBuf, String), String>),
+    /// フォルダ・zip の本文の検索結果（文書の id, 検索した文字列, 一致したファイルのパス）。
+    ArchiveContent(u64, String, Vec<String>),
     /// フォルダ・zip の一覧の読込結果（文書の id, パス, 一覧）。
     Archive(u64, PathBuf, Result<Vec<archive::Entry>, String>),
     /// 音声の情報とタグの読込結果（文書の id）。
@@ -369,6 +371,10 @@ struct Ui {
     last_search: RefCell<String>,
     /// last_search を大文字小文字をゆるく比べる（スマートケース）か。右クリックの Search は厳密（false）。
     last_smart: Cell<bool>,
+    /// フォルダ・zip の検索で、本文が一致したファイル（文書の id, 検索した文字列, 一致したパス）。検索し終えた物だけ。
+    arch_content: RefCell<Option<(u64, String, std::collections::HashSet<String>)>>,
+    /// 本文の検索の世代。打ち直すと増やして、前の検索を打ち切らせる。
+    arch_gen: std::sync::Arc<std::sync::atomic::AtomicU64>,
     /// このウィンドウがタブの組を config.txt の session に書く役か。引数なしで起動したウィンドウだけ。
     /// ゲームのドロップで起動した（引数ありの）ウィンドウは、保存済みのセッションに触れない。
     session_owner: bool,
@@ -535,7 +541,8 @@ impl Ui {
         let k = viewmode::kind_of(d.st.borrow().path.as_deref());
         match (k, d.preview_as.get()) {
             (_, Some(f)) => f,
-            (viewmode::Kind::Other, None) if d.format_auto.get() && !d.st.borrow().hex => {
+            // 色分けするコードの言語（.mcfunction・Python・シェルなど）は `# コメント` の行が Markdown の見出しに見えるので、中身から形式を推さず Text のままにする
+            (viewmode::Kind::Other, None) if d.format_auto.get() && !d.st.borrow().hex && !code::has_syntax(d.st.borrow().path.as_deref()) => {
                 let buf = &d.buf;
                 viewmode::sniff(&buf.text_range(0, buf.length().min(viewmode::SNIFF_BYTES)).unwrap_or_default())
             }
@@ -622,6 +629,10 @@ impl Ui {
         if self.active.get() != id {
             if let Some(old) = self.find(self.active.get()) {
                 old.cursor.set(self.editor.insert_position());
+                // フォルダ・zip の木は、戻ったときに開いていた所をそのまま出す（開いた直後は全て閉じているので）
+                if self.nbt_tree.tree.visible() && old.archive.borrow().is_some() && old.preview.get() {
+                    *old.tree_open.borrow_mut() = Some(self.nbt_tree.open_paths());
+                }
             }
         }
         self.active.set(id);
@@ -861,7 +872,7 @@ impl Ui {
                 }
             })
             .collect();
-        let width = self.win.w() - tabs::CHIP_W - tabs::VIEW_CHIP_W - self.pin.w(); // 左端の押しピンと右端のチップのぶんを除く
+        let width = self.win.w() - self.chip.w() - self.view_chip.w() - self.pin.w(); // 左端の押しピンと右端のチップのぶんを除く
         if *self.tabs_shown.borrow() == (infos.clone(), width) {
             return;
         }
@@ -1242,6 +1253,7 @@ impl Ui {
                 log::info(TAG, &format!("archive: {} ({} entries)", log::file_name(&path.to_string_lossy()), entries.len()));
                 self.set_text_quiet(&d, "");
                 *d.archive.borrow_mut() = Some(entries);
+                *self.arch_content.borrow_mut() = None; // 一覧が変わったので、本文の検索結果は捨てる
                 {
                     let mut st = d.st.borrow_mut();
                     st.loading = false;
@@ -1435,6 +1447,7 @@ impl Ui {
                     .collect();
                 for v in viewers {
                     *v.archive.borrow_mut() = Some(fresh.clone());
+                    *self.arch_content.borrow_mut() = None; // 名前が変わったので、本文の検索結果は捨てる
                     if v.preview.get() && self.is_active(&v) {
                         self.render_preview(&v);
                     }
@@ -1869,6 +1882,27 @@ impl Ui {
         }
     }
 
+    /// 一覧の木の項目の、一覧の中の相対パスとフォルダか。見出しなど道筋を持たない行は None。
+    fn archive_item(&self, it: &fltk::tree::TreeItem) -> Option<(String, bool)> {
+        let path = self.nbt_tree.path_of(it)?;
+        let rel = path.iter().map(|s| if let Seg::Key(k) = s { k.as_str() } else { "" }).collect::<Vec<_>>().join("/");
+        let d = self.doc();
+        let entries = d.archive.borrow();
+        let prefix = format!("{rel}/");
+        let is_dir = entries.as_ref()?.iter().any(|e| (e.is_dir && e.path.trim_end_matches('/') == rel) || e.path.starts_with(&prefix));
+        Some((rel, is_dir))
+    }
+
+    /// フォルダの一覧のファイルを NeoNote で開く（右パネルの「NeoNote で開く」と同じ）。zip の中身は開かないので false。
+    fn open_archive_file(self: &Rc<Self>, rel: &str) -> bool {
+        let Some(root) = self.doc().st.borrow().path.clone() else { return false };
+        if !root.is_dir() {
+            return false;
+        }
+        self.open_paths(vec![rel.split('/').fold(root, |p, c| p.join(c))]);
+        true
+    }
+
     /// 面積図の四角の右クリック: 開く・場所を表示・名前の変更・ごみ箱へ・パスのコピー。
     /// zip の中身は、名前の変更とパスのコピーだけ（取り出し・削除はしない）。
     fn side_menu(self: &Rc<Self>, rel: &str, is_dir: bool) {
@@ -1950,7 +1984,12 @@ impl Ui {
         let entries = d.archive.borrow();
         let Some(v) = entries.as_deref() else { return };
         let packed = archive::is_zip_path(&p) || v.iter().any(|e| e.packed.is_some());
-        self.nbt_tree.show_archive(log::file_name(&p.to_string_lossy()), v, packed, d.tree_open.borrow().as_ref());
+        let find = self.last_search.borrow().clone(); // 検索中なら、名前か本文が一致する項目だけに絞る
+        let content = match self.arch_content.borrow().as_ref() {
+            Some((id, needle, set)) if *id == d.id && needle == find.trim() => set.clone(),
+            _ => Default::default(),
+        };
+        self.nbt_tree.show_archive(log::file_name(&p.to_string_lossy()), v, packed, d.tree_open.borrow().as_ref(), &find, &content);
     }
 
     /// 木での編集: 本文の SNBT を読み、`f` で書き換えて、本文を置き換える（元に戻すで 1 回で戻る）。
@@ -2831,6 +2870,7 @@ impl Ui {
             Action::CopyToHistory => self.copy_to_history(),
             Action::PasteFromHistory => self.paste_from_history(),
             Action::FormatJson => self.format_json(),
+            Action::McHeader => self.mc_header(),
             Action::ToggleAutoSave => self.toggle_autosave(),
             Action::ToggleWrap => self.set_wrap(!self.wrap.get()),
             Action::GotoLine => self.goto_line(),
@@ -2975,6 +3015,10 @@ impl Ui {
     /// 全文を 1 回だけ読み、1 回の編集として書き戻す（「元に戻す」1 回で全て戻る）。置換結果の中は再走査しない。
     /// Repl: いま選んでいる一致を置換欄の文字列に置き換えて、次の一致へ進む（選んでいなければ最初の一致を選ぶだけ）。
     fn replace_one_bar(&self) {
+        if self.archive_tree_active() {
+            self.flash(crate::lang::tr("フォルダ・zip の一覧では置換できません", "Replace is not available in a folder / zip listing"));
+            return;
+        }
         let d = self.doc();
         if d.st.borrow().loading {
             return;
@@ -3001,6 +3045,10 @@ impl Ui {
     }
 
     fn replace_all_bar(&self) {
+        if self.archive_tree_active() {
+            self.flash(crate::lang::tr("フォルダ・zip の一覧では置換できません", "Replace is not available in a folder / zip listing"));
+            return;
+        }
         let d = self.doc();
         if d.st.borrow().loading {
             return;
@@ -3311,11 +3359,95 @@ impl Ui {
         self.set_find_count(&if needle.is_empty() { String::new() } else if n == 0 { crate::lang::tr("見つかりません", "Not found").to_string() } else { if crate::lang::is_en() { format!("{n} found") } else { format!("{n} 件") } });
     }
 
+    /// いま見ているのが、フォルダ・zip の一覧（木）か。そのタブでは、検索は本文ではなく、一覧の中の名前を探す。
+    fn archive_tree_active(&self) -> bool {
+        let d = self.doc();
+        d.preview.get() && d.archive.borrow().is_some() && self.nbt_tree.tree.visible()
+    }
+
+    /// フォルダ・zip の一覧を、検索中の文字列で作り直す。一致した項目の数を検索バーに出す。
+    /// 名前の一致はすぐ出し、本文の一致は裏で探して、できたら加える（`on_archive_content`）。
+    /// `select` なら、最初の一致を選んで見える所へ出す。
+    fn archive_find(&self, select: bool) {
+        let d = self.doc();
+        let needle = self.last_search.borrow().trim().to_string();
+        self.render_archive_tree(&d);
+        // 打ち直されたので、前の本文の検索は打ち切らせる
+        let gen = self.arch_gen.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+        if needle.is_empty() {
+            *self.arch_content.borrow_mut() = None;
+            self.set_find_count("");
+            return;
+        }
+        let cached = self.arch_content.borrow().as_ref().is_some_and(|(id, n, _)| *id == d.id && *n == needle);
+        let n = self.nbt_tree.hit_count();
+        if cached {
+            self.show_find_count(&needle, n);
+        } else {
+            self.show_searching(n);
+            self.start_content_search(&d, needle, gen);
+        }
+        if select && n > 0 {
+            self.nbt_tree.step_hit(true);
+        }
+    }
+
+    /// 本文を探している間の表示（それまでに見つかった数と「検索中」）。
+    fn show_searching(&self, n: usize) {
+        let text = if crate::lang::is_en() { format!("{n} found (searching contents...)") } else { format!("{n} 件（本文を検索中…）") };
+        self.set_find_count(&text);
+    }
+
+    /// フォルダ・zip の中のファイルの本文を、裏で探す（フォルダ・zip だけ。tar 系は名前だけ）。
+    fn start_content_search(&self, d: &Rc<Doc>, needle: String, gen: u64) {
+        let Some(root) = d.st.borrow().path.clone() else { return };
+        if !archive::can_rename(&root) {
+            return; // tar 系は目録しか読めない
+        }
+        let Some(entries) = d.archive.borrow().clone() else { return };
+        let (id, tx, cur) = (d.id, self.tx.clone(), self.arch_gen.clone());
+        thread::spawn(move || {
+            let cancel = || cur.load(std::sync::atomic::Ordering::SeqCst) != gen;
+            // 打っている途中で読み始めないよう、少し待つ（その間に打ち直されたら、何もしない）
+            thread::sleep(std::time::Duration::from_millis(250));
+            if cancel() {
+                return;
+            }
+            let hits = archive::search_contents(&root, &entries, &needle, &cancel);
+            if !cancel() {
+                tx.send(Msg::ArchiveContent(id, needle, hits));
+                app::awake();
+            }
+        });
+    }
+
+    /// 本文の検索ができた: 今の検索語と同じなら、一覧に本文の一致を加えて作り直す（選んでいた所はそのまま）。
+    fn on_archive_content(&self, id: u64, needle: String, paths: Vec<String>) {
+        let d = self.doc();
+        if d.id != id || self.last_search.borrow().trim() != needle || !self.archive_tree_active() {
+            return;
+        }
+        let before = self.nbt_tree.selected_path();
+        *self.arch_content.borrow_mut() = Some((id, needle.clone(), paths.into_iter().collect()));
+        self.render_archive_tree(&d);
+        let n = self.nbt_tree.hit_count();
+        self.show_find_count(&needle, n);
+        let kept = before.is_some_and(|p| self.nbt_tree.select_path(&p));
+        if !kept && n > 0 {
+            self.nbt_tree.step_hit(true);
+        }
+    }
+
     /// 検索バーの文字列が変わった: 全てを強調し、いまの位置から先の最初の 1 件を選ぶ（入力しても飛ばない）。
+    /// フォルダ・zip のタブでは、一覧を一致する名前だけに絞る。
     fn find_changed(&self) {
         let needle = self.find_bar.input.value();
         *self.last_search.borrow_mut() = needle.clone();
         self.last_smart.set(true);
+        if self.archive_tree_active() {
+            self.archive_find(true);
+            return;
+        }
         let n = self.highlight(&needle, true);
         self.show_find_count(&needle, n);
         if n > 0 {
@@ -3327,6 +3459,11 @@ impl Ui {
     fn refresh_find(&self) {
         let needle = self.last_search.borrow().clone();
         let d = self.doc();
+        if self.archive_tree_active() {
+            // 別のタブから移ってきた: 検索中の文字列で一覧を絞り直し、本文の検索も（まだなら）始める
+            self.archive_find(false);
+            return;
+        }
         let syntax = code::has_syntax(d.st.borrow().path.as_deref());
         if (needle.is_empty() && !syntax) || d.buf.length() > LIVE_COUNT_LIMIT {
             return;
@@ -3344,7 +3481,9 @@ impl Ui {
         } else if *self.last_search.borrow() != needle {
             self.find_changed();
         } else {
-            self.highlight(&needle, true);
+            if !self.archive_tree_active() {
+                self.highlight(&needle, true);
+            }
             self.find_move(true, false);
         }
     }
@@ -3401,7 +3540,11 @@ impl Ui {
     fn clear_find(&self) {
         self.find_bar.input.clone().set_value("");
         self.last_search.borrow_mut().clear();
-        self.highlight("", true);
+        if self.archive_tree_active() {
+            self.archive_find(false); // 絞りを外して、一覧を元に戻す
+        } else {
+            self.highlight("", true);
+        }
         self.set_find_count("");
         self.close_find();
     }
@@ -3494,6 +3637,25 @@ impl Ui {
         let needle = self.last_search.borrow().clone();
         if needle.is_empty() {
             self.focus_find(); // 何も探していなければ、検索バーへ移る
+            return;
+        }
+        if self.archive_tree_active() {
+            // フォルダ・zip: 一致した項目を、次・前へ選ぶ（木は検索中の文字列で絞ってある）
+            match self.nbt_tree.step_hit(forward) {
+                Some((i, n)) => {
+                    let text = format!("{i}/{n}");
+                    self.set_find_count(&text);
+                    if !self.find_bar.is_open() {
+                        self.flash(&text);
+                    }
+                }
+                None => {
+                    self.set_find_count(crate::lang::tr("見つかりません", "Not found"));
+                    if !self.find_bar.is_open() {
+                        self.flash(crate::lang::tr("見つかりません", "Not found"));
+                    }
+                }
+            }
             return;
         }
         let d = self.doc();
@@ -4005,6 +4167,23 @@ impl Ui {
         self.refresh_tabs();
     }
 
+    /// 右端の列（ツールバーの検索バー・タブ行の Format と Encode）を、右端の欄の幅 `side_w` にそろえる。
+    /// 左端の列（最前面の押しピン・行番号の押しピン・行番号欄）が行番号欄の幅に連動するのと対。
+    /// 右端の欄が隠れている間も幅は変えない（行番号欄が隠れていても押しピンの幅が変わらないのと同じ）。
+    fn fit_side_cols(&self) {
+        let w = self.side_w.get();
+        let view_w = tabs::view_chip_width(w);
+        if self.find_bar.width() == w && self.view_chip.w() == view_w && self.chip.w() == w - view_w {
+            return;
+        }
+        self.find_bar.set_width(w);
+        let mut row = self.tabrow.clone();
+        row.fixed(&self.view_chip, view_w);
+        row.fixed(&self.chip, w - view_w);
+        row.layout();
+        self.refresh_tabs();
+    }
+
     /// ウィンドウの最前面への固定を切り替える。
     fn toggle_on_top(&self) {
         let on = !self.top_pin.value();
@@ -4193,8 +4372,9 @@ impl Ui {
         let names = path.as_deref().and_then(|p| p.extension()).map(|e| e.to_string_lossy().to_ascii_lowercase()).is_some_and(|e| {
             matches!(e.as_str(), "css" | "scss" | "less" | "html" | "htm" | "xhtml" | "svg" | "xml" | "json" | "jsonc")
         });
-        let Some((r, p)) = peek::at(&line, (pos - ls) as usize, names) else { return };
-        let content = match p {
+        let off = (pos - ls) as usize;
+        let (r, content) = if let Some((r, p)) = peek::at(&line, off, names) {
+            (r, match p {
             peek::Peek::Color(c, label) => peekwin::Content::Swatch(c, label),
             peek::Peek::Char(c, cp) => peekwin::Content::Text { big: c, note: cp },
             peek::Peek::Time(secs, ms) => {
@@ -4211,6 +4391,17 @@ impl Ui {
                     None => return, // 見つからない画像は出さない
                 }
             }
+            })
+        } else if let Some(rf) = mcheader::reference_at(&line, off) {
+            // `ns:path`: 指すファイルがあれば、開き方を案内する
+            let dirs = path.as_deref().map(mcheader::data_dirs_near).unwrap_or_default();
+            let note = match mcheader::resolve(&dirs, &rf) {
+                Some(_) => crate::lang::tr("Shift+クリックでこのファイルを新タブで開く", "Shift+click to open this file in a new tab"),
+                None => crate::lang::tr("ファイルが見つかりません", "File not found"),
+            };
+            (rf.range.clone(), peekwin::Content::Link { title: rf.id, note: note.into() })
+        } else {
+            return;
         };
         self.peek_at.set(Some((d.id, ls + r.start as i32, ls + r.end as i32)));
         peekwin::show(mx, my, content);
@@ -4242,6 +4433,7 @@ impl Ui {
             let mut body = self.body.clone();
             body.fixed(&self.side.widget, w);
             body.layout();
+            self.fit_side_cols();
             self.update_side_view();
             self.win.clone().redraw();
         }
@@ -4691,6 +4883,84 @@ impl Ui {
         self.editor.clone().set_insert_position(s + text.len() as i32);
     }
 
+    /// Shift（または Ctrl / macOS は Cmd）+ クリックした所の `ns:path`（`neofunction:asset/bossbar/hide` など）が指すファイルを、
+    /// 開いているファイルの近くのデータパックから探してタブで開く。ID でない所なら false（ふつうのクリックのまま）。
+    fn open_reference_at_click(self: &Rc<Self>) -> bool {
+        let d = self.doc();
+        {
+            let st = d.st.borrow();
+            if st.loading || st.hex || d.preview.get() {
+                return false;
+            }
+        }
+        let ed = &self.editor;
+        let (ex, ey) = (app::event_x(), app::event_y());
+        if ex < ed.x() + self.gutter_width() {
+            return false;
+        }
+        let pos = ed.xy_to_position(ex, ey, PositionType::Character);
+        let buf = &d.buf;
+        let (ls, le) = (buf.line_start(pos), buf.line_end(pos));
+        if pos < ls || pos >= le {
+            return false;
+        }
+        let Some(line) = buf.text_range(ls, le) else { return false };
+        let Some(r) = mcheader::reference_at(&line, (pos - ls) as usize) else { return false };
+        let base = d.st.borrow().path.clone();
+        let dirs = base.as_deref().map(mcheader::data_dirs_near).unwrap_or_default();
+        match mcheader::resolve(&dirs, &r) {
+            Some(target) => self.open_paths(vec![target]),
+            None => {
+                let id = r.id;
+                self.flash(&if crate::lang::is_en() { format!("Not found: {id}") } else { format!("見つかりません: {id}") });
+            }
+        }
+        true
+    }
+
+    // ---- .mcfunction の呼び出し元ヘッダー ----
+
+    /// 開いている .mcfunction の先頭に、呼び出し元と自分の ID のヘッダーを作る（無ければ入れ、あれば作り直す）。
+    /// 探す範囲はこのファイルが入っているデータパックだけ。置き換えは 1 回の編集なので「元に戻す」で戻せる。
+    fn mc_header(&self) {
+        let d = self.doc();
+        let path = {
+            let st = d.st.borrow();
+            if st.loading || st.hex {
+                self.flash(crate::lang::tr("ここでは作れません", "Cannot do this here"));
+                return;
+            }
+            st.path.clone()
+        };
+        let Some(path) = path.filter(|p| mcfunction::is_mcfunction(Some(p.as_path()))) else {
+            self.flash(crate::lang::tr("保存した .mcfunction のファイルで使います", "Use this on a saved .mcfunction file"));
+            return;
+        };
+        let Some(loc) = mcheader::locate(&path) else {
+            self.flash(crate::lang::tr("data/<名前空間>/function/ の下のファイルではありません", "Not under data/<namespace>/function/"));
+            return;
+        };
+        // 検索は 1 パスで、データパックの中だけを読む（通常は一瞬）。上限を超える巨大なフォルダは途中で止める。
+        let callers = match mcheader::find_callers(&loc, &std::sync::atomic::AtomicBool::new(false)) {
+            Ok(c) => c,
+            Err(e) => {
+                log::warn(TAG, &format!("mc header: {e}"));
+                self.flash(&if crate::lang::is_en() { format!("Could not search: {e}") } else { format!("検索できませんでした: {e}") });
+                return;
+            }
+        };
+        let mut b = d.buf.clone();
+        let edit = mcheader::build(&b.text(), &mcheader::stem_of(&path), &loc.id, &callers);
+        if edit.is_noop(&b.text()) {
+            self.flash(crate::lang::tr("ヘッダーは最新です", "Header is up to date"));
+            return;
+        }
+        b.unselect();
+        b.replace(edit.start as i32, edit.end as i32, &edit.text);
+        let n = callers.total();
+        self.flash(&if crate::lang::is_en() { format!("Header updated ({n} callers)") } else { format!("ヘッダーを更新しました（呼び出し元 {n} 件）") });
+    }
+
     // ---- JSON 整形 ----
 
     /// 選択範囲（無ければ全文）を JSON として整形する。置き換えは 1 回の編集なので「元に戻す」で戻せる。
@@ -4984,10 +5254,12 @@ pub fn run(paths: Vec<String>) -> Result<(), FltkError> {
     let tx_bar2 = tx.clone();
     // 検索バーはツールバーの右端。入力・ボタンの操作はメインループで処理する
     let tx_find = tx;
+    // 右端の列（検索バー・Format・Encode）は、右端の欄と同じ幅にする（左の押しピン・行番号欄と対）
+    let side_w = sidepanel::clamp_width(cfg.side_w.unwrap_or(sidepanel::WIDTH));
     let (bar, gap, top_pin, find_bar) = toolbar::build(
         move |a| tx_bar.send(Msg::Do(a)),
         move |bar| {
-            searchbar::build(bar, start_font, FIND_TEXT_SIZE, move |c| {
+            searchbar::build(bar, side_w, start_font, FIND_TEXT_SIZE, move |c| {
                 tx_find.send(Msg::Find(c));
                 app::awake();
             })
@@ -5014,12 +5286,18 @@ pub fn run(paths: Vec<String>) -> Result<(), FltkError> {
     view_chip.set_label("Format");
     view_chip.set_tooltip(crate::lang::tr("クリックで 表示（Text・Preview・HEX）と形式を切り替え", "Click to switch view (Text / Preview / HEX) and format"));
     view_chip.set_callback(move |_| tx_view.send(Msg::Do(Action::ChangeView)));
-    tabrow.fixed(&view_chip, tabs::VIEW_CHIP_W);
+    let view_w = tabs::view_chip_width(side_w);
+    tabrow.fixed(&view_chip, view_w);
+    let tx_grip = tx_bar2.clone();
+    tabs::add_side_grip(&mut view_chip, move |w, done| {
+        tx_grip.send(Msg::SideWidth(sidepanel::clamp_width(w), done));
+        app::awake();
+    });
     let tx_chip = tx_bar2.clone();
     let mut chip = tabs::build_chip();
     chip.set_label("Encode");
     chip.set_callback(move |_| tx_chip.send(Msg::Do(Action::ChangeEncoding)));
-    tabrow.fixed(&chip, tabs::CHIP_W);
+    tabrow.fixed(&chip, side_w - view_w);
     tabrow.end();
     col.fixed(&tabrow, tabs::HEIGHT);
     // 本文の行: 編集領域（またはプレビュー）と、右端の情報・縮小表示の欄
@@ -5072,7 +5350,6 @@ pub fn run(paths: Vec<String>) -> Result<(), FltkError> {
             app::awake();
         },
     );
-    let side_w = sidepanel::clamp_width(cfg.side_w.unwrap_or(sidepanel::WIDTH));
     body.fixed(&side.widget, side_w);
     side.widget.clone().hide();
     body.end();
@@ -5143,6 +5420,8 @@ pub fn run(paths: Vec<String>) -> Result<(), FltkError> {
         find_bar: find_bar.clone(),
         last_search: RefCell::new(String::new()),
         last_smart: Cell::new(true),
+        arch_content: RefCell::new(None),
+        arch_gen: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
         session_owner: paths.is_empty(),
         config_path,
         font_path: RefCell::new(start_font_path),
@@ -5198,6 +5477,9 @@ pub fn run(paths: Vec<String>) -> Result<(), FltkError> {
         if ev == Event::Push && app::event_mouse_button() == app::MouseButton::Right {
             u.context_menu();
             true
+        } else if ev == Event::Push && app::event_mouse_button() == app::MouseButton::Left && (app::is_event_shift() || app::is_event_command()) && u.open_reference_at_click() {
+            // Shift + クリック（Ctrl / Cmd + クリックも同じ）で、`ns:path` の指すファイルを開く
+            true
         } else if ev == Event::Released && app::event_clicks() && u.doc().st.borrow().region_list {
             // チャンクの一覧のダブルクリック: 押した位置へカーソルが移った後に開く
             u.open_chunk_at_cursor()
@@ -5214,7 +5496,26 @@ pub fn run(paths: Vec<String>) -> Result<(), FltkError> {
         let u = Rc::clone(&ui);
         let mut tree = nbt_tree.tree.clone();
         tree.handle(move |t, ev| match ev {
-            // 一覧（フォルダ・zip）の木は開閉だけ。編集の操作は NBT の文書の時だけ受ける
+            // 一覧（フォルダ・zip）の木: 右クリックで右パネルと同じメニュー、ファイルのダブルクリックで開く
+            Event::Push if app::event_mouse_button() == app::MouseButton::Right && u.doc().archive.borrow().is_some() => {
+                let Some(it) = t.find_clicked(true) else { return false };
+                let _ = t.select_only(&it, false);
+                match u.archive_item(&it) {
+                    Some((rel, is_dir)) => {
+                        u.side_menu(&rel, is_dir);
+                        true
+                    }
+                    None => false,
+                }
+            }
+            Event::Released if app::event_clicks() && app::event_mouse_button() == app::MouseButton::Left && u.doc().archive.borrow().is_some() => {
+                let Some(it) = t.first_selected_item() else { return false };
+                match u.archive_item(&it) {
+                    Some((rel, false)) => u.open_archive_file(&rel),
+                    _ => false,
+                }
+            }
+            // ほかの編集の操作は NBT の文書の時だけ受ける
             _ if !u.is_nbt_doc(&u.doc()) => false,
             Event::Push if app::event_mouse_button() == app::MouseButton::Right => {
                 if let Some(it) = t.find_clicked(true) {
@@ -5334,6 +5635,7 @@ pub fn run(paths: Vec<String>) -> Result<(), FltkError> {
                 Msg::Book(id, r) => ui.on_book(id, r),
                 Msg::DocText(id, r) => ui.on_doc_text(id, r),
                 Msg::Archive(id, path, r) => ui.on_archive(id, path, r),
+                Msg::ArchiveContent(id, needle, paths) => ui.on_archive_content(id, needle, paths),
                 Msg::ImageFetched(r) => ui.on_image_fetched(r),
                 Msg::Audio(id, r) => ui.on_audio(id, r),
             }

@@ -12,7 +12,7 @@ use fltk::{
     prelude::*,
     tree::{Tree, TreeConnectorStyle, TreeItem, TreeSelect},
 };
-use std::{cell::RefCell, collections::HashSet, rc::Rc};
+use std::{cell::{Cell, RefCell}, collections::HashSet, rc::Rc};
 
 /// 木に入れる項目の上限（大きなチャンクでも作り直しを軽く保つ。超えた分は Text で編集する）。
 const MAX_ITEMS: usize = 20_000;
@@ -26,6 +26,11 @@ pub struct NbtTree {
     pub tree: Tree,
     /// 木の項目と、その道筋。
     items: Rc<RefCell<Vec<(TreeItem, Vec<Seg>)>>>,
+    /// 検索で絞っている間の、一致した項目の道筋（表示の順）。絞っていなければ空。
+    hits: Rc<RefCell<Vec<Vec<Seg>>>>,
+    /// 検索で絞っている間は、絞る前の開き方（絞った木は全部開くので、`open_paths` はこちらを返す）。
+    filtered: Rc<Cell<bool>>,
+    base_open: Rc<RefCell<HashSet<Vec<Seg>>>>,
 }
 
 impl NbtTree {
@@ -40,7 +45,7 @@ impl NbtTree {
         tree.set_margin_top(8);
         tree.set_line_spacing(4);
         tree.hide();
-        let t = NbtTree { tree, items: Rc::new(RefCell::new(Vec::new())) };
+        let t = NbtTree { tree, items: Rc::new(RefCell::new(Vec::new())), hits: Rc::new(RefCell::new(Vec::new())), filtered: Rc::new(Cell::new(false)), base_open: Rc::new(RefCell::new(HashSet::new())) };
         t.restyle(Font::Helvetica, 14);
         t
     }
@@ -67,6 +72,9 @@ impl NbtTree {
 
     /// 開いている項目の道筋（作り直しても開いたままにするため）。
     pub fn open_paths(&self) -> HashSet<Vec<Seg>> {
+        if self.filtered.get() {
+            return self.base_open.borrow().clone();
+        }
         self.items.borrow().iter().filter(|(it, _)| it.has_children() && it.is_open()).map(|(_, p)| p.clone()).collect()
     }
 
@@ -80,6 +88,8 @@ impl NbtTree {
 
     /// 木を作り直す。`open` が None なら 1 段目だけ開く。`select` の項目を選んで見える所へ出す。
     pub fn show(&self, root: &Tag, open: Option<&HashSet<Vec<Seg>>>, select: Option<&[Seg]>) {
+        self.filtered.set(false);
+        self.hits.borrow_mut().clear();
         let mut tree = self.tree.clone();
         // clear() は根の項目まで消して、足す先が無くなる。根の子だけを消す
         if let Some(top) = tree.root() {
@@ -127,10 +137,7 @@ impl NbtTree {
         }
         for (it, p) in items.iter_mut() {
             if it.has_children() {
-                let want = match open {
-                    Some(set) => set.contains(p),
-                    None => p.len() == 1,
-                };
+                let want = open.is_some_and(|set| set.contains(p));
                 if want { it.open() } else { it.close() }
             }
         }
@@ -150,8 +157,10 @@ impl NbtTree {
         tree.redraw();
     }
 
-    /// フォルダ・zip の一覧を木にする。`open` が None なら 1 段目だけ開く。道筋はフォルダ名を `Seg::Key` で並べた物。
-    pub fn show_archive(&self, title: &str, entries: &[archive::Entry], packed: bool, open: Option<&HashSet<Vec<Seg>>>) {
+    /// フォルダ・zip の一覧を木にする。`open` が None（開いた直後）なら、フォルダは全て閉じた状態で出す。道筋はフォルダ名を `Seg::Key` で並べた物。
+    /// `find` が空でなければ、名前が一致する項目（`content` は本文が一致したファイルのパス）と、その親のフォルダだけを、全て開いて出す（検索バー）。
+    pub fn show_archive(&self, title: &str, entries: &[archive::Entry], packed: bool, open: Option<&HashSet<Vec<Seg>>>, find: &str, content: &HashSet<String>) {
+        let find = find.trim();
         let mut tree = self.tree.clone();
         if let Some(top) = tree.root() {
             tree.clear_children(&top);
@@ -164,7 +173,18 @@ impl NbtTree {
             it.set_label_fgcolor(rgb(color_subtext()));
             it.set_label_bgcolor(rgb(color_main()));
         }
-        let root = archive::build_tree(entries);
+        let mut root = archive::build_tree(entries);
+        let filtering = !find.is_empty();
+        self.filtered.set(filtering);
+        let mut hit_paths: Vec<Vec<Seg>> = Vec::new();
+        if filtering {
+            *self.base_open.borrow_mut() = open.cloned().unwrap_or_default();
+            let (t, hits) = archive::filter_tree(&root, find, content);
+            root = t;
+            hit_paths = hits.into_iter().map(|h| h.into_iter().map(Seg::Key).collect()).collect();
+        }
+        *self.hits.borrow_mut() = hit_paths;
+        let hit_set: HashSet<Vec<Seg>> = self.hits.borrow().iter().cloned().collect();
         let mut stack: Vec<(TreeItem, Vec<Seg>, &archive::Node, i32)> = vec![(top, Vec::new(), &root, 1)];
         let mut cut = false;
         while let Some((parent, path, node, first)) = stack.pop() {
@@ -177,10 +197,12 @@ impl NbtTree {
                 // `/` は木の階層の区切りとして読まれるので、名前の中の `/` は使わない（フォルダは末尾の / を付けない）
                 let label = format!("{}    {size}", c.name.replace('/', "\u{2215}"));
                 let Some(mut it) = tree.insert(&parent, &label, first + pos as i32) else { continue };
-                it.set_label_fgcolor(rgb(if c.is_dir { color_text() } else { color_subtext() }));
-                it.set_label_bgcolor(rgb(color_main()));
                 let mut p = path.clone();
                 p.push(Seg::Key(c.name.clone()));
+                // 絞っている間は、一致した項目を濃く、一致の親（通り道）を薄く出す
+                let strong = if filtering { hit_set.contains(&p) } else { c.is_dir };
+                it.set_label_fgcolor(rgb(if strong { color_text() } else { color_subtext() }));
+                it.set_label_bgcolor(rgb(color_main()));
                 if c.is_dir && !c.children.is_empty() {
                     stack.push((it.clone(), p.clone(), c, 0));
                 }
@@ -198,15 +220,52 @@ impl NbtTree {
         }
         for (it, p) in items.iter_mut() {
             if it.has_children() {
-                let want = match open {
-                    Some(set) => set.contains(p),
-                    None => p.len() == 1,
-                };
+                let want = filtering || open.is_some_and(|set| set.contains(p));
                 if want { it.open() } else { it.close() }
             }
         }
         drop(items);
         tree.redraw();
+    }
+
+    /// 検索で一致した項目の数。
+    pub fn hit_count(&self) -> usize {
+        self.hits.borrow().len()
+    }
+
+    /// 検索で一致した項目を、次（`forward`）か前へ 1 つ進んで選ぶ（末尾の先は先頭へ戻る）。
+    /// いま一致した項目を選んでいればその次から、そうでなければ先頭（前へなら末尾）から。戻り値は (何番目, 全部で)。
+    pub fn step_hit(&self, forward: bool) -> Option<(usize, usize)> {
+        let hits = self.hits.borrow();
+        let n = hits.len();
+        if n == 0 {
+            return None;
+        }
+        let at = self.selected_path().and_then(|p| hits.iter().position(|h| *h == p));
+        let i = match (at, forward) {
+            (Some(i), true) => (i + 1) % n,
+            (Some(i), false) => (i + n - 1) % n,
+            (None, true) => 0,
+            (None, false) => n - 1,
+        };
+        let want = hits[i].clone();
+        drop(hits);
+        let it = self.items.borrow().iter().find(|(_, p)| *p == want).map(|(it, _)| it.clone())?;
+        let mut tree = self.tree.clone();
+        let _ = tree.select_only(&it, false);
+        tree.show_item_middle(&it);
+        tree.redraw();
+        Some((i + 1, n))
+    }
+
+    /// 道筋 `path` の項目を選んで見える所へ出す（作り直したあとに、選んでいた所へ戻す）。無ければ false。
+    pub fn select_path(&self, path: &[Seg]) -> bool {
+        let Some(it) = self.items.borrow().iter().find(|(_, p)| p.as_slice() == path).map(|(it, _)| it.clone()) else { return false };
+        let mut tree = self.tree.clone();
+        let _ = tree.select_only(&it, false);
+        tree.show_item_middle(&it);
+        tree.redraw();
+        true
     }
 
     /// 木の代わりに、1 行の知らせ（SNBT の書き間違いなど）を出す。
@@ -216,6 +275,8 @@ impl NbtTree {
             tree.clear_children(&top);
         }
         self.items.borrow_mut().clear();
+        self.hits.borrow_mut().clear();
+        self.filtered.set(false);
         if let Some(top) = tree.root() {
             if let Some(mut it) = tree.insert(&top, msg, 0) {
                 it.set_label_fgcolor(rgb(color_error()));

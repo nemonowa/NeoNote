@@ -53,7 +53,7 @@ Windows 11 でビルド・ユニットテスト・簡単な操作を確認済み
 | 12 検索バーの常駐 / タブの並べ替え（ドラッグ・`Ctrl+Shift+PageUp/Down`）/ セッション復元（引数なしの起動で前回のタブを開き直す） | 完了（DESIGN.md「第12段階」参照） |
 | 6 フォント・アイコン・Java 側の置換 | 一部完了（フォント選択・Java 側の置換は完了。アイコン・README 表示は資料が無く未着手） |
 
-操作: `Ctrl+O` 開く（複数選択可） / `Ctrl+S` 保存 / `Ctrl+Shift+S` 名前を付けて保存 / `Ctrl+E` 文字コード・改行コード / `Ctrl+T`・`Ctrl+N` 新規タブ / `Ctrl+W` タブを閉じる / `Ctrl+F` 検索バーを開く（使うときだけ開く。入力すると強調、`Enter`・`Shift+Enter` で次・前、`Esc` で閉じる） / `F3`・`Shift+F3` 次・前の検索結果 / `Ctrl+Shift+PageUp`・`PageDown` タブを左・右へ / `Ctrl+H` 置換（検索バーの置換欄。`Enter` で全置換） / `Ctrl+G` 指定行へ移動 / `Ctrl++`・`Ctrl+-`・`Ctrl+ホイール` 文字サイズ / `Ctrl+0` 文字サイズを既定に / `Ctrl+Z` 元に戻す / `Ctrl+Y`・`Ctrl+Shift+Z` やり直し / `Ctrl+A` 全選択 / `Ctrl+C`・`Ctrl+X`・`Ctrl+V`（macOS は Cmd）。`Ctrl+Tab` / `Ctrl+Shift+Tab` でタブを切り替える。`Tab`（複数行を選択中）・`Shift+Tab` で字下げ / 字下げを外す。Enter は前の行の字下げを引き継ぐ。`Ctrl+F` の検索は、小文字だけで打つと大文字小文字を区別せず、大文字を含めると区別する。
+操作: `Ctrl+O` 開く（複数選択可） / `Ctrl+S` 保存 / `Ctrl+Shift+S` 名前を付けて保存 / `Ctrl+E` 文字コード・改行コード / `Ctrl+T`・`Ctrl+N` 新規タブ / `Ctrl+W` タブを閉じる / `Ctrl+F` 検索バーを開く（使うときだけ開く。入力すると強調、`Enter`・`Shift+Enter` で次・前、`Esc` で閉じる） / `F3`・`Shift+F3` 次・前の検索結果 / `Ctrl+Shift+PageUp`・`PageDown` タブを左・右へ / `Ctrl+H` 置換（検索バーの置換欄。`Enter` で全置換） / `Ctrl+G` 指定行へ移動 / `Ctrl++`・`Ctrl+-`・`Ctrl+ホイール` 文字サイズ / `Ctrl+0` 文字サイズを既定に / `Ctrl+Z` 元に戻す / `Ctrl+Y`・`Ctrl+Shift+Z` やり直し / `Ctrl+A` 全選択 / `Ctrl+C`・`Ctrl+X`・`Ctrl+V`（macOS は Cmd）。`Ctrl+Tab` / `Ctrl+Shift+Tab` でタブを切り替える。`Tab`（複数行を選択中）・`Shift+Tab` で字下げ / 字下げを外す。Enter は前の行の字下げを引き継ぐ。`Ctrl+F` の検索は、小文字だけで打つと大文字小文字を区別せず、大文字を含めると区別する。フォルダ・zip のタブ（一覧）では、検索は中の名前とファイルの本文（フォルダ・zip の文字のファイルだけ）を探し、一致する項目とその親のフォルダだけに一覧を絞る（`/` を含めると道筋全体で探す。置換はできない）。
 
 タブはツールバーの下に並ぶ。ファイルを開くと新しいタブになり、同じファイルはそのタブへ移る。起動引数に複数のパスを渡すとそれぞれタブで開く。`×` か中クリックで閉じる。閉じると失う変更があるときだけ、保存 / 破棄 / キャンセルを聞く（名前の無いタブが空白だけのとき、ファイルのタブを元に戻したときは聞かない）。確認はアプリのウィンドウの中に出し、`Enter` で保存、`Esc` でキャンセル。最後のタブを閉じると終了する。タブはドラッグで並べ替えられる。
 
@@ -65,7 +65,7 @@ Windows 11 でビルド・ユニットテスト・簡単な操作を確認済み
 
 ツールバーのボタンは押すと主な動作。マウスを乗せる（または右クリック）と、ボタンの真下にそのボタンのサブメニューが開く。サブメニューには、ボタンを押したときと同じ動作は出さない。項目の表記はなるべく 1 語で、マウスを乗せると説明がツールチップで出る。右の余白をクリックすると現在のパスをコピーする。
 
-左端の列は、上からツールバーの押しピン（ウィンドウを最前面に固定。Windows のみ）、タブ行の `#`（行番号を常に表示）、本文の行番号で、3 つとも同じ幅。`#` の右の境目をドラッグすると行番号欄を広げられる（`config.txt` の `gutter_extra`）。右パネルは左の境目をドラッグして幅を変えられる（`side_w`）。
+左端の列は、上からツールバーの押しピン（ウィンドウを最前面に固定。Windows のみ）、タブ行の `#`（行番号を常に表示）、本文の行番号で、3 つとも同じ幅。`#` の右の境目をドラッグすると行番号欄を広げられる（`config.txt` の `gutter_extra`）。右パネルは左の境目をドラッグして幅を変えられる（`side_w`）。右端の列も同じで、上から、検索バー、Format と Encode、右パネルの 3 つが同じ幅になり、右パネルの幅を変えると一緒に変わる（Format の左の境目のドラッグでも変えられる）。
 
 編集領域の右クリックメニューは Cut / Copy / Paste / Replace / Search / Search In web / Select All / Change View / Change Encoding / Run In CMD など。Search は選択した文字列と同じ箇所をアクセント色で強調し、何も選ばずに実行すると消える。
 
@@ -85,6 +85,8 @@ HEX 表示は 1 行 16 バイトで、`オフセット  HEX×16  |ASCII|`。編�
 
 - **Edit** ボタンを押す = Magic Select。押すたびに、選択が 単語 → 行 → 段落 → 全体 と広がる。サブメニューは Word（Select）/ All（Select All）/ Deselect / Copy（Copy Selection）。
 - **Copy** のサブメニュー: Line（Copy Line）/ Cut（Cut Line）/ Name（Copy File Name）/ Stash（Copy to Clipboard History。選択か行を履歴に貯める。最大 10 件）。**Paste** のサブメニュー: Before / After（選択を置き換えず、前 / 後ろへ貼る）/ History（Paste From History）。
+- **Shift+クリック**（Ctrl / Cmd+クリックも可）: 本文の `neofunction:asset/bossbar/hide` のような `ns:path` をクリックすると、指すファイル（関数・advancement・enchantment・`#` のタグなど）を、開いているファイルの近くのデータパックから探して新しいタブで開く。マウスを乗せると案内が出る。
+- **Header**（MC Header。Run のサブメニュー、編集領域の右クリック）: 保存してある `.mcfunction` の先頭に、その関数を呼んでいる関数・進捗・エンチャント・関数タグと自分の ID のヘッダー（`# >/function …` と `# =/function …`）を作る。探すのはそのファイルが入っているデータパックの中だけ。命名・説明・独自の項目は残る。
 - **JSON**（Format JSON。Run のサブメニュー、編集領域の右クリック）: 選択範囲、無ければ全文を JSON として整形する。不正な JSON は書き換えず、位置を示す。
 - **Undo** / **Redo** のサブメニュー: All（Undo All / Redo All）で戻せなくなるまで繰り返す。History（View History。過去に読み込んだファイルの履歴をファイル名で一覧し、ダブルクリックか Enter でタブに開く）/ Restore（Restore From History。いま開いていない最新の 1 件をすぐ開く）。存在しないファイルは自動で履歴から消える。履歴は全文書で共通・新しい順・最大 100 件で、`config.txt` の `history=` に保存され終了後も残る。
 - **Save** のサブメニュー: Save As / Autosave（Enable Auto Save。チェック式。30 秒ごとに未保存のファイルを上書き。状態は設定ファイルに残る）。

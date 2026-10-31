@@ -28,6 +28,8 @@ pub enum Content {
     Image(std::path::PathBuf, String),
     /// 説明の文だけ（メニューの項目のツールチップ。標準のツールチップは最前面のメニューの後ろに隠れるため）。
     Note(String),
+    /// 1 行目（ID など）と、その下の案内（本文の `ns:path` にマウスを乗せたとき）。
+    Link { title: String, note: String },
 }
 
 thread_local! {
@@ -90,6 +92,7 @@ pub fn show(x: i32, y: i32, content: Content) {
             (PAD * 2 + bw.max(tw(note)), PAD * 2 + TEXT_SIZE * 2 + 6 + TEXT_SIZE + 4)
         }
         Content::Note(note) => (PAD * 2 + tw(note), PAD * 2 + TEXT_SIZE + 4),
+        Content::Link { title, note } => (PAD * 2 + tw(title).max(tw(note)), PAD * 2 + (TEXT_SIZE + 4) * 2),
         Content::Image(_, note) => match &img {
             Some(img) => (PAD * 2 + img.w().max(tw(note)), PAD * 3 + img.h() + TEXT_SIZE + 4),
             None => (PAD * 2 + tw(note), PAD * 2 + TEXT_SIZE + 4),
@@ -128,6 +131,10 @@ pub fn show(x: i32, y: i32, content: Content) {
             label_frame(PAD, PAD + TEXT_SIZE * 2 + 6, w - PAD * 2, TEXT_SIZE + 4, &note, sub, TEXT_SIZE);
         }
         Content::Note(note) => label_frame(PAD, PAD, w - PAD * 2, TEXT_SIZE + 4, &note, text, TEXT_SIZE),
+        Content::Link { title, note } => {
+            label_frame(PAD, PAD, w - PAD * 2, TEXT_SIZE + 4, &title, text, TEXT_SIZE);
+            label_frame(PAD, PAD + TEXT_SIZE + 4, w - PAD * 2, TEXT_SIZE + 4, &note, sub, TEXT_SIZE);
+        }
         Content::Image(_, note) => {
             let mut y0 = PAD;
             if let Some(img) = img {

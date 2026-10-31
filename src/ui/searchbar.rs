@@ -16,9 +16,9 @@ use fltk::{
     input::Input,
     prelude::*,
 };
+use std::{cell::Cell, rc::Rc};
 
 const OPEN_W: i32 = 28;
-const INPUT_W: i32 = 228;
 /// 欄の中の × の幅。
 const CLEAR_W: i32 = 22;
 const PANEL_H: i32 = 28;
@@ -70,6 +70,8 @@ pub struct SearchBar {
     panel: Flex,
     /// 入力欄と × をまとめた枠（欄の地色で塗る）。配色を切り替えたときに塗り直す。
     fields: Vec<Flex>,
+    /// 虫眼鏡 + 検索欄の全体の幅（置換の段も同じ幅にする）。右端の欄の幅に合わせて変わる。
+    width: Rc<Cell<i32>>,
 }
 
 fn rgb((r, g, b): (u8, u8, u8)) -> Color {
@@ -100,7 +102,7 @@ fn style_input(i: &mut Input) {
 }
 
 /// 入力欄と、その中の右端の × を 1 つの枠にまとめて `parent` に足す。× は入力欄と同じ地色にする。
-fn field<F: Fn(FindCmd) + Clone + 'static>(parent: &mut Flex, font: fltk::enums::Font, size: i32, tip: &str, clear_tip: &str, clear: FindCmd, on_cmd: &F) -> (Flex, Input, Button) {
+fn field<F: Fn(FindCmd) + Clone + 'static>(parent: &mut Flex, width: i32, font: fltk::enums::Font, size: i32, tip: &str, clear_tip: &str, clear: FindCmd, on_cmd: &F) -> (Flex, Input, Button) {
     let mut row = Flex::default().row();
     row.set_frame(FrameType::FlatBox);
     row.set_color(rgb(field_bg()));
@@ -118,13 +120,15 @@ fn field<F: Fn(FindCmd) + Clone + 'static>(parent: &mut Flex, font: fltk::enums:
     let cb = on_cmd.clone();
     x.set_callback(move |_| cb(clear));
     row.end();
-    parent.fixed(&row, INPUT_W);
+    parent.fixed(&row, width - OPEN_W);
     (row, input, x)
 }
 
 /// 検索バーを、作りかけのツールバー `bar` の最後に足す。`font` は入力欄の文字（編集領域と同じにする）。
+/// `width` は虫眼鏡と検索欄を合わせた幅（右端の欄の幅に合わせる）。
 /// 作った直後は閉じている（虫眼鏡と検索欄だけ）。
-pub fn build<F: Fn(FindCmd) + Clone + 'static>(bar: &mut Flex, font: fltk::enums::Font, size: i32, on_cmd: F) -> SearchBar {
+pub fn build<F: Fn(FindCmd) + Clone + 'static>(bar: &mut Flex, width: i32, font: fltk::enums::Font, size: i32, on_cmd: F) -> SearchBar {
+    let width = width.max(OPEN_W + CLEAR_W + 20);
     let mut open_btn = Button::default();
     style_button(&mut open_btn, open_tip());
     open_btn.draw(draw_magnifier);
@@ -133,7 +137,7 @@ pub fn build<F: Fn(FindCmd) + Clone + 'static>(bar: &mut Flex, font: fltk::enums
     open_btn.set_callback(move |_| cb(FindCmd::Search));
 
     let (find_row, mut input, find_x) =
-        field(bar, font, size, find_tip(), crate::lang::tr("検索を消して閉じる（Esc は閉じるだけ）", "Clear the search and close (Esc only closes)"), FindCmd::Clear, &on_cmd);
+        field(bar, width, font, size, find_tip(), crate::lang::tr("検索を消して閉じる（Esc は閉じるだけ）", "Clear the search and close (Esc only closes)"), FindCmd::Clear, &on_cmd);
     input.set_trigger(CallbackTrigger::Changed);
     let cb = on_cmd.clone();
     input.set_callback(move |_| cb(FindCmd::Changed));
@@ -147,7 +151,7 @@ pub fn build<F: Fn(FindCmd) + Clone + 'static>(bar: &mut Flex, font: fltk::enums
     panel.set_frame(FrameType::FlatBox);
     panel.set_color(rgb(color_sub()));
     panel.set_pad(0);
-    panel.resize(0, 0, OPEN_W + INPUT_W, PANEL_H);
+    panel.resize(0, 0, width, PANEL_H);
     let mut repl_btn = Button::default();
     style_button(
         &mut repl_btn,
@@ -159,6 +163,7 @@ pub fn build<F: Fn(FindCmd) + Clone + 'static>(bar: &mut Flex, font: fltk::enums
     repl_btn.set_callback(move |_| cb(if fltk::app::event_clicks() { FindCmd::ReplaceAll } else { FindCmd::ReplaceOne }));
     let (repl_row, replace, repl_x) = field(
         &mut panel,
+        width,
         font,
         size,
         crate::lang::tr("置換後の文字列（Enter で、検索中の文字列を全て置換。元に戻すで 1 回で戻る）", "Replacement text (Enter replaces all matches. Undo reverts in one step)"),
@@ -171,7 +176,7 @@ pub fn build<F: Fn(FindCmd) + Clone + 'static>(bar: &mut Flex, font: fltk::enums
     panel.end();
     bar.begin(); // 作りかけのツールバーに戻る（呼び出し側が end する）
 
-    let sb = SearchBar { bar: bar.clone(), open_btn, input, replace, buttons, side, panel, fields: vec![find_row, repl_row] };
+    let sb = SearchBar { bar: bar.clone(), open_btn, input, replace, buttons, side, panel, fields: vec![find_row, repl_row], width: Rc::new(Cell::new(width)) };
     sb.set_open(false);
     sb
 }
@@ -209,6 +214,34 @@ impl SearchBar {
         }
     }
 
+    /// 虫眼鏡 + 検索欄の全体の幅。
+    pub fn width(&self) -> i32 {
+        self.width.get()
+    }
+
+    /// 虫眼鏡 + 検索欄の全体の幅を決め直す（右端の欄の幅に連動させる）。置換の段も同じ幅にする。
+    pub fn set_width(&self, width: i32) {
+        let width = width.max(OPEN_W + CLEAR_W + 20);
+        if width == self.width.get() {
+            return;
+        }
+        self.width.set(width);
+        let mut bar = self.bar.clone();
+        bar.fixed(&self.fields[0], width - OPEN_W);
+        bar.layout();
+        let mut panel = self.panel.clone();
+        panel.fixed(&self.fields[1], width - OPEN_W);
+        if self.is_open() {
+            self.place();
+        } else {
+            panel.resize(panel.x(), panel.y(), width, PANEL_H);
+            panel.layout();
+        }
+        self.fields[0].clone().layout();
+        self.fields[1].clone().layout();
+        bar.redraw();
+    }
+
     /// 置換の段を描き直す。編集領域が自分の範囲だけ描き直すと、重ねてある置換の段が上書きされて消えるので、
     /// 編集領域の描画のたびに呼ぶ。
     pub fn redraw_overlay(&self) {
@@ -220,7 +253,7 @@ impl SearchBar {
     /// 置換の段を、検索欄の真下へ置く（ウィンドウの大きさが変わったときにも呼ぶ）。
     pub fn place(&self) {
         let mut panel = self.panel.clone();
-        panel.resize(self.open_btn.x(), self.bar.y() + self.bar.h() + PANEL_GAP, OPEN_W + INPUT_W, PANEL_H);
+        panel.resize(self.open_btn.x(), self.bar.y() + self.bar.h() + PANEL_GAP, self.width.get(), PANEL_H);
         panel.layout();
         panel.redraw();
     }

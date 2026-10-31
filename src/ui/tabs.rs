@@ -15,10 +15,12 @@ use fltk::{
 use std::{cell::Cell, path::Path, rc::Rc};
 
 pub const HEIGHT: i32 = 28;
-/// 右端の表示モードのチップの幅。
-pub const CHIP_W: i32 = 104;
-/// 表示（Text・Preview・HEX）のチップの幅。
-pub const VIEW_CHIP_W: i32 = 96;
+/// 右端の 2 つのチップ（Format・Encode）を合わせた幅は、右端の欄の幅と同じにする（検索バーも同じ幅）。
+/// 左の行番号欄の押しピンが行番号欄の幅に連動するのと対になる。これはその内訳で、
+/// Format（表示と形式）のチップの幅を返す。残りが Encode（文字コード）。
+pub fn view_chip_width(total: i32) -> i32 {
+    total * 96 / 200
+}
 const MIN_W: i32 = 48;
 const MAX_W: i32 = 160;
 const CLOSE_W: i32 = 24;
@@ -186,6 +188,46 @@ pub fn build_gutter_pin(on_resize: impl Fn(i32, bool) + 'static) -> Button {
         }
     });
     b
+}
+
+/// 右端の列（検索バー・Format・Encode・右端の欄）の幅を、左端の境目のドラッグで変えられるようにする。
+/// 左の行番号欄の押しピンの右の境目と対になる。`b` は Format のチップ（その左端が列の左端）。
+/// 境目を掴んだ間は `on_resize(列の幅, 離した)` を呼ぶ。それ以外の操作（クリック・ツールチップ）は今まで通り。
+pub fn add_side_grip(b: &mut Button, on_resize: impl Fn(i32, bool) + 'static) {
+    const GRIP: i32 = 5;
+    let resizing = Rc::new(Cell::new(false));
+    b.super_handle_first(false);
+    b.handle(move |w, ev| {
+        let edge = app::event_x() < w.x() + GRIP;
+        let column_w = |w: &Button| w.window().map_or(0, |win| win.w()) - app::event_x();
+        match ev {
+            Event::Push if edge => {
+                resizing.set(true);
+                true
+            }
+            Event::Drag | Event::Released if resizing.get() => {
+                let done = ev == Event::Released;
+                if done {
+                    resizing.set(false);
+                }
+                on_resize(column_w(w), done);
+                true
+            }
+            Event::Move | Event::Enter => {
+                if let Some(mut win) = w.window() {
+                    win.set_cursor(if edge { Cursor::WE } else { Cursor::Default });
+                }
+                false
+            }
+            Event::Leave => {
+                if let Some(mut win) = w.window() {
+                    win.set_cursor(Cursor::Default);
+                }
+                false
+            }
+            _ => false,
+        }
+    });
 }
 
 pub fn restyle_chip(b: &mut Button) {

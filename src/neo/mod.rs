@@ -24,6 +24,7 @@ pub mod inflate;
 pub mod json;
 pub mod markdown;
 pub mod mcfunction;
+pub mod mcheader;
 pub mod pathlog;
 pub mod pdftext;
 pub mod recent;
