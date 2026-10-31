@@ -4,9 +4,9 @@
 
 # ⚓｜NeoNote - FileEditor
 
-**説明：** あらゆるファイルを手軽に編集するため、艦長が利便性を追求した超汎用ファイルエディタ。
+**説明：** あらゆるデータを自在に編集するための超汎用ファイルエディタ。艦長が利便性を追求した超汎用ファイルエディタ。
 
-*Only for Writing. Light. Fast. Clickless. Tuned to be yours.*
+*~Note of Creation~*
 
 ![Rust](https://img.shields.io/badge/Rust-fltk--rs-b7410e?logo=rust)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-555)
@@ -136,6 +136,8 @@ cargo build --release
   - 選択中の項目は控えめなラインで示し、目に優しい配色で長時間でも疲れにくい。
 - 📦 **ひとつのファイルで完結**：インストールも追加の部品も不要。どこへ置いてもすぐ使える。
 - 🔤 **オリジナルフォント**：作者自作の NeoFont を同梱。
+
+*Only for Writing. Light. Fast. Clickless. Tuned to be yours.*
 
 ---
 
