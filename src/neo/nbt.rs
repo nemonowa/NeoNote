@@ -492,7 +492,11 @@ struct Parser<'a> {
 
 impl Parser<'_> {
     fn err(&self, message: impl Into<String>) -> SnbtError {
-        let before = &self.text[..self.p.min(self.text.len())];
+        let mut end = self.p.min(self.text.len());
+        while !self.text.is_char_boundary(end) {
+            end -= 1;
+        }
+        let before = &self.text[..end];
         let line = before.matches('\n').count() + 1;
         let col = before.rsplit('\n').next().map_or(0, |l| l.chars().count()) + 1;
         SnbtError { line, col, message: message.into() }

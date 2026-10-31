@@ -26,9 +26,20 @@ impl Edit {
     }
 }
 
+/// 範囲外・文字の途中の位置を、手前の文字境界へ寄せる。
+fn floor_boundary(text: &str, i: usize) -> usize {
+    let mut i = i.min(text.len());
+    while !text.is_char_boundary(i) {
+        i -= 1;
+    }
+    i
+}
+
 /// `s..e` にかかる行のまとまり `(行頭, 最終行の行末)`。行末は改行（`\n`）の手前。
 /// 選択が次の行の行頭ちょうどで終わっているときは、その行を含めない（多くのエディタと同じ）。
 fn block_range(text: &str, s: usize, e: usize) -> (usize, usize) {
+    let s = floor_boundary(text, s);
+    let e = floor_boundary(text, e.max(s));
     let ls = text[..s].rfind('\n').map_or(0, |i| i + 1);
     let last = if e > s && text.as_bytes()[e - 1] == b'\n' { e - 1 } else { e };
     let le = text[last..].find('\n').map_or(text.len(), |i| last + i);
@@ -109,6 +120,7 @@ pub fn unindent(text: &str, s: usize, e: usize) -> Option<Edit> {
 /// CRLF の行末では、End キーなどでカーソルが `\r` と `\n` の間に来る。そのまま `\r\n` を入れると `\r\r\n` に
 /// なるので、挿入位置を `\r` の手前へ戻す（戻り値の最初が 1。選択が無ければ元の `\r\n` は残る）。
 pub fn newline_with_indent(text: &str, pos: usize, default_crlf: bool) -> (usize, String) {
+    let pos = floor_boundary(text, pos);
     let ls = text[..pos].rfind('\n').map_or(0, |i| i + 1);
     let indent: String = text[ls..pos].chars().take_while(|&c| c == ' ' || c == '\t').collect();
     let crlf = match text[pos..].find('\n') {
