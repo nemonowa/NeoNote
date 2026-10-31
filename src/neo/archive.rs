@@ -263,6 +263,11 @@ pub fn read_entry(bytes: &[u8], name: &str, max: usize) -> Result<Vec<u8>, Strin
         .iter()
         .find(|c| decode_name(&cd[c.start + 46..c.start + 46 + c.name_len], c.flags) == name)
         .ok_or_else(|| if crate::lang::is_en() { format!("No {name} in the zip") } else { format!("zip の中に {name} がありません") })?;
+    extract(bytes, cd, c, name, max)
+}
+
+/// 目録の 1 件 `c`（名前は `name`）の中身を取り出す。
+fn extract(bytes: &[u8], cd: &[u8], c: &Cd, name: &str, max: usize) -> Result<Vec<u8>, String> {
     if c.flags & 1 != 0 {
         return Err(crate::lang::tr("暗号化された zip には対応していません", "Encrypted zip files are not supported").into());
     }
@@ -283,6 +288,100 @@ pub fn read_entry(bytes: &[u8], name: &str, max: usize) -> Result<Vec<u8>, Strin
         8 => crate::neo::inflate::inflate(data, max),
         m => Err(if crate::lang::is_en() { format!("Unsupported compression method ({m})") } else { format!("対応していない圧縮方式です（{m}）") }),
     }
+}
+
+/// zip（ファイル全体のバイト列）の、フォルダ以外の全項目を順に読んで `f(名前, 中身)` に渡す。目録は 1 回だけ読む。
+/// `max` を超える項目・暗号化・対応しない圧縮方式の項目は飛ばす。`f` が false を返したらそこで止める。
+pub fn each_zip_file(bytes: &[u8], max: usize, mut f: impl FnMut(&str, Vec<u8>) -> bool) -> Result<(), String> {
+    let e = find_eocd(bytes, 0)?;
+    let cd = cd_slice(bytes, &e)?;
+    let cds = read_cd(cd, &e)?;
+    for c in &cds {
+        let name = decode_name(&cd[c.start + 46..c.start + 46 + c.name_len], c.flags);
+        if name.ends_with('/') || c.usize_ > max as u64 {
+            continue;
+        }
+        if let Ok(data) = extract(bytes, cd, c, &name, max) {
+            if !f(&name, data) {
+                break;
+            }
+        }
+    }
+    Ok(())
+}
+
+// ------------------------------------------------------------------ 本文の検索
+
+/// 本文を探すファイル 1 つの大きさの上限（これより大きいファイルは探さない）。
+pub const CONTENT_MAX_FILE: usize = 4 << 20;
+
+/// 文字のファイルなら、その文字にする。NUL を含む（バイナリ）・文字として読めない物は None。
+/// UTF-8（BOM があれば除く）、UTF-16（BOM 付き）、Shift_JIS の順に試す。
+fn text_of(b: &[u8]) -> Option<std::borrow::Cow<'_, str>> {
+    use std::borrow::Cow;
+    if b.starts_with(&[0xFF, 0xFE]) {
+        return Some(encoding_rs::UTF_16LE.decode_with_bom_removal(b).0);
+    }
+    if b.starts_with(&[0xFE, 0xFF]) {
+        return Some(encoding_rs::UTF_16BE.decode_with_bom_removal(b).0);
+    }
+    if b[..b.len().min(8192)].contains(&0) {
+        return None;
+    }
+    let b = b.strip_prefix(&[0xEF, 0xBB, 0xBF][..]).unwrap_or(b);
+    match std::str::from_utf8(b) {
+        Ok(s) => Some(Cow::Borrowed(s)),
+        Err(_) => encoding_rs::SHIFT_JIS.decode_without_bom_handling_and_without_replacement(b),
+    }
+}
+
+/// `data` の本文に `needle` が含まれるか。大文字を含まなければ ASCII の大文字小文字を無視する（本文の検索と同じ）。
+fn content_has(data: &[u8], needle: &str) -> bool {
+    let Some(t) = text_of(data) else { return false };
+    if needle.bytes().any(|b| b.is_ascii_uppercase()) {
+        t.contains(needle)
+    } else {
+        t.to_ascii_lowercase().contains(needle)
+    }
+}
+
+/// フォルダ・zip の中のファイルのうち、本文に `needle` を含む物のパスを返す（`Entry::path` と同じ形）。
+/// フォルダと zip だけ（tar 系は目録しか読めないので探さない）。大きさが `CONTENT_MAX_FILE` を超える物・バイナリは飛ばす。
+/// `cancel` が true を返したら、そこで打ち切る（打ち直されたとき）。
+pub fn search_contents(root: &Path, entries: &[Entry], needle: &str, cancel: &dyn Fn() -> bool) -> Vec<String> {
+    let needle = needle.trim();
+    let mut hits = Vec::new();
+    if needle.is_empty() {
+        return hits;
+    }
+    if root.is_dir() {
+        for e in entries.iter().filter(|e| !e.is_dir && e.size <= CONTENT_MAX_FILE as u64) {
+            if cancel() {
+                break;
+            }
+            if let Ok(data) = std::fs::read(root.join(&e.path)) {
+                if content_has(&data, needle) {
+                    hits.push(e.path.clone());
+                }
+            }
+        }
+    } else if is_zip_path(root) {
+        let Ok(len) = std::fs::metadata(root).map(|m| m.len()) else { return hits };
+        if len > MAX_ZIP {
+            return hits;
+        }
+        let Ok(bytes) = std::fs::read(root) else { return hits };
+        let _ = each_zip_file(&bytes, CONTENT_MAX_FILE, |name, data| {
+            if cancel() {
+                return false;
+            }
+            if content_has(&data, needle) {
+                hits.push(name.to_string());
+            }
+            true
+        });
+    }
+    hits
 }
 
 // ------------------------------------------------------------------ 名前の検査と、編集用の文字
@@ -677,6 +776,38 @@ pub fn build_tree(entries: &[Entry]) -> Node {
     }
     sum(&mut root);
     root
+}
+
+/// 検索（検索バー）: 階層 `root` から、名前が `needle` を含む項目と、その親のフォルダだけを残した木を作る。
+/// 戻り値は (絞った木, 一致した項目の道筋)。道筋は上から下・表示の順で、名前を 1 段ずつ並べた物（根は含まない）。
+/// `content` は、本文が一致したファイルのパス（`Entry::path`）。名前が一致しなくても残す。
+/// `needle` に `/` を含めるときは、根からの道筋全体（`data/foo/bar.json`）で探す。含めなければ、名前だけで探す。
+/// 大文字を含まなければ、ASCII の大文字小文字を無視する（本文の検索と同じ）。
+pub fn filter_tree(root: &Node, needle: &str, content: &HashSet<String>) -> (Node, Vec<Vec<String>>) {
+    let needle = needle.trim_end_matches('/');
+    let mut out = Node { name: String::new(), is_dir: true, size: root.size, packed: root.packed, children: Vec::new() };
+    let mut hits: Vec<Vec<String>> = Vec::new();
+    if needle.is_empty() {
+        return (out, hits);
+    }
+    let fold = !needle.bytes().any(|b| b.is_ascii_uppercase());
+    let key = if fold { needle.to_ascii_lowercase() } else { needle.to_string() };
+    let by_path = key.contains('/');
+    fn walk(n: &Node, prefix: &mut Vec<String>, key: &str, fold: bool, by_path: bool, content: &HashSet<String>, hits: &mut Vec<Vec<String>>) -> Option<Node> {
+        prefix.push(n.name.clone());
+        let target = if by_path { prefix.join("/") } else { n.name.clone() };
+        let by_name = if fold { target.to_ascii_lowercase().contains(key) } else { target.contains(key) };
+        let own = by_name || (!n.is_dir && content.contains(&prefix.join("/"))); // 本文に一致したファイルも残す
+        if own {
+            hits.push(prefix.clone());
+        }
+        let kids: Vec<Node> = n.children.iter().filter_map(|c| walk(c, prefix, key, fold, by_path, content, hits)).collect();
+        prefix.pop();
+        (own || !kids.is_empty()).then(|| Node { name: n.name.clone(), is_dir: n.is_dir, size: n.size, packed: n.packed, children: kids })
+    }
+    let mut prefix = Vec::new();
+    out.children = root.children.iter().filter_map(|c| walk(c, &mut prefix, &key, fold, by_path, content, &mut hits)).collect();
+    (out, hits)
 }
 
 pub fn human_size(n: u64) -> String {
@@ -1075,5 +1206,66 @@ mod tests {
         let v = list_zip(&z).unwrap();
         let h = to_html("z", &v, true, "#0", "#f", "#8");
         assert!(h.contains("only/") && h.contains("deep/") && h.contains("1 files, 2 folders") && h.contains("packed 3 B"));
+    }
+
+    #[test]
+    fn filter_tree_keeps_matches_and_their_parents() {
+        let z = make_zip(&[(b"data/a/Foo.json", 0, b"1"), (b"data/b/bar.txt", 0, b"22"), (b"readme.md", 0, b"3")], b"");
+        let root = build_tree(&list_zip(&z).unwrap());
+        // 小文字だけなら大文字小文字を無視する。名前だけで探す
+        let (t, hits) = filter_tree(&root, "foo", &HashSet::new());
+        assert_eq!(hits, vec![vec!["data".to_string(), "a".to_string(), "Foo.json".to_string()]]);
+        assert_eq!(t.children.len(), 1);
+        assert_eq!(t.children[0].name, "data");
+        assert_eq!(t.children[0].children.len(), 1); // b は残らない
+        // 大文字を含めると区別する
+        assert!(filter_tree(&root, "FOO", &HashSet::new()).1.is_empty());
+        // フォルダ名に一致したら、そのフォルダも一致に数える（表示順は親が先）
+        let (_, hits) = filter_tree(&root, "a", &HashSet::new());
+        assert_eq!(hits[0], vec!["data".to_string()]);
+        // `/` を含めると道筋全体で探す
+        let (_, hits) = filter_tree(&root, "data/b/", &HashSet::new());
+        assert_eq!(hits, vec![vec!["data".to_string(), "b".to_string()], vec!["data".to_string(), "b".to_string(), "bar.txt".to_string()]]);
+        assert!(filter_tree(&root, "", &HashSet::new()).1.is_empty());
+        assert!(filter_tree(&root, "zzz", &HashSet::new()).0.children.is_empty());
+    }
+
+    #[test]
+    fn filter_tree_keeps_files_matched_by_content() {
+        let z = make_zip(&[(b"data/a/x.txt", 0, b"1"), (b"data/b/y.txt", 0, b"2"), (b"top.txt", 0, b"3")], b"");
+        let root = build_tree(&list_zip(&z).unwrap());
+        let content: HashSet<String> = ["data/b/y.txt".to_string()].into_iter().collect();
+        let (t, hits) = filter_tree(&root, "needle-not-in-names", &content);
+        assert_eq!(hits, vec![vec!["data".to_string(), "b".to_string(), "y.txt".to_string()]]);
+        assert_eq!(t.children.len(), 1);
+        assert_eq!(t.children[0].children.len(), 1);
+    }
+
+    #[test]
+    fn content_search_reads_zip_and_folder_text_only() {
+        let z = make_zip(
+            &[(b"a/one.txt", 0, b"Hello World"), (b"a/two.bin", 0, b"Hello\0World"), (b"three.txt", 0, "こんにちは".as_bytes())],
+            b"",
+        );
+        let dir = std::env::temp_dir().join(format!("neonote_cs_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        std::fs::write(dir.join("sub/f.txt"), "alpha BETA").unwrap();
+        std::fs::write(dir.join("g.dat"), b"beta\0").unwrap();
+        let ents = list_dir(&dir).unwrap();
+        let never = || false;
+        // 小文字だけなら大文字小文字を無視する。バイナリ（NUL を含む）は飛ばす
+        assert_eq!(search_contents(&dir, &ents, "beta", &never), vec!["sub/f.txt".to_string()]);
+        assert!(search_contents(&dir, &ents, "Beta", &never).is_empty());
+        let zp = dir.join("t.zip");
+        std::fs::write(&zp, &z).unwrap();
+        let zents = list_path(&zp).unwrap();
+        let mut got = search_contents(&zp, &zents, "hello", &never);
+        got.sort();
+        assert_eq!(got, vec!["a/one.txt".to_string()]);
+        assert_eq!(search_contents(&zp, &zents, "こんにちは", &never), vec!["three.txt".to_string()]);
+        // 打ち切り
+        assert!(search_contents(&dir, &ents, "beta", &|| true).is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
