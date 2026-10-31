@@ -82,7 +82,7 @@ cargo build --release
 
 ## ❱ 配色【Themes】
 
-既定は、暗い配色の **濡羽**（黒と緑）と、明るい配色の **月白**（白と青）。
+既定は、暗いテーマの **濡羽**（黒と緑）と、明るいテーマの **月白**（白と青）。
 
 | classic_dark | classic_light | nord |
 |:---:|:---:|:---:|
@@ -90,10 +90,10 @@ cargo build --release
 | **abyss** | **paper** | **sakura** |
 | ![abyss](docs/screenshots/theme_abyss.png) | ![paper](docs/screenshots/theme_paper.png) | ![sakura](docs/screenshots/theme_sakura.png) |
 
-ほかに **Discord 風**・**GitHub 風** の配色もある（各社の公式の物ではない）。
+ほかに **Discord 風**・**GitHub 風** の配色もある。
 
 検索欄の左の月のボタンを押すと濡羽と月白を切り替え、マウスを乗せると一覧から選べる。**custom** を選ぶと、設定ファイルに書いた5色（`#rrggbb`）で独自の配色を作れる。
-どの配色も、文字と背景のコントラスト比をテストで確認済み。
+どのテーマも、文字と背景のコントラスト比をテストで確認済み。
 
 ---
 
@@ -160,9 +160,9 @@ cargo build --release
 
 ## ❱ 更新履歴【ChangeLog】
 
-- **開発中：** 続きから・マウスを乗せて開くメニュー・乗せて確かめる値・HTML の色の再現・フォルダの大きさの図・最前面の固定・アプリの中に出す確認画面・日本語と英語の切り替え・新しい既定の配色（濡羽・月白）・Discord と GitHub の配色・コードの色分け・GitHub に近い Markdown のプレビューを加えた。
 - **最新（v2.1.77）：** Minecraft の NBT をテキストとツリー形式で編集できるようにし、配色の追加と右パネルを加えた。
 - **すべての履歴：** [changelog.md](changelog.md)
+- **開発中：** 続きから・マウスを乗せて開くメニュー・乗せて確かめる値・HTML の色の再現・フォルダの大きさの図・最前面の固定・アプリの中に出す確認画面・日本語と英語の切り替え・新しい既定の配色（濡羽・月白）・Discord と GitHub の配色・コードの色分け・GitHub に近い Markdown のプレビューを加えた。
 - **Discord：** [更新履歴チャンネル](https://discord.com/channels/1233036571243188296/1363604094895521944)
 
 ---
