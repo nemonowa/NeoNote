@@ -1,12 +1,9 @@
 <div align="center">
-
 <img src="assets/icon.png" width="96" alt="NeoNote">
 
-# ⚓｜NeoNote - FileEditor
+# 命名：NeoNote - FileEditor
 
-**説明：** あらゆるデータを自在に編集するための超汎用ファイルエディタ。艦長が利便性を追求した超汎用ファイルエディタ。
-
-*~Note of Creation~*
+**説明：** あらゆるデータを自在に編集するための超汎用ファイルエディタ。艦長が利便性を追求した超汎用ファイルエディタ。~Note of Creation~
 
 ![Rust](https://img.shields.io/badge/Rust-fltk--rs-b7410e?logo=rust)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-555)
