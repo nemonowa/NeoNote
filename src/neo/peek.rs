@@ -28,6 +28,11 @@ pub fn at(line: &str, at: usize, names: bool) -> Option<(Range<usize>, Peek)> {
     if at >= line.len() {
         return None;
     }
+    // 呼び出し元が文字の途中を指しても、その文字の先頭として扱う
+    let mut at = at;
+    while !line.is_char_boundary(at) {
+        at -= 1;
+    }
     // 長い行は前後だけを見る（文字の途中で切らない）
     let mut s = at.saturating_sub(WINDOW);
     while !line.is_char_boundary(s) {
@@ -154,7 +159,7 @@ fn func_around(t: &str, at: usize, names: &[&str]) -> Option<Range<usize>> {
 /// `at` を含む `&...;`（中は英数字と #・x だけ、長さ 32 まで）。
 fn entity_around(t: &str, at: usize) -> Option<Range<usize>> {
     let b = t.as_bytes();
-    let s = t[..=at].rfind('&')?;
+    let s = b[..=at].iter().rposition(|&c| c == b'&')?;
     if at - s > 32 {
         return None;
     }
@@ -254,5 +259,10 @@ mod tests {
         let long = format!("{}#00ff00 {}", "あ".repeat(400), "x".repeat(1000));
         let i = long.find("#00").unwrap() + 2;
         assert_eq!(at_(&long, i, false), Some(Peek::Color((0, 255, 0), "#00ff00".into())));
+        // 文字の途中の位置でも落ちない
+        let jp = "# 日本語の説明 &amp; 本文";
+        for i in 0..jp.len() {
+            at_(jp, i, true);
+        }
     }
 }
