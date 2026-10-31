@@ -15,7 +15,7 @@
 
 ## 構成
 
-フォルダの分け方（git に入れる物・配布物・ローカルの物）とビルドの手順は [CONTRIBUTING.md](../CONTRIBUTING.md) を参照。
+フォルダの分け方（git に入れる物・配布物・ローカルの物）とビルドの手順は [contributing.md](../contributing.md) を参照。
 
 | パス | 内容 |
 | --- | --- |

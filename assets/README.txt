@@ -57,6 +57,6 @@ Project of "NEXUS"
   Run の Reset Font で NeoFont に戻せます。
 
 ライセンス:
-  NeoNote は無償で使えます。許可のない再配布・改変は禁止です（LICENSE）。
+  NeoNote は無償で使えます。許可のない再配布・改変は禁止です（license）。
   Discord・GitHub・Minecraft は各社の商標です。NeoNote はそれらの会社と関係がありません。
   使っている第三者のソフトウェアとフォントのライセンスは、「開く」の「ライセンス」で開けます。
