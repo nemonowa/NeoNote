@@ -30,6 +30,50 @@ pub enum Content {
     Note(String),
     /// 1 行目（ID など）と、その下の案内（本文の `ns:path` にマウスを乗せたとき）。
     Link { title: String, note: String },
+    /// Minecraft のテキスト部品の見た目（色・太字・斜体・下線・取り消し線）と、その下の説明。
+    Rich(Vec<crate::neo::textcomp::Span>, String),
+}
+
+/// テキスト部品の見本の背景（Minecraft のツールチップに近い暗い色。白や黄色の文字が読めるように、配色によらず固定）。
+const RICH_BG: (u8, u8, u8) = (0x1a, 0x10, 0x24);
+
+fn rich_font(st: &crate::neo::textcomp::Style) -> Font {
+    match (st.bold, st.italic) {
+        (true, true) => Font::HelveticaBoldItalic,
+        (true, false) => Font::HelveticaBold,
+        (false, true) => Font::HelveticaItalic,
+        _ => Font::Helvetica,
+    }
+}
+
+/// 改行で行に分けた、(行ごとの (文字, 書式) の並び)。
+fn rich_lines(spans: &[crate::neo::textcomp::Span]) -> Vec<Vec<(String, crate::neo::textcomp::Style)>> {
+    let mut lines = vec![Vec::new()];
+    for sp in spans {
+        for (k, part) in sp.text.split('\n').enumerate() {
+            if k > 0 {
+                lines.push(Vec::new());
+            }
+            if !part.is_empty() {
+                lines.last_mut().unwrap().push((part.to_string(), sp.style.clone()));
+            }
+        }
+    }
+    lines.truncate(12);
+    lines
+}
+
+fn rich_size(lines: &[Vec<(String, crate::neo::textcomp::Style)>]) -> (i32, i32) {
+    let mut w = 0;
+    for l in lines {
+        let mut lw = 0;
+        for (t, st) in l {
+            draw::set_font(rich_font(st), TEXT_SIZE);
+            lw += draw::width(t).ceil() as i32;
+        }
+        w = w.max(lw);
+    }
+    (w, lines.len() as i32 * (TEXT_SIZE + 4))
 }
 
 thread_local! {
@@ -93,6 +137,11 @@ pub fn show(x: i32, y: i32, content: Content) {
         }
         Content::Note(note) => (PAD * 2 + tw(note), PAD * 2 + TEXT_SIZE + 4),
         Content::Link { title, note } => (PAD * 2 + tw(title).max(tw(note)), PAD * 2 + (TEXT_SIZE + 4) * 2),
+        Content::Rich(spans, note) => {
+            let (rw, rh) = rich_size(&rich_lines(spans));
+            draw::set_font(Font::Helvetica, TEXT_SIZE);
+            (PAD * 4 + rw.max(tw(note)), PAD * 4 + rh + TEXT_SIZE + 4)
+        }
         Content::Image(_, note) => match &img {
             Some(img) => (PAD * 2 + img.w().max(tw(note)), PAD * 3 + img.h() + TEXT_SIZE + 4),
             None => (PAD * 2 + tw(note), PAD * 2 + TEXT_SIZE + 4),
@@ -134,6 +183,34 @@ pub fn show(x: i32, y: i32, content: Content) {
         Content::Link { title, note } => {
             label_frame(PAD, PAD, w - PAD * 2, TEXT_SIZE + 4, &title, text, TEXT_SIZE);
             label_frame(PAD, PAD + TEXT_SIZE + 4, w - PAD * 2, TEXT_SIZE + 4, &note, sub, TEXT_SIZE);
+        }
+        Content::Rich(spans, note) => {
+            let lines = rich_lines(&spans);
+            let (_, rh) = rich_size(&lines);
+            let mut f = Frame::new(PAD, PAD, w - PAD * 2, rh + PAD * 2, None);
+            f.set_frame(FrameType::FlatBox);
+            f.set_color(rgb(RICH_BG));
+            f.draw(move |f| {
+                let mut y = f.y() + PAD + TEXT_SIZE;
+                for l in &lines {
+                    let mut x = f.x() + PAD;
+                    for (t, st) in l {
+                        draw::set_font(rich_font(st), TEXT_SIZE);
+                        draw::set_draw_color(rgb(st.color.unwrap_or((0xff, 0xff, 0xff))));
+                        let tw = draw::width(t).ceil() as i32;
+                        draw::draw_text(t, x, y);
+                        if st.underlined {
+                            draw::draw_line(x, y + 2, x + tw, y + 2);
+                        }
+                        if st.strikethrough {
+                            draw::draw_line(x, y - TEXT_SIZE / 3, x + tw, y - TEXT_SIZE / 3);
+                        }
+                        x += tw;
+                    }
+                    y += TEXT_SIZE + 4;
+                }
+            });
+            label_frame(PAD, PAD * 3 + rh, w - PAD * 2, TEXT_SIZE + 4, &note, sub, TEXT_SIZE);
         }
         Content::Image(_, note) => {
             let mut y0 = PAD;

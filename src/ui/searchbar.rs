@@ -1,6 +1,6 @@
 // 検索バー（ツールバーの右端）。検索欄は常に出しておく（左に虫眼鏡）。
 // 検索欄が使われる（フォーカスが入る・Ctrl+F / Ctrl+H・右クリックの Search / Replace）と、
-//   ツールバー: 🔍 [検索欄 ×]
+//   ツールバー: 🔍 [検索欄 .* W ×]   （.* は正規表現、W は単語単位のオン・オフ）
 //   その真下  : ⇄ [置換欄 ×]      （編集領域に重ねて出す。縦の場所は取らない）
 // を出す。閉じる: Esc・×。入力するたびに全てを強調して最初の 1 件を選び、Enter / F3 で次、
 // Shift+Enter / Shift+F3 で前へ進む。置換欄で Enter（か All）を押すと、検索中の文字列を全て置き換える。
@@ -21,13 +21,15 @@ use std::{cell::Cell, rc::Rc};
 const OPEN_W: i32 = 28;
 /// 欄の中の × の幅。
 const CLEAR_W: i32 = 22;
+/// 検索欄の中のオン・オフ（正規表現・単語単位）の幅。
+const TOGGLE_W: i32 = 22;
 const PANEL_H: i32 = 28;
 /// 検索の段と置換の段の間（つながった 1 つの箱に見えないように空ける）。
 const PANEL_GAP: i32 = 4;
 
 /// 「見つかりません」の印（呼び出し側は lang::tr のどちらかを渡す）。
 fn is_not_found(text: &str) -> bool {
-    text == "Not found" || text == "見つかりません"
+    text == "Not found" || text == "見つかりません" || text == "Invalid regex" || text == "正規表現が不正です"
 }
 
 fn find_tip() -> &'static str {
@@ -35,6 +37,22 @@ fn find_tip() -> &'static str {
         "検索（入力すると強調して最初の一致を選ぶ。Enter / F3 で次、Shift+Enter / Shift+F3 で前、Esc で閉じる）",
         "Find (typing highlights and selects the first match. Enter / F3 next, Shift+Enter / Shift+F3 previous, Esc closes)",
     )
+}
+fn regex_tip(on: bool) -> &'static str {
+    match (on, crate::lang::is_en()) {
+        (false, false) => "正規表現: オフ（押すとオン。置換欄では $1 で括弧の中を使える）",
+        (true, false) => "正規表現: オン（押すとオフ。置換欄では $1 で括弧の中を使える。$ は $$）",
+        (false, true) => "Regex: off (click to turn on; use $1 in the replacement)",
+        (true, true) => "Regex: on (click to turn off; use $1 in the replacement, $$ for a literal $)",
+    }
+}
+fn word_tip(on: bool) -> &'static str {
+    match (on, crate::lang::is_en()) {
+        (false, false) => "単語単位: オフ（押すとオン。前後が文字の一致は除く）",
+        (true, false) => "単語単位: オン（押すとオフ）",
+        (false, true) => "Whole word: off (click to turn on)",
+        (true, true) => "Whole word: on (click to turn off)",
+    }
 }
 fn open_tip() -> &'static str {
     crate::lang::tr("検索・置換（Ctrl+F / Ctrl+H）", "Find and replace (Ctrl+F / Ctrl+H)")
@@ -50,6 +68,10 @@ pub enum FindCmd {
     ReplaceOne,
     /// 検索中の文字列を、置換欄の文字列に全て置き換える。
     ReplaceAll,
+    /// 正規表現のオン・オフが押された。
+    ToggleRegex,
+    /// 単語単位のオン・オフが押された。
+    ToggleWord,
     /// 文字列と強調を消して、閉じる。
     Clear,
     /// 置換欄の文字列を消す。
@@ -72,6 +94,11 @@ pub struct SearchBar {
     fields: Vec<Flex>,
     /// 虫眼鏡 + 検索欄の全体の幅（置換の段も同じ幅にする）。右端の欄の幅に合わせて変わる。
     width: Rc<Cell<i32>>,
+    /// 検索欄の中の「.*」（正規表現）と「W」（単語単位）。
+    regex_btn: Button,
+    word_btn: Button,
+    regex_on: Rc<Cell<bool>>,
+    word_on: Rc<Cell<bool>>,
 }
 
 fn rgb((r, g, b): (u8, u8, u8)) -> Color {
@@ -102,7 +129,7 @@ fn style_input(i: &mut Input) {
 }
 
 /// 入力欄と、その中の右端の × を 1 つの枠にまとめて `parent` に足す。× は入力欄と同じ地色にする。
-fn field<F: Fn(FindCmd) + Clone + 'static>(parent: &mut Flex, width: i32, font: fltk::enums::Font, size: i32, tip: &str, clear_tip: &str, clear: FindCmd, on_cmd: &F) -> (Flex, Input, Button) {
+fn field<F: Fn(FindCmd) + Clone + 'static>(parent: &mut Flex, width: i32, font: fltk::enums::Font, size: i32, tip: &str, clear_tip: &str, clear: FindCmd, toggles: &[(&str, &str, FindCmd)], on_cmd: &F) -> (Flex, Input, Button, Vec<Button>) {
     let mut row = Flex::default().row();
     row.set_frame(FrameType::FlatBox);
     row.set_color(rgb(field_bg()));
@@ -112,6 +139,18 @@ fn field<F: Fn(FindCmd) + Clone + 'static>(parent: &mut Flex, width: i32, font: 
     input.set_text_font(font);
     input.set_text_size(size);
     input.set_tooltip(tip);
+    let mut tbs = Vec::new();
+    for (label, ttip, cmd) in toggles {
+        let mut t = Button::default().with_label(label);
+        style_button(&mut t, ttip);
+        t.set_frame(FrameType::NoBox);
+        t.set_down_frame(FrameType::NoBox);
+        row.fixed(&t, TOGGLE_W);
+        let cb = on_cmd.clone();
+        let cmd = *cmd;
+        t.set_callback(move |_| cb(cmd));
+        tbs.push(t);
+    }
     let mut x = Button::default().with_label("×");
     style_button(&mut x, clear_tip);
     x.set_frame(FrameType::NoBox); // 欄の地をそのまま見せる
@@ -121,7 +160,7 @@ fn field<F: Fn(FindCmd) + Clone + 'static>(parent: &mut Flex, width: i32, font: 
     x.set_callback(move |_| cb(clear));
     row.end();
     parent.fixed(&row, width - OPEN_W);
-    (row, input, x)
+    (row, input, x, tbs)
 }
 
 /// 検索バーを、作りかけのツールバー `bar` の最後に足す。`font` は入力欄の文字（編集領域と同じにする）。
@@ -136,13 +175,18 @@ pub fn build<F: Fn(FindCmd) + Clone + 'static>(bar: &mut Flex, width: i32, font:
     let cb = on_cmd.clone();
     open_btn.set_callback(move |_| cb(FindCmd::Search));
 
-    let (find_row, mut input, find_x) =
-        field(bar, width, font, size, find_tip(), crate::lang::tr("検索を消して閉じる（Esc は閉じるだけ）", "Clear the search and close (Esc only closes)"), FindCmd::Clear, &on_cmd);
+    let toggles = [
+        (".*", regex_tip(false), FindCmd::ToggleRegex),
+        ("W", word_tip(false), FindCmd::ToggleWord),
+    ];
+    let (find_row, mut input, find_x, mut tbs) =
+        field(bar, width, font, size, find_tip(), crate::lang::tr("検索を消して閉じる（Esc は閉じるだけ）", "Clear the search and close (Esc only closes)"), FindCmd::Clear, &toggles, &on_cmd);
+    let (word_btn, regex_btn) = (tbs.pop().expect("word"), tbs.pop().expect("regex"));
     input.set_trigger(CallbackTrigger::Changed);
     let cb = on_cmd.clone();
     input.set_callback(move |_| cb(FindCmd::Changed));
-    let mut buttons = vec![open_btn.clone(), find_x.clone()];
-    let side: Vec<fltk::widget::Widget> = vec![find_x.as_base_widget()];
+    let mut buttons = vec![open_btn.clone(), find_x.clone(), regex_btn.clone(), word_btn.clone()];
+    let side: Vec<fltk::widget::Widget> = vec![find_x.as_base_widget(), regex_btn.as_base_widget(), word_btn.as_base_widget()];
 
     // 置換の段は、ツールバーの部品ではなくウィンドウの直下に置く（編集領域の上に重ねる）
     let win: Option<Group> = bar.parent().and_then(|col| col.parent()); // ツールバー → 縦の並び → ウィンドウ
@@ -161,7 +205,7 @@ pub fn build<F: Fn(FindCmd) + Clone + 'static>(bar: &mut Flex, width: i32, font:
     panel.fixed(&repl_btn, OPEN_W);
     let cb = on_cmd.clone();
     repl_btn.set_callback(move |_| cb(if fltk::app::event_clicks() { FindCmd::ReplaceAll } else { FindCmd::ReplaceOne }));
-    let (repl_row, replace, repl_x) = field(
+    let (repl_row, replace, repl_x, _) = field(
         &mut panel,
         width,
         font,
@@ -169,6 +213,7 @@ pub fn build<F: Fn(FindCmd) + Clone + 'static>(bar: &mut Flex, width: i32, font:
         crate::lang::tr("置換後の文字列（Enter で、検索中の文字列を全て置換。元に戻すで 1 回で戻る）", "Replacement text (Enter replaces all matches. Undo reverts in one step)"),
         crate::lang::tr("置換欄を消す", "Clear the replacement"),
         FindCmd::ClearReplace,
+        &[],
         &on_cmd,
     );
     buttons.push(repl_btn);
@@ -176,7 +221,7 @@ pub fn build<F: Fn(FindCmd) + Clone + 'static>(bar: &mut Flex, width: i32, font:
     panel.end();
     bar.begin(); // 作りかけのツールバーに戻る（呼び出し側が end する）
 
-    let sb = SearchBar { bar: bar.clone(), open_btn, input, replace, buttons, side, panel, fields: vec![find_row, repl_row], width: Rc::new(Cell::new(width)) };
+    let sb = SearchBar { bar: bar.clone(), open_btn, input, replace, buttons, side, panel, fields: vec![find_row, repl_row], width: Rc::new(Cell::new(width)), regex_btn, word_btn, regex_on: Rc::new(Cell::new(false)), word_on: Rc::new(Cell::new(false)) };
     sb.set_open(false);
     sb
 }
@@ -211,6 +256,27 @@ impl SearchBar {
         }
         if let Some(mut win) = bar.window() {
             win.redraw();
+        }
+    }
+
+    pub fn regex(&self) -> bool {
+        self.regex_on.get()
+    }
+
+    pub fn word(&self) -> bool {
+        self.word_on.get()
+    }
+
+    /// 正規表現・単語単位のオン・オフを決めて、ボタンの見た目に反映する。
+    pub fn set_modes(&self, regex: bool, word: bool) {
+        self.regex_on.set(regex);
+        self.word_on.set(word);
+        for (b, on, tip) in [(&self.regex_btn, regex, regex_tip(regex)), (&self.word_btn, word, word_tip(word))] {
+            let mut b = b.clone();
+            b.set_label_color(if on { rgb(color_accent()) } else { rgb(color_subtext()) });
+            b.set_label_font(if on { fltk::enums::Font::HelveticaBold } else { fltk::enums::Font::Helvetica });
+            b.set_tooltip(tip);
+            b.redraw();
         }
     }
 
@@ -315,6 +381,7 @@ pub fn restyle(sb: &SearchBar) {
         b.set_label_color(rgb(color_subtext()));
         b.redraw();
     }
+    sb.set_modes(sb.regex(), sb.word());
     for i in [&sb.input, &sb.replace] {
         let mut i = i.clone();
         style_input(&mut i);

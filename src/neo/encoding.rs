@@ -177,13 +177,13 @@ pub enum Detected {
 /// 対の 3 割以上がその形で、逆の形が 1 つも無く、全体が厳密に復号でき、制御文字（改行・タブ以外）が出ないときだけ。
 /// 日本語だけの BOM なし UTF-16 は 0 が出ないので推定できない（手動で選ぶ）。
 fn guess_utf16_without_bom(bytes: &[u8]) -> Option<Encoding> {
-    if bytes.len() < 4 || bytes.len() % 2 != 0 {
+    if bytes.len() < 4 || !bytes.len().is_multiple_of(2) {
         return None;
     }
     let head = &bytes[..bytes.len().min(8192) & !1];
     let pairs = head.len() / 2;
     let (mut le, mut be) = (0usize, 0usize);
-    for p in head.chunks_exact(2) {
+    for p in head.as_chunks::<2>().0 {
         match (p[0], p[1]) {
             (c, 0) if c != 0 => le += 1,
             (0, c) if c != 0 => be += 1,

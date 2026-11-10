@@ -88,9 +88,7 @@ pub fn clear(config_dir: &Path) -> io::Result<()> {
 }
 
 fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    let tmp = path.with_extension("tmp");
-    std::fs::write(&tmp, bytes)?;
-    std::fs::rename(&tmp, path)
+    crate::neo::document::write_atomic(path, bytes)
 }
 
 #[cfg(test)]

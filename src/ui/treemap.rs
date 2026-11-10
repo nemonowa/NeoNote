@@ -11,24 +11,43 @@ pub struct Node {
 }
 
 /// 一覧から木を作る（フォルダの大きさは中のファイルの合計）。子は大きい順。
+/// 子の探しは名前の HashMap（兄弟が何万あっても 1 回あたり一定の時間）。
 pub fn build(entries: &[Entry]) -> Node {
-    let mut root = Node { is_dir: true, ..Default::default() };
-    for e in entries.iter().filter(|e| !e.is_dir) {
-        let parts: Vec<&str> = e.path.split('/').filter(|s| !s.is_empty()).collect();
-        let Some((last, dirs)) = parts.split_last() else { continue };
-        let mut cur = &mut root;
-        for d in dirs {
-            let i = match cur.children.iter().position(|c| c.is_dir && c.name == *d) {
-                Some(i) => i,
-                None => {
-                    cur.children.push(Node { name: d.to_string(), is_dir: true, ..Default::default() });
-                    cur.children.len() - 1
-                }
-            };
-            cur = &mut cur.children[i];
-        }
-        cur.children.push(Node { name: last.to_string(), size: e.size, ..Default::default() });
+    // 平らな配列に作ってから木にする（所有権の取り回しを避ける）。lookup[i] は i 番のフォルダの「名前 → 子の番号」
+    struct Slot<'a> {
+        name: &'a str,
+        size: u64,
+        is_dir: bool,
+        kids: Vec<usize>,
     }
+    let mut slots = vec![Slot { name: "", size: 0, is_dir: true, kids: Vec::new() }];
+    let mut lookup: Vec<std::collections::HashMap<&str, usize>> = vec![Default::default()];
+    for e in entries.iter().filter(|e| !e.is_dir) {
+        let mut parts = e.path.split('/').filter(|s| !s.is_empty()).peekable();
+        let mut cur = 0usize;
+        while let Some(part) = parts.next() {
+            if parts.peek().is_none() {
+                let i = slots.len();
+                slots.push(Slot { name: part, size: e.size, is_dir: false, kids: Vec::new() });
+                lookup.push(Default::default());
+                slots[cur].kids.push(i);
+            } else if let Some(&i) = lookup[cur].get(part) {
+                cur = i;
+            } else {
+                let i = slots.len();
+                slots.push(Slot { name: part, size: 0, is_dir: true, kids: Vec::new() });
+                lookup.push(Default::default());
+                slots[cur].kids.push(i);
+                lookup[cur].insert(part, i);
+                cur = i;
+            }
+        }
+    }
+    fn make(slots: &[Slot], i: usize) -> Node {
+        let s = &slots[i];
+        Node { name: s.name.to_string(), size: s.size, is_dir: s.is_dir, children: s.kids.iter().map(|&k| make(slots, k)).collect() }
+    }
+    let mut root = make(&slots, 0);
     finish(&mut root);
     root
 }
@@ -192,5 +211,14 @@ mod tests {
         let cells = layout(&t, Rect { x: 0.0, y: 0.0, w: 100.0, h: 100.0 }, 1.0, 2.0);
         assert_eq!(cells.len(), 1);
         assert_eq!(cells[0].path, "big.bin");
+    }
+
+    #[test]
+    fn build_merges_same_named_folders_and_handles_odd_paths() {
+        let t = build(&[e("a/b/x", 1), e("a/y", 2), e("a/b/z", 3), e("a//w", 4), e("/top", 5), e("a/b/", 0)]);
+        assert_eq!(t.size, 15);
+        let a = t.children.iter().find(|c| c.name == "a").unwrap();
+        assert_eq!(a.children.iter().filter(|c| c.name == "b").count(), 1);
+        assert_eq!(a.size, 10);
     }
 }

@@ -9,6 +9,8 @@ fltk = "1"
 encoding_rs = "0.8"
 pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
 lopdf = { version = "0.46.0", default-features = false }
+# 正規表現検索・単語単位の検索（Unicode の `\b` と大文字小文字の表だけ有効。サイズへの影響は docs/MEASURE.md の実測を参照）
+regex = { version = "1", default-features = false, features = ["std", "perf", "unicode-case", "unicode-perl"] }
 
 # audio: 音声ファイルの簡易再生（miniaudio の薄い包みを C でビルドして静的にリンクする。メタデータの編集と情報表示は feature なしでも使える）
 # サイズを減らしたいときは `--no-default-features` でビルドする

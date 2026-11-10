@@ -177,7 +177,7 @@ fn make_shortcut_for(exe: &Path) -> io::Result<PathBuf> {
     }
     let out = cmd.output()?;
     if !out.status.success() {
-        return Err(io::Error::new(io::ErrorKind::Other, String::from_utf8_lossy(&out.stderr).trim().to_string()));
+        return Err(io::Error::other(String::from_utf8_lossy(&out.stderr).trim().to_string()));
     }
     Ok(PathBuf::from(String::from_utf8_lossy(&out.stdout).trim()))
 }
@@ -394,7 +394,45 @@ fn local_fields(secs: i64) -> Option<(i32, u32, u32, u32, u32)> {
     let mut local = FileTime { low: 0, high: 0 };
     let mut st = SystemTime::default();
     let ok = unsafe { FileTimeToLocalFileTime(&ft, &mut local) != 0 && FileTimeToSystemTime(&local, &mut st) != 0 };
-    ok.then(|| (st.year as i32, st.month as u32, st.day as u32, st.hour as u32, st.minute as u32))
+    ok.then_some((st.year as i32, st.month as u32, st.day as u32, st.hour as u32, st.minute as u32))
+}
+
+/// ウィンドウを、ほかのウィンドウより常に手前に出す（on）／戻す（off）。できたら true。
+/// `handle` は FLTK の `raw_handle()`（Windows では HWND）。Windows 以外は今は対応していない（false）。
+#[cfg(windows)]
+pub fn set_topmost(handle: *mut std::ffi::c_void, on: bool) -> bool {
+    #[link(name = "user32")]
+    extern "system" {
+        fn SetWindowPos(hwnd: *mut std::ffi::c_void, after: isize, x: i32, y: i32, cx: i32, cy: i32, flags: u32) -> i32;
+    }
+    const HWND_TOPMOST: isize = -1;
+    const HWND_NOTOPMOST: isize = -2;
+    const SWP_NOSIZE: u32 = 0x0001;
+    const SWP_NOMOVE: u32 = 0x0002;
+    const SWP_NOACTIVATE: u32 = 0x0010;
+    if handle.is_null() {
+        return false;
+    }
+    unsafe { SetWindowPos(handle, if on { HWND_TOPMOST } else { HWND_NOTOPMOST }, 0, 0, 0, 0, SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE) != 0 }
+}
+
+#[cfg(not(windows))]
+pub fn set_topmost(_handle: *mut std::ffi::c_void, _on: bool) -> bool {
+    false
+}
+
+/// 起動を頼んだ側（利用者が今操作したプロセス）から、頼まれた側が前面に出られるようにする（Windows）。
+/// Windows は、前面を奪う動きを制限していて、これを呼ばないと、タスクバーが点滅するだけで前に出ない。
+#[cfg(windows)]
+pub fn allow_foreground_window() {
+    #[link(name = "user32")]
+    extern "system" {
+        fn AllowSetForegroundWindow(process_id: u32) -> i32;
+    }
+    const ASFW_ANY: u32 = u32::MAX;
+    unsafe {
+        AllowSetForegroundWindow(ASFW_ANY);
+    }
 }
 
 #[cfg(unix)]
@@ -486,26 +524,5 @@ mod tests {
     }
 }
 
-/// ウィンドウを、ほかのウィンドウより常に手前に出す（on）／戻す（off）。できたら true。
-/// `handle` は FLTK の `raw_handle()`（Windows では HWND）。Windows 以外は今は対応していない（false）。
-#[cfg(windows)]
-pub fn set_topmost(handle: *mut std::ffi::c_void, on: bool) -> bool {
-    #[link(name = "user32")]
-    extern "system" {
-        fn SetWindowPos(hwnd: *mut std::ffi::c_void, after: isize, x: i32, y: i32, cx: i32, cy: i32, flags: u32) -> i32;
-    }
-    const HWND_TOPMOST: isize = -1;
-    const HWND_NOTOPMOST: isize = -2;
-    const SWP_NOSIZE: u32 = 0x0001;
-    const SWP_NOMOVE: u32 = 0x0002;
-    const SWP_NOACTIVATE: u32 = 0x0010;
-    if handle.is_null() {
-        return false;
-    }
-    unsafe { SetWindowPos(handle, if on { HWND_TOPMOST } else { HWND_NOTOPMOST }, 0, 0, 0, 0, SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE) != 0 }
-}
-
 #[cfg(not(windows))]
-pub fn set_topmost(_handle: *mut std::ffi::c_void, _on: bool) -> bool {
-    false
-}
+pub fn allow_foreground_window() {}

@@ -4,7 +4,7 @@
 // 名前変更の考え方: 「パス一覧」を 1 行 1 パスの文字にして編集し、同じ行数で戻す（`to_edit_text` → `parse_edit_text`）。
 // 行を足す・消すことはできない（名前の変更だけ）。zip は中身（圧縮データ）に一切触れず、名前と目録だけを書き換える。
 use std::collections::HashSet;
-use crate::neo::tarlist;
+use crate::neo::{extfs, tarlist};
 use std::path::{Path, PathBuf};
 
 pub const MAX_ENTRIES: usize = 50_000;
@@ -46,7 +46,7 @@ fn has_zip_magic(p: &Path) -> bool {
 /// 一覧（階層ツリーの Preview）で開く対象か。フォルダ・zip・tar・tar.gz・tgz・gz。
 /// 拡張子だけで決めるので、中身が違えば（一覧を読めなければ）ふつうのファイルとして開き直される。
 pub fn is_archive_path(p: &Path) -> bool {
-    p.is_dir() || is_zip_path(p) || tarlist::kind_of(p).is_some()
+    p.is_dir() || is_zip_path(p) || tarlist::kind_of(p).is_some() || extfs::is_ext_path(p)
 }
 
 /// 名前の変更（`Rename (text)`）ができる対象か。フォルダと zip だけ（tar 系は一覧を見るだけ）。
@@ -57,11 +57,26 @@ pub fn can_rename(p: &Path) -> bool {
 // ------------------------------------------------------------------ フォルダ
 
 /// フォルダの中を再帰で一覧にする。シンボリックリンクはたどらず、一覧にも出さない。
+/// フォルダごとに仕事を分け、数本のスレッドで同時に読む（ディスクやネットワークの待ち時間を重ねる。
+/// WizTree も、MFT を使えない走査ではスレッドを増やして速くしている）。結果は並べ替えるので、順序は 1 本で読んだときと同じ。
 pub fn list_dir(root: &Path) -> Result<Vec<Entry>, String> {
-    let mut out = Vec::new();
-    let mut stack: Vec<(PathBuf, String)> = vec![(root.to_path_buf(), String::new())];
-    while let Some((dir, prefix)) = stack.pop() {
-        let rd = std::fs::read_dir(&dir).map_err(|e| format!("{}\n{e}", dir.display()))?;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Condvar, Mutex};
+
+    struct Queue {
+        jobs: Vec<(PathBuf, String)>,
+        /// 読んでいる最中のスレッド数。キューが空でこれも 0 なら、全て終わり。
+        active: usize,
+        error: Option<String>,
+    }
+    let q = Mutex::new(Queue { jobs: vec![(root.to_path_buf(), String::new())], active: 0, error: None });
+    let cv = Condvar::new();
+    let count = AtomicUsize::new(0);
+    let threads = std::thread::available_parallelism().map_or(2, |n| n.get() * 2).clamp(2, 8);
+
+    // 1 つのフォルダを読む。読んだ項目は `out` へ、中のフォルダは `subs` へ
+    let scan = |dir: &Path, prefix: &str, out: &mut Vec<Entry>, subs: &mut Vec<(PathBuf, String)>| -> Result<(), String> {
+        let rd = std::fs::read_dir(dir).map_err(|e| format!("{}\n{e}", dir.display()))?;
         for ent in rd {
             let ent = ent.map_err(|e| e.to_string())?;
             let ft = ent.file_type().map_err(|e| e.to_string())?;
@@ -72,20 +87,66 @@ pub fn list_dir(root: &Path) -> Result<Vec<Entry>, String> {
                 .file_name()
                 .into_string()
                 .map_err(|_| if crate::lang::is_en() { format!("Name is not UTF-8: {}", ent.path().display()) } else { format!("UTF-8 でない名前があります: {}", ent.path().display()) })?;
-            if out.len() >= MAX_ENTRIES {
+            if !ft.is_dir() && !ft.is_file() {
+                continue;
+            }
+            if count.fetch_add(1, Ordering::Relaxed) >= MAX_ENTRIES {
                 return Err(if crate::lang::is_en() { format!("Too many entries (up to {MAX_ENTRIES})") } else { format!("項目が多すぎます（{MAX_ENTRIES} 件まで）") });
             }
             if ft.is_dir() {
                 let rel = format!("{prefix}{name}/");
                 out.push(Entry { path: rel.clone(), is_dir: true, size: 0, packed: None });
-                stack.push((ent.path(), rel));
-            } else if ft.is_file() {
+                subs.push((ent.path(), rel));
+            } else {
                 let size = ent.metadata().map(|m| m.len()).unwrap_or(0);
                 out.push(Entry { path: format!("{prefix}{name}"), is_dir: false, size, packed: None });
             }
         }
+        Ok(())
+    };
+
+    let parts: Vec<Vec<Entry>> = std::thread::scope(|sc| {
+        let workers: Vec<_> = (0..threads)
+            .map(|_| {
+                sc.spawn(|| {
+                    let mut mine: Vec<Entry> = Vec::new();
+                    let mut g = q.lock().unwrap();
+                    loop {
+                        if g.error.is_some() {
+                            break;
+                        }
+                        if let Some((dir, prefix)) = g.jobs.pop() {
+                            g.active += 1;
+                            drop(g);
+                            let mut subs = Vec::new();
+                            let r = scan(&dir, &prefix, &mut mine, &mut subs);
+                            g = q.lock().unwrap();
+                            g.active -= 1;
+                            match r {
+                                Ok(()) => g.jobs.extend(subs),
+                                Err(e) => {
+                                    g.error.get_or_insert(e);
+                                }
+                            }
+                            cv.notify_all();
+                        } else if g.active == 0 {
+                            cv.notify_all();
+                            break;
+                        } else {
+                            g = cv.wait(g).unwrap();
+                        }
+                    }
+                    mine
+                })
+            })
+            .collect();
+        workers.into_iter().map(|w| w.join().unwrap_or_default()).collect()
+    });
+    if let Some(e) = q.into_inner().unwrap().error {
+        return Err(e);
     }
-    out.sort_by(|a, b| a.path.cmp(&b.path));
+    let mut out: Vec<Entry> = parts.into_iter().flatten().collect();
+    out.sort_unstable_by(|a, b| a.path.cmp(&b.path)); // パスは重ならないので、不安定ソートでも順序は決まる
     Ok(out)
 }
 
@@ -248,6 +309,8 @@ pub fn list_path(p: &Path) -> Result<Vec<Entry>, String> {
         list_dir(p)
     } else if let Some(k) = tarlist::kind_of(p) {
         tarlist::list_file(p, k)
+    } else if extfs::is_ext_path(p) {
+        extfs::list_file(p)
     } else {
         list_zip_file(p)
     }
@@ -346,7 +409,7 @@ fn content_has(data: &[u8], needle: &str) -> bool {
 }
 
 /// フォルダ・zip の中のファイルのうち、本文に `needle` を含む物のパスを返す（`Entry::path` と同じ形）。
-/// フォルダと zip だけ（tar 系は目録しか読めないので探さない）。大きさが `CONTENT_MAX_FILE` を超える物・バイナリは飛ばす。
+/// フォルダ・zip・ext2/3/4 のイメージ（tar 系は目録しか読めないので探さない）。大きさが `CONTENT_MAX_FILE` を超える物・バイナリは飛ばす。
 /// `cancel` が true を返したら、そこで打ち切る（打ち直されたとき）。
 pub fn search_contents(root: &Path, entries: &[Entry], needle: &str, cancel: &dyn Fn() -> bool) -> Vec<String> {
     let needle = needle.trim();
@@ -372,6 +435,16 @@ pub fn search_contents(root: &Path, entries: &[Entry], needle: &str, cancel: &dy
         }
         let Ok(bytes) = std::fs::read(root) else { return hits };
         let _ = each_zip_file(&bytes, CONTENT_MAX_FILE, |name, data| {
+            if cancel() {
+                return false;
+            }
+            if content_has(&data, needle) {
+                hits.push(name.to_string());
+            }
+            true
+        });
+    } else if extfs::is_ext_path(root) {
+        let _ = extfs::each_file(root, CONTENT_MAX_FILE as u64, |name, data| {
             if cancel() {
                 return false;
             }
@@ -1266,6 +1339,41 @@ mod tests {
         assert_eq!(search_contents(&zp, &zents, "こんにちは", &never), vec!["three.txt".to_string()]);
         // 打ち切り
         assert!(search_contents(&dir, &ents, "beta", &|| true).is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn list_dir_parallel_walk_is_sorted_and_stops_on_error() {
+        let r = std::env::temp_dir().join(format!("neonote_ld_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&r);
+        for d in 0..30 {
+            std::fs::create_dir_all(r.join(format!("d{d}/sub"))).unwrap();
+            for f in 0..5 {
+                std::fs::write(r.join(format!("d{d}/sub/f{f}")), b"xy").unwrap();
+            }
+        }
+        let v = list_dir(&r).unwrap();
+        assert_eq!(v.len(), 30 * 2 + 30 * 5);
+        assert!(v.windows(2).all(|w| w[0].path < w[1].path));
+        assert!(list_dir(&r.join("nope")).is_err());
+        let _ = std::fs::remove_dir_all(&r);
+    }
+
+    #[test]
+    fn search_contents_reads_inside_ext_images() {
+        let dir = std::env::temp_dir().join(format!("neonote_ext_search_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("src/d")).unwrap();
+        std::fs::write(dir.join("src/a.txt"), "needle in a haystack").unwrap();
+        std::fs::write(dir.join("src/d/b.txt"), "nothing").unwrap();
+        std::fs::write(dir.join("src/d/c.bin"), [0u8, 1, 2, 3]).unwrap();
+        let img = dir.join("t.img");
+        let ok = std::process::Command::new("mke2fs").args(["-q", "-F", "-t", "ext4", "-d"]).arg(dir.join("src")).arg(&img).arg("8M").output().map(|o| o.status.success()).unwrap_or(false);
+        if ok {
+            let ents = list_path(&img).unwrap();
+            assert_eq!(search_contents(&img, &ents, "needle", &|| false), vec!["a.txt".to_string()]);
+            assert!(search_contents(&img, &ents, "needle", &|| true).is_empty(), "打ち切りの合図で止まる");
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

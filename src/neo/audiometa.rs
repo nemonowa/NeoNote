@@ -279,7 +279,7 @@ fn decode_text(enc: u8, b: &[u8]) -> Option<String> {
                 (enc == 2, b)
             };
             let units: Vec<u16> =
-                body.chunks_exact(2).map(|c| if big { u16::from_be_bytes([c[0], c[1]]) } else { u16::from_le_bytes([c[0], c[1]]) }).collect();
+                body.as_chunks::<2>().0.iter().map(|c| if big { u16::from_be_bytes([c[0], c[1]]) } else { u16::from_le_bytes([c[0], c[1]]) }).collect();
             String::from_utf16_lossy(&units)
         }
         _ => return None,
@@ -948,7 +948,7 @@ fn esc(s: &str, out: &mut String) {
             '>' => out.push_str("&gt;"),
             '&' => out.push_str("&amp;"),
             '"' => out.push_str("&quot;"),
-            '\n' => out.push_str(" "),
+            '\n' => out.push(' '),
             c => out.push(c),
         }
     }

@@ -705,7 +705,7 @@ fn number(w: &str) -> Option<Tag> {
         "-Infinity" => Some(f64::NEG_INFINITY),
         _ => None,
     };
-    let is_int = !body.is_empty() && body.trim_start_matches(['-', '+']).chars().all(|c| c.is_ascii_digit()) && body.trim_start_matches(['-', '+']).len() > 0;
+    let is_int = !body.is_empty() && body.trim_start_matches(['-', '+']).chars().all(|c| c.is_ascii_digit()) && !body.trim_start_matches(['-', '+']).is_empty();
     match suffix {
         Some('b') if is_int => body.parse::<i8>().ok().map(Tag::Byte),
         Some('s') if is_int => body.parse::<i16>().ok().map(Tag::Short),

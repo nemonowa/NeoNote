@@ -309,13 +309,13 @@ pub fn build<F: Fn(Action) + Clone + 'static, T>(on_action: F, extra: impl FnOnc
                 w.redraw();
                 if ev == Event::Enter {
                     let cb = cb.clone();
-                    hovermenu::hover(w, menu, Some(main), move |a| cb(a));
+                    hovermenu::hover(w, menu, Some(main), cb);
                 }
                 return ev == Event::Enter;
             }
             if ev == Event::Push && app::event_mouse_button() == app::MouseButton::Right {
                 let cb = cb.clone();
-                hovermenu::open(w, menu, Some(main), move |a| cb(a));
+                hovermenu::open(w, menu, Some(main), cb);
                 return true;
             }
             if ev == Event::Push {
