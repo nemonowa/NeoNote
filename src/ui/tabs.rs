@@ -45,6 +45,13 @@ pub enum TabCmd {
     New,
     /// 並べ替え（文書の id, 移動先の位置。全タブの中での 0 始まりの番号）。
     Move(u64, usize),
+    /// ウィンドウの外へ落とした（文書の id, 落とした画面の座標 x, y）。ほかのウィンドウの上なら、そこへ移す。
+    Detach(u64, i32, i32),
+}
+
+/// 画面の座標 (x, y) が、左上 (left, top)・大きさ (w, h) の四角の中か。
+pub fn point_in(x: i32, y: i32, left: i32, top: i32, w: i32, h: i32) -> bool {
+    x >= left && y >= top && x < left + w && y < top + h
 }
 
 /// タブに出す名前。未保存の新規は "Untitled"、変更ありは先頭に `*`、読込中は `Loading... `。
@@ -351,7 +358,13 @@ pub fn rebuild<F: Fn(TabCmd) + Clone + 'static>(bar: &mut Flex, tabs: &[TabInfo]
                         win.set_cursor(Cursor::Default);
                     }
                     DROP_X.with(|d| d.set(None));
-                    cb(TabCmd::Move(id, first + slot_at_mouse(btn)));
+                    let (rx, ry) = (app::event_x_root(), app::event_y_root());
+                    let outside = btn.window().is_some_and(|w| !point_in(rx, ry, w.x_root(), w.y_root(), w.w(), w.h()));
+                    if outside {
+                        cb(TabCmd::Detach(id, rx, ry));
+                    } else {
+                        cb(TabCmd::Move(id, first + slot_at_mouse(btn)));
+                    }
                     true
                 }
                 _ => false,
@@ -392,6 +405,15 @@ pub fn rebuild<F: Fn(TabCmd) + Clone + 'static>(bar: &mut Flex, tabs: &[TabInfo]
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn point_in_is_inclusive_of_the_top_left_and_exclusive_of_the_far_edge() {
+        assert!(point_in(10, 10, 10, 10, 5, 5));
+        assert!(point_in(14, 14, 10, 10, 5, 5));
+        assert!(!point_in(15, 12, 10, 10, 5, 5));
+        assert!(!point_in(12, 9, 10, 10, 5, 5));
+        assert!(point_in(-5, -5, -10, -10, 10, 10)); // 画面の外（左・上）にあるウィンドウ
+    }
 
     #[test]
     fn label_shows_name_dirty_mark_and_loading() {

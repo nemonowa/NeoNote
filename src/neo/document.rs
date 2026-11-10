@@ -126,9 +126,11 @@ pub fn encode_for_save(text: &str, enc: Encoding, bom: bool) -> encoding::Encode
 }
 
 /// 一時ファイルに書いてからリネームする。書込中に失敗しても元ファイルを壊さない。
+/// 一時ファイルの名前にプロセスの番号を入れる: ウィンドウ（プロセス）が複数あって、同じファイル（設定など）を
+/// 同時に書いても、互いの一時ファイルを横取りしてリネームに失敗することがない。
 pub fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let mut tmp_name = path.file_name().unwrap_or_default().to_os_string();
-    tmp_name.push(".neonote.tmp");
+    tmp_name.push(format!(".neonote.{}.tmp", std::process::id()));
     let tmp = path.with_file_name(tmp_name);
 
     let result = (|| {
@@ -215,7 +217,7 @@ mod tests {
         assert_eq!(load(&p, None).unwrap().text, "こんにちは");
         write_atomic(&p, b"x").unwrap();
         assert_eq!(load(&p, None).unwrap().text, "x");
-        assert!(!d.join("a.txt.neonote.tmp").exists());
+        assert!(!d.join(format!("a.txt.neonote.{}.tmp", std::process::id())).exists());
     }
 
     #[test]

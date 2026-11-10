@@ -52,7 +52,7 @@ fn windows_icon() {
         out.extend((data.len() as u32).to_le_bytes());
         out.extend(32u32.to_le_bytes());
         for v in [0xFFFF, kind, 0xFFFF, id] {
-            out.extend((v as u16).to_le_bytes());
+            out.extend(v.to_le_bytes());
         }
         out.extend(0u32.to_le_bytes()); // DataVersion
         out.extend(0x1030u16.to_le_bytes()); // MOVEABLE | PURE | DISCARDABLE
@@ -60,7 +60,7 @@ fn windows_icon() {
         out.extend(0u32.to_le_bytes());
         out.extend(0u32.to_le_bytes());
         out.extend(data);
-        while out.len() % 4 != 0 {
+        while !out.len().is_multiple_of(4) {
             out.push(0);
         }
     }

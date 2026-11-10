@@ -133,7 +133,7 @@ mod tests {
         assert_eq!(&T[expand(T, p, p).0..expand(T, p, p).1], "日本語です");
         let after_foo = 3; // "foo" の直後
         assert_eq!(word_at(T, after_foo), Some((0, 3)));
-        assert_eq!(word_at(T, 3 + 0).map(|(s, e)| &T[s..e]), Some("foo"));
+        assert_eq!(word_at(T, 3).map(|(s, e)| &T[s..e]), Some("foo"));
     }
 
     #[test]

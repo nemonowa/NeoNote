@@ -1,10 +1,16 @@
 // GUI(fltk) を一切 import しない層。GUI なしでテストできる。
 pub mod archive;
+pub mod backup;
+pub mod datapack;
+pub mod lineops;
+pub mod textcomp;
+mod fuzz;
 pub mod audiometa;
 pub mod book;
 pub mod code;
 pub mod config;
 pub mod doctext;
+pub mod extfs;
 pub mod document;
 pub mod goto;
 pub mod encoding;
@@ -20,6 +26,7 @@ pub mod unsaved;
 pub mod imagefile;
 pub mod imgmeta;
 pub mod indent;
+pub mod ipc;
 pub mod inflate;
 pub mod json;
 pub mod markdown;
@@ -32,6 +39,9 @@ pub mod selection;
 pub mod sheet;
 pub mod tarlist;
 pub mod viewmode;
+pub mod viewstate;
+#[cfg(test)]
+mod perf;
 pub mod zoom;
 pub mod deflate;
 pub mod nbt;

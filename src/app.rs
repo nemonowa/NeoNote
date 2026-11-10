@@ -4,7 +4,7 @@
 // タブ: 文書ごとの状態は Doc に持ち、Ui は文書の一覧と「いま表示している文書」を持つ。
 // 検索バー（常駐）・タブの並べ替え・セッション復元: 設計書の「検索バー」「タブの並べ替え」「セッション復元」の節を参照。
 use crate::audioplay;
-use crate::neo::{unsaved, archive, audiometa, book, nbt, nbtedit::{self, Seg}, region, doctext, htmlview, imgmeta, peek, imagefile, pdftext, markdown, code, config, document::{self, Mode}, dropped, encoding::Encoding, eol::{self, Eol}, goto, hex, history::{self, History}, indent, json, mcfunction, mcheader, pathlog, zoom, recent, replace, selection, sheet, viewmode};
+use crate::neo::{unsaved, archive, backup, datapack, lineops, textcomp, extfs, ipc, audiometa, book, nbt, nbtedit::{self, Seg}, region, doctext, htmlview, imgmeta, peek, imagefile, pdftext, markdown, code, config, document::{self, Mode}, dropped, encoding::Encoding, eol::{self, Eol}, goto, hex, history::{self, History}, indent, json, mcfunction, mcheader, pathlog, zoom, recent, replace, selection, sheet, viewmode, viewstate};
 use crate::ui::{confirm, menu::{self, Action}, nbttree::NbtTree, peekwin, searchbar::{self, FindCmd, SearchBar}, sidepanel::{self, SidePanel}, skin, tabs::{self, TabCmd, TabInfo}, toolbar, treemap};
 use crate::{dev, log, platform, ui::theme::{self, *}};
 use fltk::{
@@ -109,7 +109,9 @@ pub fn window_title(path: Option<&Path>, pos: Option<(usize, usize)>, chars: usi
 
 enum Msg {
     /// 読込の結果（文書の id, パス, 結果）。読込中にタブが閉じられていたら捨てる。
-    Loaded(u64, PathBuf, Result<document::Loaded, String>),
+    Loaded(u64, PathBuf, Result<(document::Loaded, Eol), String>),
+    /// 大きな文書の残りを、少しずつ足す（文書の id）。
+    AppendTail(u64),
     /// ツールバーのボタンが選ばれた。
     Do(Action),
     /// タブバーの操作。
@@ -144,6 +146,8 @@ enum Msg {
     SideMenu(String, bool),
     SideWidth(i32, bool),
     GutterWidth(i32, bool),
+    /// 別のウィンドウ（プロセス）からの依頼（ファイルを開く・タブを受け取るなど）。
+    Ipc(ipc::Request),
 }
 
 /// 音声の Preview に出す内容（別スレッドでファイルを読んで作る）。
@@ -237,6 +241,8 @@ struct Doc {
     format_auto: Cell<bool>,
     /// 前回の未保存の変更（読み込みが終わったら本文に戻す）。
     pending_restore: RefCell<Option<String>>,
+    /// 大きな文書の、まだ足していない残り（本文, 次に足す位置）。足し終えるまで loading のまま。
+    tail: RefCell<Option<(String, usize)>>,
     /// pdf の Preview 用に取り出した文字（ページごと）。None は未取得か取得中。
     pdf_text: RefCell<Option<Vec<String>>>,
     /// pdf の文字の取り出しに失敗した理由（あれば Preview に出す）。
@@ -343,6 +349,8 @@ struct Ui {
     resume: Cell<bool>,
     /// 最後に書いた控えの中身の指紋（同じなら書き直さない）。
     unsaved_sig: Cell<u64>,
+    /// 閉じたファイルのカーソル位置の記憶（neo/viewstate.rs）。同じファイルを開き直したとき、変わっていなければ戻す。
+    view_states: RefCell<Vec<viewstate::Entry>>,
     /// 本文の値の小窓（peekwin）: 出している値の (文書, 始まり, 終わり) と、マウスが止まっている (x, y, 回数)。
     peek_at: Cell<Option<(u64, i32, i32)>>,
     peek_still: Cell<(i32, i32, u32)>,
@@ -371,6 +379,8 @@ struct Ui {
     last_search: RefCell<String>,
     /// last_search を大文字小文字をゆるく比べる（スマートケース）か。右クリックの Search は厳密（false）。
     last_smart: Cell<bool>,
+    /// 直近の検索で、正規表現が不正だったか（件数の欄に「不正」と出す）。
+    find_err: Cell<bool>,
     /// フォルダ・zip の検索で、本文が一致したファイル（文書の id, 検索した文字列, 一致したパス）。検索し終えた物だけ。
     arch_content: RefCell<Option<(u64, String, std::collections::HashSet<String>)>>,
     /// 本文の検索の世代。打ち直すと増やして、前の検索を打ち切らせる。
@@ -378,6 +388,10 @@ struct Ui {
     /// このウィンドウがタブの組を config.txt の session に書く役か。引数なしで起動したウィンドウだけ。
     /// ゲームのドロップで起動した（引数ありの）ウィンドウは、保存済みのセッションに触れない。
     session_owner: bool,
+    /// ほかの起動と連絡する待ち受け（持っている間、ファイルを渡される・タブを移される）。
+    ipc: RefCell<Option<ipc::Server>>,
+    /// 閉じたタブのファイル（新しい順。Ctrl+Shift+T で開き直す。最大 CLOSED_MAX 件）。
+    closed: RefCell<Vec<PathBuf>>,
     /// Copy to Clipboard History で貯めたテキスト（全文書で共通。この起動中だけ）。
     clip_history: RefCell<History>,
     /// 設定フォルダの config.txt。場所が決められなければ None（保存しない）。
@@ -444,10 +458,47 @@ fn meta_label(img: &Path) -> PathBuf {
     img.with_file_name(n)
 }
 
+/// 読み込んだ文書の改行コードを決め、CRLF だけの文書は LF にする（FLTK は \r を印として描くため。保存のときに CRLF へ戻す）。
+/// 大きな文書では時間がかかるので、読み込みのスレッドで済ませる。
+fn with_eol(r: Result<document::Loaded, String>) -> Result<(document::Loaded, Eol), String> {
+    r.map(|mut l| {
+        let eol = if l.hex { Eol::platform_default() } else { eol::detect(&l.text, Eol::platform_default()) };
+        if !l.hex && eol == Eol::Crlf {
+            l.text = eol::convert(&l.text, Eol::Lf);
+        }
+        (l, eol)
+    })
+}
+
+/// これより大きな文書は、先頭だけ先に出して残りを少しずつ足す。
+const PROGRESSIVE_MIN: usize = 16 * 1024 * 1024;
+/// 先に出す先頭の大きさと、1 回に足す大きさ（行の切れ目まで伸ばす）。
+const PROGRESSIVE_HEAD: usize = 2 * 1024 * 1024;
+const PROGRESSIVE_STEP: usize = 8 * 1024 * 1024;
+
+/// `text` の `at` 以降の最初の改行の直後（無ければ末尾）。文字の途中では切らない。
+fn split_at_line(text: &str, at: usize) -> usize {
+    if at >= text.len() {
+        return text.len();
+    }
+    // バイトで探す（`at` が文字の途中でもよい。改行の直後は必ず文字の切れ目）
+    text.as_bytes()[at..].iter().position(|&c| c == b'\n').map_or(text.len(), |i| at + i + 1)
+}
+
+/// 閉じたタブを覚えておく数。
+const CLOSED_MAX: usize = 20;
+
+/// 利用者のファイルを書く（上書きなら、その起動で最初の 1 回だけ元の中身を控える。`neo::backup`）。
+fn write_user(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    backup::before_overwrite(path);
+    document::write_atomic(path, bytes)
+}
+
 /// 音声のタグの書き戻し。先頭・末尾の大きさが変わらないときは、その場で上書きする（大きなファイルを書き直さない）。
 /// それ以外は一時ファイルへ書いて置き換える。
 fn write_audio_patch(path: &Path, old: &[u8], p: &audiometa::Patch) -> std::io::Result<()> {
     use std::io::{Seek, SeekFrom, Write};
+    backup::before_overwrite(path);
     if !p.in_place {
         return document::write_atomic(path, &p.apply(old));
     }
@@ -484,7 +535,7 @@ fn apply_archive_names(root: &Path, old: &[archive::Entry], new: Vec<String>) ->
             }
             let bytes = std::fs::read(root).map_err(|e| format!("{}\n{e}", root.display()))?;
             let out = archive::rename_zip(&bytes, &new)?;
-            document::write_atomic(root, &out).map_err(|e| format!("{}\n{e}", root.display()))?;
+            write_user(root, &out).map_err(|e| format!("{}\n{e}", root.display()))?;
         }
     }
     Ok((n, archive::list_path(root)?))
@@ -570,6 +621,7 @@ impl Ui {
             preview_as: Cell::new(None),
             format_auto: Cell::new(true),
             pending_restore: RefCell::new(None),
+            tail: RefCell::new(None),
             pdf_text: RefCell::new(None),
             pdf_error: RefCell::new(None),
             pdf_busy: Cell::new(false),
@@ -681,8 +733,32 @@ impl Ui {
                 return;
             }
         }
+        if let Some(p) = d.st.borrow().path.clone().filter(|p| p.is_file()) {
+            let mut c = self.closed.borrow_mut();
+            c.retain(|q| q != &p);
+            c.insert(0, p);
+            c.truncate(CLOSED_MAX);
+        }
         self.remove_doc(id);
         self.backup_unsaved(false); // 破棄したタブの控えを残さない
+    }
+
+    /// 直前に閉じたタブ（保存してあるファイル）を開き直す。消えたファイルは飛ばす。
+    fn reopen_closed(self: &Rc<Self>) {
+        loop {
+            let Some(p) = ({
+                let mut c = self.closed.borrow_mut();
+                (!c.is_empty()).then(|| c.remove(0))
+            }) else {
+                self.flash(crate::lang::tr("開き直せるタブはありません", "No closed tab to reopen"));
+                return;
+            };
+            if p.is_file() {
+                let id = self.open_path(p);
+                self.activate(id);
+                return;
+            }
+        }
     }
 
     /// 確認なしで文書を取り除く。最後の 1 つなら終了する。
@@ -694,6 +770,10 @@ impl Ui {
                 None => return,
             }
         };
+        if let Some(d) = self.find(id) {
+            self.remember_view(&d); // 閉じる前に、カーソル位置を覚える（切り替えで動く前の、いまの位置）
+            self.save_view_states();
+        }
         if n == 1 {
             // 最後のタブを閉じた: 次の起動で何も開き直さない（×で閉じたときだけ開き直す）
             self.persist_skip(Some(id));
@@ -718,6 +798,11 @@ impl Ui {
     /// 終了する。いま開いているタブの組と表示中のタブを config.txt に残してから。
     fn quit(&self) {
         self.stop_all_audio();
+        extfs::cleanup_temp(); // ext イメージから取り出した一時ファイル
+        for d in self.docs.borrow().iter() {
+            self.remember_view(d);
+        }
+        self.save_view_states();
         self.persist();
         app::quit();
     }
@@ -876,7 +961,7 @@ impl Ui {
         if *self.tabs_shown.borrow() == (infos.clone(), width) {
             return;
         }
-        let tx = self.tx.clone();
+        let tx = self.tx;
         let mut bar = self.tabbar.borrow().clone();
         tabs::rebuild(&mut bar, &infos, width, move |c| {
             tx.send(Msg::Tab(c));
@@ -920,6 +1005,37 @@ impl Ui {
 
     // ---- 開く ----
 
+    /// 大きな文書の残りを 1 回分足す。残っていれば、次の回を頼む（その間に画面の操作を受け付ける）。
+    fn append_tail(&self, id: u64) {
+        let Some(d) = self.find(id) else { return };
+        let done = {
+            let mut tail = d.tail.borrow_mut();
+            let Some((text, pos)) = tail.as_mut() else { return };
+            let end = split_at_line(text, *pos + PROGRESSIVE_STEP);
+            d.quiet.set(true);
+            let mut b = d.buf.clone();
+            b.can_undo(false);
+            b.append(&text[*pos..end]);
+            b.can_undo(true);
+            d.quiet.set(false);
+            *pos = end;
+            end >= text.len()
+        };
+        if done {
+            *d.tail.borrow_mut() = None;
+            d.st.borrow_mut().loading = false;
+            self.refresh_tabs();
+            self.refresh_title_if_active(&d);
+            if self.is_active(&d) {
+                self.refresh_find();
+            }
+        } else {
+            // 次の回は、たまった画面の操作を先に済ませてから（続けて送ると、受け取りの繰り返しで全部を一度に足してしまう）
+            let tx = self.tx;
+            app::add_timeout3(0.001, move |_| tx.send(Msg::AppendTail(id)));
+        }
+    }
+
     /// 非同期読込を始める。この文書が読込中なら受け付けない。
     fn load_into(&self, d: &Rc<Doc>, path: PathBuf, forced: Option<Mode>) {
         if d.st.borrow().loading {
@@ -950,7 +1066,7 @@ impl Ui {
             self.refresh_title();
         }
         self.refresh_tabs();
-        let tx = self.tx.clone();
+        let tx = self.tx;
         let id = d.id;
         // フォルダと zip は中身を読まず、一覧だけを取る（zip として読めないファイルは、ふつうに開く）
         let as_archive = forced.is_none() && archive::is_archive_path(&path);
@@ -969,19 +1085,19 @@ impl Ui {
                     nbt: None,
                     region: false,
                 });
-                tx.send(Msg::Loaded(id, path, result));
+                tx.send(Msg::Loaded(id, path, with_eol(result)));
             } else if as_archive {
                 match archive::list_path(&path) {
                     Ok(v) => tx.send(Msg::Archive(id, path, Ok(v))),
                     Err(e) if path.is_dir() => tx.send(Msg::Archive(id, path, Err(e))),
                     Err(_) => {
                         let result = document::load(&path, forced);
-                        tx.send(Msg::Loaded(id, path, result))
+                        tx.send(Msg::Loaded(id, path, with_eol(result)))
                     }
                 };
             } else {
                 let result = document::load(&path, forced);
-                tx.send(Msg::Loaded(id, path, result));
+                tx.send(Msg::Loaded(id, path, with_eol(result)));
             }
             app::awake();
         });
@@ -1027,6 +1143,57 @@ impl Ui {
 
     fn unsaved_dir(&self) -> Option<PathBuf> {
         self.config_path.as_deref().and_then(Path::parent).map(Path::to_path_buf)
+    }
+
+    /// この文書のカーソル位置を覚える。保存済みの（ディスクと中身が同じ）テキストだけが対象。
+    /// 未保存の変更があると位置がディスク上の内容とずれるので、記録しない。
+    fn remember_view(&self, d: &Doc) {
+        // HEX・NBT・リージョン・画像のメタデータ・フォルダ / zip の名前一覧は、本文が元のファイルそのままではないので対象外
+        let path = {
+            let st = d.st.borrow();
+            let plain = !st.dirty && !st.loading && !st.hex && st.nbt.is_none() && !st.region_list && st.chunk_of.is_none() && st.meta_of.is_none() && st.arch_of.is_none();
+            st.path.clone().filter(|_| plain)
+        };
+        let Some(path) = path.filter(|p| !d.preview.get() && !self.is_config_file(p)) else { return };
+        let Some(fp) = viewstate::fingerprint(&path) else { return };
+        let cursor = if self.is_active(d) { self.editor.insert_position() } else { d.cursor.get() };
+        viewstate::remember(&mut self.view_states.borrow_mut(), viewstate::Entry { path, fp, cursor: cursor.max(0) });
+    }
+
+    /// 前に閉じたときのカーソル位置へ戻す。ファイルが記録したときと同じ（大きさ・更新時刻が一致）で、
+    /// 前回の未保存の変更を戻さないときだけ。HEX・設定ファイルは対象外。
+    fn restore_view(&self, d: &Doc, path: &Path, hex: bool) {
+        if hex || d.pending_restore.borrow().is_some() || d.buf.length() == 0 || self.is_config_file(path) {
+            return;
+        }
+        let Some(now) = viewstate::fingerprint(path) else { return };
+        let Some(pos) = viewstate::lookup(&self.view_states.borrow(), path, now) else { return };
+        let pos = d.buf.utf8_align(pos.clamp(0, d.buf.length()));
+        d.cursor.set(pos);
+        log::info(TAG, &format!("viewstate: restore cursor={pos} active={}", self.is_active(d)));
+        if self.is_active(d) {
+            let mut ed = self.editor.clone();
+            ed.set_insert_position(pos);
+            ed.show_insert_position();
+            // 読み込みが速いと、最初の画面の大きさが決まる前にここへ来て、スクロールが効かない（実測: 起動時に起きた）。
+            // 少し後に、同じ位置のままなら（利用者が動かしていなければ）もう一度、見える位置へ出す
+            app::add_timeout3(0.1, move |_| {
+                let mut ed = ed.clone();
+                if ed.insert_position() == pos {
+                    ed.show_insert_position();
+                }
+            });
+        }
+    }
+
+    /// 覚えた位置をファイルへ書く（書けなくても編集は止めず、ログに出すだけ）。
+    fn save_view_states(&self) {
+        let Some(dir) = self.unsaved_dir() else { return };
+        // ほかのウィンドウが書いた記録を消さないよう、ディスクの分と重ねてから書く
+        let all = viewstate::merged(viewstate::load(&dir), &self.view_states.borrow());
+        if let Err(e) = viewstate::save(&dir, &all) {
+            log::warn(TAG, &format!("表示位置を保存できませんでした: {e}"));
+        }
     }
 
     /// 未保存のタブの本文を控えに書く（続きからが有効で、引数なしで起動したウィンドウだけ）。
@@ -1086,6 +1253,216 @@ impl Ui {
         self.flash(if on { crate::lang::tr("再開: オン", "Resume: on") } else { crate::lang::tr("再開: オフ", "Resume: off") });
     }
 
+    /// 本文つきのタブを置く（未保存の変更の復元と、別のウィンドウから移されたタブで共通）。変更ありの状態で入れる。
+    /// 元のファイルがあれば、そのファイルのタブ（開いていればそれ。読込中なら読み込み後）に本文を入れ、無ければ名前の無いタブにする。
+    /// 空の名前の無いタブ（変更も中身も無い）があれば、それを使う。戻り値はタブの id。
+    fn place_text_tab(self: &Rc<Self>, path: Option<&Path>, text: String) -> u64 {
+        let target = match path {
+            Some(p) if p.exists() => Some(self.find_by_path(p).unwrap_or_else(|| {
+                let id = self.open_path(p.to_path_buf());
+                self.find(id).expect("開いたタブ")
+            })),
+            _ => None,
+        };
+        if let Some(d) = target {
+            if d.st.borrow().loading {
+                *d.pending_restore.borrow_mut() = Some(text);
+            } else {
+                d.buf.clone().set_text(&text);
+            }
+            return d.id;
+        }
+        let blank = self
+            .docs
+            .borrow()
+            .iter()
+            .find(|d| {
+                let st = d.st.borrow();
+                st.path.is_none() && !st.dirty && !st.loading && d.buf.length() == 0 && d.pending_restore.borrow().is_none()
+            })
+            .cloned();
+        let d = blank.unwrap_or_else(|| self.new_doc());
+        d.buf.clone().set_text(&text); // 変更として入れる（未保存の印が付く）
+        if let Some(p) = path {
+            log::warn(TAG, &format!("unsaved: 元のファイルが無いため、名前の無いタブにしました: {}", log::file_name(&p.to_string_lossy())));
+        }
+        d.id
+    }
+
+    /// ほかの起動と連絡する待ち受けを始める。場所が決められない・待ち受けられないときは、連絡なしで動く。
+    fn start_ipc(&self) {
+        let Some(dir) = self.unsaved_dir() else {
+            ipc::release_start_lock();
+            return;
+        };
+        let tx = self.tx;
+        match ipc::Server::start(&dir, move |req| {
+            tx.send(Msg::Ipc(req));
+            app::awake();
+        }) {
+            Ok(s) => *self.ipc.borrow_mut() = Some(s),
+            Err(e) => log::warn(TAG, &format!("ipc: 待ち受けを始められませんでした（ファイルは、ウィンドウごとに別に開きます）: {e}")),
+        }
+        ipc::release_start_lock();
+    }
+
+    fn touch_ipc(&self) {
+        if let Some(s) = self.ipc.borrow().as_ref() {
+            s.touch();
+        }
+    }
+
+    /// ウィンドウを前に出す（最小化されていれば戻す）。
+    fn raise_window(&self) {
+        self.win.clone().show();
+    }
+
+    /// 画面の座標が、このウィンドウの中か。
+    fn contains_screen_point(&self, x: i32, y: i32) -> bool {
+        self.win.shown() && tabs::point_in(x, y, self.win.x_root(), self.win.y_root(), self.win.w(), self.win.h())
+    }
+
+    /// 別のウィンドウからの依頼を処理して、答えを返す。待たせた側が諦めた依頼は、何もしない。
+    fn on_ipc(self: &Rc<Self>, req: ipc::Request) {
+        if req.cancel.load(std::sync::atomic::Ordering::Relaxed) {
+            return;
+        }
+        let ipc::Request { cmd, reply, .. } = req;
+        let r = match cmd {
+            ipc::Cmd::Raise => {
+                self.raise_window();
+                ipc::Reply::Ok
+            }
+            ipc::Cmd::Open(paths) => {
+                self.open_paths(paths);
+                self.raise_window();
+                ipc::Reply::Ok
+            }
+            ipc::Cmd::Hit(x, y) => {
+                if self.contains_screen_point(x, y) { ipc::Reply::Yes } else { ipc::Reply::No }
+            }
+            ipc::Cmd::Adopt(tab) => {
+                self.adopt_tab(tab);
+                self.raise_window();
+                ipc::Reply::Ok
+            }
+        };
+        let _ = reply.send(r);
+    }
+
+    /// 別のウィンドウから移されたタブを受け取る。変更ありなら本文ごと、無ければファイルから開く。
+    fn adopt_tab(self: &Rc<Self>, tab: ipc::Tab) {
+        let id = match (tab.dirty, tab.path) {
+            (true, path) => self.place_text_tab(path.as_deref(), tab.text),
+            (false, Some(p)) => match self.find_by_path(&p) {
+                Some(d) => d.id,
+                None => self.open_path(p),
+            },
+            (false, None) => {
+                self.new_tab();
+                self.active.get()
+            }
+        };
+        self.activate(id);
+        self.refresh_tabs();
+        self.persist();
+    }
+
+    /// 移せる形のタブを作る。移せないタブ（読込中・HEX など別の書き出し方の文書の未保存の変更）は理由を返す。
+    fn tab_for_transfer(&self, d: &Doc) -> Result<ipc::Tab, String> {
+        let st = d.st.borrow();
+        if st.loading {
+            return Err(crate::lang::tr("読み込み中のタブは移せません", "A tab that is still loading cannot be moved").to_string());
+        }
+        if !st.dirty
+            && (st.path.is_some() || d.buf.length() == 0) {
+                return Ok(ipc::Tab { path: st.path.clone(), dirty: false, text: String::new() });
+            }
+        if st.hex || st.meta_of.is_some() || st.arch_of.is_some() || st.chunk_of.is_some() || st.region_list {
+            return Err(crate::lang::tr("未保存の変更があるこの種類のタブは移せません（先に保存してください）", "This kind of tab has unsaved changes and cannot be moved (save it first)").to_string());
+        }
+        if d.buf.length() as usize > ipc::MAX_TEXT {
+            return Err(crate::lang::tr("大きすぎて移せません", "Too large to move").to_string());
+        }
+        Ok(ipc::Tab { path: st.path.clone(), dirty: true, text: d.buf.text() })
+    }
+
+    /// タブをウィンドウの外へ落とした: その下に別の NeoNote のウィンドウがあれば、そこへタブを移す。
+    /// 何も無い所なら、新しいウィンドウを起動してそこへ移す（タブが 1 つだけなら、窓を増やす意味が無いので何もしない）。
+    fn detach_tab(self: &Rc<Self>, id: u64, x: i32, y: i32) {
+        self.refresh_tabs(); // 動かしていた間の落とし先の印を消す
+        let Some(d) = self.find(id) else { return };
+        let Some(dir) = self.unsaved_dir() else { return };
+        let peer = match ipc::peers(&dir, std::process::id()).into_iter().find(|p| p.hit(x, y)) {
+            Some(p) => p,
+            None if self.docs.borrow().len() > 1 => match self.tab_for_transfer(&d) {
+                Ok(tab) if !tab.dirty && tab.path.is_some() => {
+                    // 保存済みのファイル: 新しいウィンドウでそのファイルを開けば足りる
+                    let path = tab.path.clone().unwrap_or_default();
+                    match std::env::current_exe().and_then(|exe| std::process::Command::new(exe).arg("--new-window").arg("--").arg(&path).spawn()) {
+                        Ok(_) => self.remove_doc(id),
+                        Err(e) => log::warn(TAG, &format!("新しいウィンドウを開けませんでした: {e}")),
+                    }
+                    return;
+                }
+                Ok(_) => match self.spawn_window_peer(&dir) {
+                    Some(p) => p,
+                    None => {
+                        self.flash(crate::lang::tr("新しいウィンドウを開けませんでした", "Could not open a new window"));
+                        return;
+                    }
+                },
+                Err(e) => {
+                    self.flash(&e);
+                    return;
+                }
+            },
+            None => return,
+        };
+        let tab = match self.tab_for_transfer(&d) {
+            Ok(t) => t,
+            Err(e) => {
+                self.flash(&e);
+                return;
+            }
+        };
+        match peer.adopt(&tab) {
+            Ok(()) => {
+                log::info(TAG, &format!("tab moved to pid {}", peer.pid));
+                self.remove_doc(id); // 確認なし（変更は相手へ渡した）。最後のタブなら、このウィンドウは閉じる
+                self.backup_unsaved(false);
+            }
+            Err(e) => {
+                log::warn(TAG, &format!("tab move failed: {e}"));
+                self.flash(crate::lang::tr("タブを移せませんでした", "Could not move the tab"));
+            }
+        }
+    }
+
+    /// 空の新しいウィンドウを起動し、待ち受けを始めるまで待って（最大 5 秒）、その相手を返す。
+    fn spawn_window_peer(&self, dir: &Path) -> Option<ipc::Peer> {
+        let child = std::env::current_exe().and_then(|exe| std::process::Command::new(exe).arg("--new-window").spawn()).ok()?;
+        let pid = child.id();
+        let begin = std::time::Instant::now();
+        while begin.elapsed() < std::time::Duration::from_secs(5) {
+            if let Some(p) = ipc::peers(dir, std::process::id()).into_iter().find(|p| p.pid == pid) {
+                return Some(p);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        log::warn(TAG, "新しいウィンドウが応答しませんでした");
+        None
+    }
+
+    /// 新しいウィンドウを開く（別のプロセスを `--new-window` で起動する）。
+    fn new_window(&self) {
+        let r = std::env::current_exe().and_then(|exe| std::process::Command::new(exe).arg("--new-window").spawn());
+        if let Err(e) = r {
+            log::warn(TAG, &format!("新しいウィンドウを開けませんでした: {e}"));
+            self.flash(crate::lang::tr("新しいウィンドウを開けませんでした", "Could not open a new window"));
+        }
+    }
+
     /// 前回の未保存の変更を戻す。元のファイルがあるタブは読み込み後に本文を差し替え、無ければ名前の無いタブにする。
     /// 戻したタブの数と、最初に戻したタブ。
     fn restore_unsaved(self: &Rc<Self>) -> (usize, Option<u64>) {
@@ -1094,36 +1471,8 @@ impl Ui {
         let n = entries.len();
         let mut first = None;
         for e in entries {
-            let target = match &e.path {
-                Some(p) if p.exists() => Some(self.find_by_path(p).unwrap_or_else(|| {
-                    let id = self.open_path(p.clone());
-                    self.find(id).expect("開いたタブ")
-                })),
-                _ => None,
-            };
-            match target {
-                Some(d) => {
-                    first.get_or_insert(d.id);
-                    if d.st.borrow().loading {
-                        *d.pending_restore.borrow_mut() = Some(e.text);
-                    } else {
-                        d.buf.clone().set_text(&e.text);
-                    }
-                }
-                None => {
-                    // 起動したときの空のタブ（名前も中身も変更も無い）があれば、それに入れる
-                    let blank = self.docs.borrow().iter().find(|d| {
-                        let st = d.st.borrow();
-                        st.path.is_none() && !st.dirty && !st.loading && d.buf.length() == 0 && d.pending_restore.borrow().is_none()
-                    }).cloned();
-                    let d = blank.unwrap_or_else(|| self.new_doc());
-                    first.get_or_insert(d.id);
-                    d.buf.clone().set_text(&e.text); // 変更として入れる（未保存の印が付く）
-                    if let Some(p) = &e.path {
-                        log::warn(TAG, &format!("unsaved: 元のファイルが無いため、名前の無いタブにしました: {}", log::file_name(&p.to_string_lossy())));
-                    }
-                }
-            }
+            let id = self.place_text_tab(e.path.as_deref(), e.text);
+            first.get_or_insert(id);
         }
         if n > 0 {
             log::info(TAG, &format!("unsaved: {n} tabs restored"));
@@ -1168,18 +1517,19 @@ impl Ui {
         }
     }
 
-    fn on_loaded(&self, id: u64, path: PathBuf, result: Result<document::Loaded, String>) {
+    fn on_loaded(&self, id: u64, path: PathBuf, result: Result<(document::Loaded, Eol), String>) {
         let Some(d) = self.find(id) else { return }; // 読込中にタブが閉じられた
         match result {
-            Ok(loaded) => {
+            Ok((loaded, eol)) => {
                 let path_for_view = path.clone();
-                // CRLF だけの文書は LF にして持つ（FLTK は \r を印として描くため）。保存のときに CRLF へ戻す
-                let eol = if loaded.hex { Eol::platform_default() } else { eol::detect(&loaded.text, Eol::platform_default()) };
-                let text = if !loaded.hex && eol == Eol::Crlf { eol::convert(&loaded.text, Eol::Lf) } else { loaded.text };
+                let text = loaded.text;
                 if self.is_active(&d) {
                     self.apply_wrap_for(text.len() as i32);
                 }
-                self.set_text_quiet(&d, &text);
+                // 大きな文書は、先頭だけ先に出して、残りを少しずつ足す（画面を止めない）。前回の未保存の変更を戻すときは一度に入れる
+                let progressive = !loaded.hex && text.len() > PROGRESSIVE_MIN && d.pending_restore.borrow().is_none();
+                let head_end = if progressive { split_at_line(&text, PROGRESSIVE_HEAD) } else { text.len() };
+                self.set_text_quiet(&d, &text[..head_end]);
                 log::info(
                     TAG,
                     &format!("encoding: {}{}{}", loaded.encoding.label(), if loaded.bom { " (BOM)" } else { "" }, if loaded.auto { " [auto]" } else { "" }),
@@ -1202,9 +1552,15 @@ impl Ui {
                 st.stamp = loaded.stamp;
                 st.conflict_noted = false;
                 drop(st);
+                if progressive {
+                    d.st.borrow_mut().loading = true; // 保存・自動保存・タブの移動などは、足し終えるまで受け付けない
+                    *d.tail.borrow_mut() = Some((text, head_end));
+                    self.tx.send(Msg::AppendTail(d.id));
+                }
                 if let Some(t) = d.pending_restore.borrow_mut().take() {
                     d.buf.clone().set_text(&t); // 前回の未保存の変更（未保存の印が付く）
                 }
+                self.restore_view(&d, &path, loaded.hex);
                 self.remember_recent(path);
                 self.refresh_tabs();
                 self.refresh_title_if_active(&d);
@@ -1352,7 +1708,7 @@ impl Ui {
                 write_audio_patch(&img, &b, &patch).map_err(|e| format!("{}\n{e}", img.display()))
             } else {
                 let out = imgmeta::write(&b, &text)?;
-                document::write_atomic(&img, &out).map_err(|e| format!("{}\n{e}", img.display()))
+                write_user(&img, &out).map_err(|e| format!("{}\n{e}", img.display()))
             }
         });
         match r {
@@ -1526,7 +1882,7 @@ impl Ui {
     fn save_nbt(&self, d: &Rc<Doc>, target: PathBuf) -> bool {
         let Some(raw) = self.snbt_to_raw(d) else { return false };
         let compression = d.st.borrow().nbt.as_ref().map_or(nbt::Compression::Gzip, |f| f.compression);
-        match document::write_atomic(&target, &nbt::pack(compression, &raw)) {
+        match write_user(&target, &nbt::pack(compression, &raw)) {
             Ok(()) => {
                 log::info(TAG, &format!("saved NBT: {} ({})", log::file_name(&target.to_string_lossy()), compression.label()));
                 self.remember_recent(target.clone());
@@ -1558,7 +1914,7 @@ impl Ui {
         let r = std::fs::read(region_path)
             .map_err(|e| e.to_string())
             .and_then(|b| region::replace_chunk(&b, index, compression, &raw, now))
-            .and_then(|out| document::write_atomic(region_path, &out).map_err(|e| e.to_string()));
+            .and_then(|out| write_user(region_path, &out).map_err(|e| e.to_string()));
         match r {
             Ok(()) => {
                 log::info(TAG, &format!("saved chunk {},{} of {}", index % 32, index / 32, log::file_name(&region_path.to_string_lossy())));
@@ -1706,7 +2062,7 @@ impl Ui {
                 _ => return false,
             }
         }
-        match document::write_atomic(&target, &encoded.bytes) {
+        match write_user(&target, &encoded.bytes) {
             Ok(()) => {
                 log::info(TAG, &format!("saved: {} ({})", log::file_name(&target.to_string_lossy()), enc.label()));
                 self.remember_recent(target.clone());
@@ -1768,7 +2124,7 @@ impl Ui {
                 return false;
             }
         };
-        match document::write_atomic(&target, &bytes) {
+        match write_user(&target, &bytes) {
             Ok(()) => {
                 log::info(TAG, &format!("saved: {} (HEX, {} bytes)", log::file_name(&target.to_string_lossy()), bytes.len()));
                 let pos = self.editor.insert_position();
@@ -1893,14 +2249,24 @@ impl Ui {
         Some((rel, is_dir))
     }
 
-    /// フォルダの一覧のファイルを NeoNote で開く（右パネルの「NeoNote で開く」と同じ）。zip の中身は開かないので false。
+    /// フォルダ・ext イメージの一覧のファイルを NeoNote で開く（右パネルの「NeoNote で開く」と同じ）。zip の中身は開かないので false。
+    /// ext イメージの中のファイルは、一時フォルダへ読み取り専用で取り出して開く（イメージには書き戻さない）。
     fn open_archive_file(self: &Rc<Self>, rel: &str) -> bool {
         let Some(root) = self.doc().st.borrow().path.clone() else { return false };
-        if !root.is_dir() {
-            return false;
+        if root.is_dir() {
+            self.open_paths(vec![rel.split('/').fold(root, |p, c| p.join(c))]);
+            return true;
         }
-        self.open_paths(vec![rel.split('/').fold(root, |p, c| p.join(c))]);
-        true
+        if extfs::is_ext_path(&root) {
+            match extfs::extract_to_temp(&root, rel) {
+                Ok(p) => {
+                    self.open_paths(vec![p]);
+                }
+                Err(e) => confirm::alert(&format!("{rel}\n{e}")),
+            }
+            return true;
+        }
+        false
     }
 
     /// 面積図の四角の右クリック: 開く・場所を表示・名前の変更・ごみ箱へ・パスのコピー。
@@ -1910,11 +2276,12 @@ impl Ui {
         let Some(root) = d.st.borrow().path.clone() else { return };
         let Some(old) = d.archive.borrow().clone() else { return };
         let in_folder = root.is_dir();
+        let in_ext = !in_folder && extfs::is_ext_path(&root);
         let full = rel.split('/').fold(root.clone(), |p, c| p.join(c));
         let rows = [
-            (crate::lang::tr("NeoNote で開く", "Open in NeoNote"), in_folder),
+            (crate::lang::tr("NeoNote で開く", "Open in NeoNote"), in_folder || (in_ext && !is_dir)),
             (crate::lang::tr("エクスプローラーで表示", "Show in Explorer"), in_folder),
-            (crate::lang::tr("名前の変更", "Rename"), true),
+            (crate::lang::tr("名前の変更", "Rename"), !in_ext),
             (crate::lang::tr("ごみ箱へ移動", "Move to Recycle Bin"), in_folder && cfg!(windows)),
             (crate::lang::tr("パスをコピー", "Copy Path"), true),
         ];
@@ -1923,6 +2290,9 @@ impl Ui {
         let x = app::event_x().min(self.win.w() - menu::pick_width(&menu_rows)).max(0);
         let Some(i) = menu::pick(&menu_rows, x, app::event_y()) else { return };
         match i {
+            0 if in_ext => {
+                self.open_archive_file(rel);
+            }
             0 => self.open_paths(vec![full]),
             1 => {
                 if let Err(e) = platform::reveal(&full) {
@@ -2295,7 +2665,7 @@ impl Ui {
         }
         d.pdf_busy.set(true);
         *d.pdf_error.borrow_mut() = None;
-        let tx = self.tx.clone();
+        let tx = self.tx;
         let id = d.id;
         thread::spawn(move || {
             let r = std::fs::read(&path).map_err(|e| format!("{}\n{e}", path.display())).and_then(|b| pdftext::extract(&b));
@@ -2310,7 +2680,7 @@ impl Ui {
             return;
         }
         d.book_busy.set(true);
-        let tx = self.tx.clone();
+        let tx = self.tx;
         let id = d.id;
         thread::spawn(move || {
             let r = std::fs::read(&path).map_err(|e| format!("{}\n{e}", path.display())).and_then(|b| book::read(&b, book::is_ods(&path)));
@@ -2326,7 +2696,7 @@ impl Ui {
         }
         let Some(fmt) = doctext::format_of(&path) else { return };
         d.doc_busy.set(true);
-        let tx = self.tx.clone();
+        let tx = self.tx;
         let id = d.id;
         thread::spawn(move || {
             let r = std::fs::read(&path).map_err(|e| format!("{}\n{e}", path.display())).and_then(|b| doctext::read(&b, fmt));
@@ -2382,7 +2752,7 @@ impl Ui {
             return;
         }
         d.audio_busy.set(true);
-        let tx = self.tx.clone();
+        let tx = self.tx;
         let id = d.id;
         thread::spawn(move || {
             let r = std::fs::metadata(&path)
@@ -2857,6 +3227,7 @@ impl Ui {
             Action::OpenReadme => self.open_readme(),
             Action::OpenLicenses => self.open_licenses(),
             Action::NewTab => self.new_tab(),
+            Action::NewWindow => self.new_window(),
             Action::CloseTab => self.close_tab(self.active.get()),
             Action::NextTab => self.activate_relative(1),
             Action::PrevTab => self.activate_relative(-1),
@@ -2871,6 +3242,13 @@ impl Ui {
             Action::PasteFromHistory => self.paste_from_history(),
             Action::FormatJson => self.format_json(),
             Action::McHeader => self.mc_header(),
+            Action::NewDatapack => self.new_datapack(),
+            Action::SortLines => self.line_op(lineops::Op::Sort),
+            Action::SortLinesDesc => self.line_op(lineops::Op::SortDesc),
+            Action::UniqueLines => self.line_op(lineops::Op::Unique),
+            Action::UpperCase => self.line_op(lineops::Op::Upper),
+            Action::LowerCase => self.line_op(lineops::Op::Lower),
+            Action::ReopenClosed => self.reopen_closed(),
             Action::ToggleAutoSave => self.toggle_autosave(),
             Action::ToggleWrap => self.set_wrap(!self.wrap.get()),
             Action::GotoLine => self.goto_line(),
@@ -3011,6 +3389,53 @@ impl Ui {
         }
     }
 
+    /// スマートケース: 大文字が 1 つも無い検索語は、大文字小文字を区別しない（`smart` が false なら常に区別する）。
+    fn ignore_case(needle: &str, smart: bool) -> bool {
+        smart && !needle.bytes().any(|b| b.is_ascii_uppercase())
+    }
+
+    /// 検索の一致位置。正規表現・単語単位がオフなら従来の検索（スマートケース）。
+    /// 正規表現では、`smart` のとき大文字が 1 つも無ければ大文字小文字を無視する（通常の検索と同じ規則）。
+    /// 正規表現が不正なら一致なしとして、`find_err` を立てる。
+    fn search_hits(&self, text: &str, needle: &str, smart: bool) -> Vec<(usize, usize)> {
+        self.find_err.set(false);
+        let (rx, wd) = (self.find_bar.regex(), self.find_bar.word());
+        if !rx && !wd {
+            return if smart { replace::find_all_smart(text, needle) } else { replace::find_all(text, needle) };
+        }
+        replace::find_all_regex(text, needle, rx, Self::ignore_case(needle, smart), wd).unwrap_or_else(|e| {
+            log::info(TAG, &format!("regex: {e}"));
+            self.find_err.set(true);
+            Vec::new()
+        })
+    }
+
+    /// 置換する箇所と置換後の文字列。正規表現がオフなら、一致をそのまま `with` に置き換える。
+    fn search_replacements(&self, text: &str, needle: &str, smart: bool, with: &str) -> Vec<(usize, usize, String)> {
+        let (rx, wd) = (self.find_bar.regex(), self.find_bar.word());
+        if !rx && !wd {
+            return self.search_hits(text, needle, smart).into_iter().map(|(s, e)| (s, e, with.to_string())).collect();
+        }
+        self.find_err.set(false);
+        replace::regex_replacements(text, needle, rx, Self::ignore_case(needle, smart), wd, with).unwrap_or_else(|_| {
+            self.find_err.set(true);
+            Vec::new()
+        })
+    }
+
+    /// 検索バーの `.*` / `W` が押された: 切り替えて、同じ文字列で検索し直す。
+    fn toggle_mode(&self, regex: bool) {
+        let (r, w) = (self.find_bar.regex(), self.find_bar.word());
+        if regex {
+            self.find_bar.set_modes(!r, w);
+        } else {
+            self.find_bar.set_modes(r, !w);
+        }
+        if !self.find_bar.input.value().is_empty() {
+            self.find_changed();
+        }
+    }
+
     /// 検索バーの All / 置換欄の Enter: 検索中の文字列（強調している箇所）を全て置換欄の文字列にする。
     /// 全文を 1 回だけ読み、1 回の編集として書き戻す（「元に戻す」1 回で全て戻る）。置換結果の中は再走査しない。
     /// Repl: いま選んでいる一致を置換欄の文字列に置き換えて、次の一致へ進む（選んでいなければ最初の一致を選ぶだけ）。
@@ -3030,12 +3455,13 @@ impl Ui {
         }
         let smart = self.last_smart.get();
         let text = d.buf.text();
-        let hits = if smart { replace::find_all_smart(&text, &needle) } else { replace::find_all(&text, &needle) };
+        let with = self.find_bar.replace.value();
+        let reps = self.search_replacements(&text, &needle, smart, &with);
         let sel = d.buf.selection_position().map(|(a, b)| (a.min(b).max(0) as usize, a.max(b).max(0) as usize));
-        if let Some(&(s, e)) = hits.iter().find(|h| Some(**h) == sel) {
-            let with = self.find_bar.replace.value();
+        if let Some((s, e, with)) = reps.iter().find(|r| Some((r.0, r.1)) == sel) {
+            let (s, e) = (*s, *e);
             let mut b = d.buf.clone();
-            b.replace(s as i32, e as i32, &with);
+            b.replace(s as i32, e as i32, with);
             b.unselect();
             self.editor.clone().set_insert_position((s + with.len()) as i32);
             let n = self.highlight(&needle, smart);
@@ -3060,13 +3486,14 @@ impl Ui {
         }
         let with = self.find_bar.replace.value();
         let text = d.buf.text();
-        let hits = if self.last_smart.get() { replace::find_all_smart(&text, &needle) } else { replace::find_all(&text, &needle) };
+        let reps = self.search_replacements(&text, &needle, self.last_smart.get(), &with);
+        let hits = &reps;
         if hits.is_empty() {
             self.set_find_count(crate::lang::tr("見つかりません", "Not found"));
-            self.flash(crate::lang::tr("見つかりません", "Not found"));
+            self.flash(if self.find_err.get() { crate::lang::tr("正規表現が不正です", "Invalid regex") } else { crate::lang::tr("見つかりません", "Not found") });
             return;
         }
-        let new_text = replace::apply_replace(&text, &hits, &with);
+        let new_text = replace::apply_replacements(&text, &reps);
         let pos = self.editor.insert_position();
         let mut b = d.buf.clone();
         b.replace(0, b.length(), &new_text);
@@ -3305,6 +3732,9 @@ impl Ui {
         let sel = self.doc().buf.selection_text();
         let needle = sel.trim();
         self.last_smart.set(false);
+        if !needle.is_empty() {
+            self.find_bar.set_modes(false, false); // 選んだ文字列は、文字どおりに探す
+        }
         if !needle.contains(['\n', '\r']) {
             self.find_bar.input.clone().set_value(needle);
             *self.last_search.borrow_mut() = needle.to_string();
@@ -3332,10 +3762,8 @@ impl Ui {
         let text = d.buf.text();
         let hits = if needle.is_empty() {
             Vec::new()
-        } else if smart {
-            replace::find_all_smart(&text, needle)
         } else {
-            replace::find_all(&text, needle)
+            self.search_hits(&text, needle, smart)
         };
         let mut styles = if syntax { code::syntax_styles(path.as_deref(), &text) } else { None }.unwrap_or_else(|| vec![b'A'; text.len()]);
         for &(s, e) in &hits {
@@ -3351,7 +3779,8 @@ impl Ui {
     /// 検索バーの件数の欄。
     /// 開いていれば件数の欄に、いつでもツールチップに出す。
     fn set_find_count(&self, text: &str) {
-        self.find_bar.set_status(text);
+        let invalid = self.find_err.get() && (text == "Not found" || text == "見つかりません");
+        self.find_bar.set_status(if invalid { crate::lang::tr("正規表現が不正です", "Invalid regex") } else { text });
     }
 
     /// 見つかった数を出す（0 件は Not found、空の検索は何も出さない）。
@@ -3405,7 +3834,7 @@ impl Ui {
             return; // tar 系は目録しか読めない
         }
         let Some(entries) = d.archive.borrow().clone() else { return };
-        let (id, tx, cur) = (d.id, self.tx.clone(), self.arch_gen.clone());
+        let (id, tx, cur) = (d.id, self.tx, self.arch_gen.clone());
         thread::spawn(move || {
             let cancel = || cur.load(std::sync::atomic::Ordering::SeqCst) != gen;
             // 打っている途中で読み始めないよう、少し待つ（その間に打ち直されたら、何もしない）
@@ -3514,6 +3943,7 @@ impl Ui {
         if self.prefill_find() {
             let needle = self.find_bar.input.value();
             self.last_smart.set(false);
+            self.find_bar.set_modes(false, false); // 選んだ文字列は、文字どおりに探す
             let n = self.highlight(&needle, false);
             self.show_find_count(&needle, n);
         }
@@ -3660,11 +4090,11 @@ impl Ui {
         }
         let d = self.doc();
         let text = d.buf.text();
-        let hits = if self.last_smart.get() { replace::find_all_smart(&text, &needle) } else { replace::find_all(&text, &needle) };
+        let hits = self.search_hits(&text, &needle, self.last_smart.get());
         if hits.is_empty() {
             self.set_find_count(crate::lang::tr("見つかりません", "Not found"));
             if !self.find_bar.is_open() {
-                self.flash(crate::lang::tr("見つかりません", "Not found"));
+                self.flash(if self.find_err.get() { crate::lang::tr("正規表現が不正です", "Invalid regex") } else { crate::lang::tr("見つかりません", "Not found") });
             }
             return;
         }
@@ -3703,7 +4133,7 @@ impl Ui {
         }
         self.flash(crate::lang::tr("画像を取得しています...", "Fetching image..."));
         log::info(TAG, "open image url");
-        let tx = self.tx.clone();
+        let tx = self.tx;
         thread::spawn(move || {
             let r = fetch_image(&url).map(|p| (p, url)).map_err(|e| e.to_string());
             tx.send(Msg::ImageFetched(r));
@@ -3752,7 +4182,7 @@ impl Ui {
             }
         }
         log::info(TAG, &format!("run: {} 文字", sel.chars().count()));
-        let tx = self.tx.clone();
+        let tx = self.tx;
         thread::spawn(move || {
             let r = platform::run_shell(&sel).map_err(|e| e.to_string());
             tx.send(Msg::Ran(r));
@@ -3820,6 +4250,12 @@ impl Ui {
         pathlog::push(&mut self.path_history.borrow_mut(), p.clone());
         recent::push(&mut self.recent.borrow_mut(), p);
         self.persist();
+        self.refresh_jump_list();
+    }
+
+    /// タスクバーのアイコンの右クリックメニュー（ジャンプリスト）を、いまの「最近開いたファイル」に合わせる。Windows 以外では何もしない。
+    fn refresh_jump_list(&self) {
+        crate::jumplist::update(&self.recent.borrow(), self.config_path.as_deref());
     }
 
     /// 終了時に開いているタブ（左から順）と、表示しているタブ。保存先が決まっているものだけ。
@@ -3862,6 +4298,7 @@ impl Ui {
         config::Config {
             session,
             session_active,
+            backup: true, // 書き戻しでは使わない（キーの行は書かず、手で書いた行が残る）
             autosave: self.autosave.get(),
             wrap: self.wrap.get(),
             gutter_pin: self.gutter_pinned.get(),
@@ -3926,6 +4363,7 @@ impl Ui {
     fn apply_config(self: &Rc<Self>) {
         let Some(path) = self.config_path.clone() else { return };
         let cfg = config::load(&path);
+        backup::configure(path.parent(), cfg.backup);
 
         // 最近開いたファイル
         *self.recent.borrow_mut() = cfg.recent.clone();
@@ -4385,13 +4823,16 @@ impl Ui {
                 let base = path.as_deref().and_then(|p| p.parent());
                 match imagefile::resolve_local(base, &s) {
                     Some(full) => {
-                        let note = format!("{}", log::file_name(&full.to_string_lossy()));
+                        let note = log::file_name(&full.to_string_lossy()).to_string();
                         peekwin::Content::Image(full, note)
                     }
                     None => return, // 見つからない画像は出さない
                 }
             }
             })
+        } else if let Some((r, spans)) = textcomp::at(&line, off) {
+            // Minecraft のテキスト部品: 色と装飾の見本
+            (r, peekwin::Content::Rich(spans, crate::lang::tr("テキスト部品の見た目", "Text component preview").into()))
         } else if let Some(rf) = mcheader::reference_at(&line, off) {
             // `ns:path`: 指すファイルがあれば、開き方を案内する
             let dirs = path.as_deref().map(mcheader::data_dirs_near).unwrap_or_default();
@@ -4680,7 +5121,7 @@ impl Ui {
                 log::warn(TAG, &format!("auto save skipped: {} で表せない文字があります", enc.label()));
                 continue;
             }
-            match document::write_atomic(&path, &encoded.bytes) {
+            match write_user(&path, &encoded.bytes) {
                 Ok(()) => {
                     log::info(TAG, &format!("auto saved: {}", log::file_name(&path.to_string_lossy())));
                     {
@@ -4922,6 +5363,58 @@ impl Ui {
 
     /// 開いている .mcfunction の先頭に、呼び出し元と自分の ID のヘッダーを作る（無ければ入れ、あれば作り直す）。
     /// 探す範囲はこのファイルが入っているデータパックだけ。置き換えは 1 回の編集なので「元に戻す」で戻せる。
+    /// 行の一括操作。選択がかかっている行の全体（無ければ全文）を、1 回の編集で置き換える（元に戻す 1 回で戻る）。
+    fn line_op(&self, op: lineops::Op) {
+        let d = self.doc();
+        {
+            let st = d.st.borrow();
+            if st.loading || st.hex {
+                self.flash(crate::lang::tr("ここでは使えません", "Cannot do this here"));
+                return;
+            }
+        }
+        let mut b = d.buf.clone();
+        let text = b.text();
+        let sel = b.selection_position().map(|(s, e)| (s.min(e) as usize, s.max(e) as usize)).unwrap_or((0, 0));
+        let span = lineops::line_span(&text, sel.0..sel.1);
+        let Some(out) = lineops::apply(&text[span.clone()], op) else {
+            self.flash(crate::lang::tr("変わりませんでした", "No change"));
+            return;
+        };
+        b.replace(span.start as i32, span.end as i32, &out);
+        if sel.0 != sel.1 {
+            b.select(span.start as i32, (span.start + out.len()) as i32);
+        }
+    }
+
+    /// データパックの雛形を作る。フォルダを選び、名前空間を聞く。作ったら load の関数を開く。
+    fn new_datapack(self: &Rc<Self>) {
+        let Some(root) = self.choose_file(FileDialogType::BrowseDir) else { return };
+        let suggest: String = root.file_name().map(|n| n.to_string_lossy().to_lowercase()).unwrap_or_default().chars().map(|c| if c.is_ascii_alphanumeric() || "_-.".contains(c) { c } else { '_' }).collect();
+        let prompt = crate::lang::tr("名前空間（小文字の英数字と _ - .）", "Namespace (lowercase letters, digits, _ - .)");
+        let Some(ns) = dialog::input_default(prompt, &suggest) else { return };
+        let ns = ns.trim().to_string();
+        if !datapack::is_valid_namespace(&ns) {
+            self.flash(crate::lang::tr("名前空間に使えない文字があります", "The namespace has invalid characters"));
+            return;
+        }
+        match datapack::create(&root, &ns, &ns) {
+            Ok(c) => {
+                let msg = if crate::lang::is_en() { format!("Created {} files ({} kept)", c.written.len(), c.kept.len()) } else { format!("{} 個のファイルを作りました（あった {} 個は残しました）", c.written.len(), c.kept.len()) };
+                self.flash(&msg);
+                let load = root.join(format!("data/{ns}/function/load.mcfunction"));
+                if load.is_file() {
+                    let id = self.open_path(load);
+                    self.activate(id);
+                }
+            }
+            Err(e) => {
+                log::warn(TAG, &format!("datapack: {e}"));
+                self.flash(&if crate::lang::is_en() { format!("Could not create: {e}") } else { format!("作れませんでした: {e}") });
+            }
+        }
+    }
+
     fn mc_header(&self) {
         let d = self.doc();
         let path = {
@@ -5059,7 +5552,7 @@ impl Ui {
         if key == Key::Tab {
             let shift = app::is_event_shift();
             // Tab は、複数行を選んでいるときだけまとめて字下げする。それ以外は今までどおりタブ文字を入れる。
-            if !shift && !buf.text_range(s, e).map_or(false, |t| t.contains('\n')) {
+            if !shift && !buf.text_range(s, e).is_some_and(|t| t.contains('\n')) {
                 return false;
             }
             let (ls, le) = (buf.line_start(s), buf.line_end(e));
@@ -5153,6 +5646,12 @@ impl Ui {
                 } else if app::is_event_command() && key == Key::from_char('y') {
                     self.editor.clone().redo();
                     true
+                } else if app::is_event_command() && app::is_event_shift() && (key == Key::from_char('n') || key == Key::from_char('N')) {
+                    self.perform(Action::NewWindow);
+                    true
+                } else if app::is_event_command() && app::is_event_shift() && (key == Key::from_char('t') || key == Key::from_char('T')) {
+                    self.perform(Action::ReopenClosed);
+                    true
                 } else if app::is_event_command() && key == Key::from_char('n') {
                     self.perform(Action::NewTab);
                     true
@@ -5227,12 +5726,13 @@ fn load_configured_font(app: &app::App, cfg: &config::Config, default_font: Font
     }
 }
 
-pub fn run(paths: Vec<String>) -> Result<(), FltkError> {
+pub fn run(paths: Vec<String>, new_window: bool) -> Result<(), FltkError> {
     let app = app::App::default();
     let default_font = load_default_font(&app);
     // 設定ファイル（設定フォルダの config.txt）。無ければ既定で始める。
     let config_path = config::path();
     let cfg = config_path.as_deref().map(config::load).unwrap_or_default();
+    backup::configure(config_path.as_deref().and_then(Path::parent), cfg.backup);
     apply_theme_config(&cfg); // ウィンドウを作る前に決める
     crate::lang::set(crate::lang::from_code(&cfg.lang).unwrap_or(crate::lang::Lang::Ja));
     if let Ok(name) = std::env::var("NEONOTE_THEME") {
@@ -5250,8 +5750,8 @@ pub fn run(paths: Vec<String>) -> Result<(), FltkError> {
     let mut col = Flex::default_fill().column();
     col.set_pad(0); // 既定の 5px の隙間が、ツールバー・タブ・本文の間に空いてしまう
     col.set_margin(0);
-    let tx_bar = tx.clone();
-    let tx_bar2 = tx.clone();
+    let tx_bar = tx;
+    let tx_bar2 = tx;
     // 検索バーはツールバーの右端。入力・ボタンの操作はメインループで処理する
     let tx_find = tx;
     // 右端の列（検索バー・Format・Encode）は、右端の欄と同じ幅にする（左の押しピン・行番号欄と対）
@@ -5269,7 +5769,7 @@ pub fn run(paths: Vec<String>) -> Result<(), FltkError> {
     let mut tabrow = Flex::default().row(); // 行番号欄の押しピン + タブバー + 右端のチップ
     tabrow.set_pad(0);
     tabrow.set_margin(0);
-    let tx_gw = tx_bar2.clone();
+    let tx_gw = tx_bar2;
     let pin = tabs::build_gutter_pin(move |w, done| {
         tx_gw.send(Msg::GutterWidth(w, done));
         app::awake();
@@ -5281,19 +5781,19 @@ pub fn run(paths: Vec<String>) -> Result<(), FltkError> {
     tabbar.set_pad(0);
     tabbar.set_margin(0);
     tabbar.end();
-    let tx_view = tx_bar2.clone();
+    let tx_view = tx_bar2;
     let mut view_chip = tabs::build_chip();
     view_chip.set_label("Format");
     view_chip.set_tooltip(crate::lang::tr("クリックで 表示（Text・Preview・HEX）と形式を切り替え", "Click to switch view (Text / Preview / HEX) and format"));
     view_chip.set_callback(move |_| tx_view.send(Msg::Do(Action::ChangeView)));
     let view_w = tabs::view_chip_width(side_w);
     tabrow.fixed(&view_chip, view_w);
-    let tx_grip = tx_bar2.clone();
+    let tx_grip = tx_bar2;
     tabs::add_side_grip(&mut view_chip, move |w, done| {
         tx_grip.send(Msg::SideWidth(sidepanel::clamp_width(w), done));
         app::awake();
     });
-    let tx_chip = tx_bar2.clone();
+    let tx_chip = tx_bar2;
     let mut chip = tabs::build_chip();
     chip.set_label("Encode");
     chip.set_callback(move |_| tx_chip.send(Msg::Do(Action::ChangeEncoding)));
@@ -5328,10 +5828,10 @@ pub fn run(paths: Vec<String>) -> Result<(), FltkError> {
     let nbt_tree = NbtTree::new();
     skin::style_scrollbars(&editor);
     skin::style_scrollbars(&preview);
-    let tx_jump = tx_bar2.clone();
-    let tx_side_pin = tx_bar2.clone();
-    let tx_side_menu = tx_bar2.clone();
-    let tx_side_w = tx_bar2.clone();
+    let tx_jump = tx_bar2;
+    let tx_side_pin = tx_bar2;
+    let tx_side_menu = tx_bar2;
+    let tx_side_w = tx_bar2;
     let side = sidepanel::build(
         move |line| {
             tx_jump.send(Msg::SideJump(line));
@@ -5403,6 +5903,7 @@ pub fn run(paths: Vec<String>) -> Result<(), FltkError> {
         side_w: Cell::new(side_w),
         resume: Cell::new(cfg.resume),
         unsaved_sig: Cell::new(0),
+        view_states: RefCell::new(config_path.as_deref().and_then(Path::parent).map(viewstate::load).unwrap_or_default()),
         peek_at: Cell::new(None),
         peek_still: Cell::new((i32::MIN, i32::MIN, 0)),
         mouse_right: Cell::new(false),
@@ -5420,9 +5921,12 @@ pub fn run(paths: Vec<String>) -> Result<(), FltkError> {
         find_bar: find_bar.clone(),
         last_search: RefCell::new(String::new()),
         last_smart: Cell::new(true),
+        find_err: Cell::new(false),
         arch_content: RefCell::new(None),
         arch_gen: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
-        session_owner: paths.is_empty(),
+        session_owner: paths.is_empty() && !new_window,
+        ipc: RefCell::new(None),
+        closed: RefCell::new(Vec::new()),
         config_path,
         font_path: RefCell::new(start_font_path),
         tx,
@@ -5450,6 +5954,7 @@ pub fn run(paths: Vec<String>) -> Result<(), FltkError> {
     ui.side.state.borrow_mut().pinned = ui.side_pinned.get();
     ui.update_side();
     ui.poll_mouse();
+    ui.refresh_jump_list();
 
     // 音声の Preview では Space で再生 / 停止（HelpView の既定の処理より先に受ける）
     {
@@ -5568,7 +6073,12 @@ pub fn run(paths: Vec<String>) -> Result<(), FltkError> {
     replace_input.handle(move |_, ev| u.replace_key(ev));
     let u = Rc::clone(&ui);
     // Ctrl+ホイールは編集領域のハンドラが受ける（窓でも受けると、同じ 1 回が 2 回に数えられる）
-    win.handle(move |_, ev| ev != Event::MouseWheel && u.handle(ev));
+    win.handle(move |_, ev| {
+        if ev == Event::Focus {
+            u.touch_ipc(); // どのウィンドウへファイルを渡すかの目安（最後に操作したウィンドウ）
+        }
+        ev != Event::MouseWheel && u.handle(ev)
+    });
 
     // 大きさが変わったら、タブの幅を合わせ直す（ボタンの中ではなくメインループで）
     let tx_resize = ui.tx;
@@ -5587,6 +6097,7 @@ pub fn run(paths: Vec<String>) -> Result<(), FltkError> {
 
     ui.activate(first.id);
     win.show();
+    ui.start_ipc();
     log::info(TAG, &format!("started {}", dev::version()));
     if dev::is_dev_user() {
         log::info("alert", "開発環境のためスキップ");
@@ -5595,7 +6106,9 @@ pub fn run(paths: Vec<String>) -> Result<(), FltkError> {
     if ui.session_owner {
         ui.arm_unsaved();
     }
-    if paths.is_empty() {
+    if new_window && paths.is_empty() {
+        // 新しいウィンドウは空のタブで始める（前回のタブの組は、引数なしで起動した最初のウィンドウのもの）
+    } else if paths.is_empty() {
         ui.restore_session(&cfg);
     } else {
         ui.open_paths(paths.into_iter().map(PathBuf::from).collect());
@@ -5605,6 +6118,7 @@ pub fn run(paths: Vec<String>) -> Result<(), FltkError> {
         while let Some(msg) = rx.recv() {
             match msg {
                 Msg::Loaded(id, p, r) => ui.on_loaded(id, p, r),
+                Msg::AppendTail(id) => ui.append_tail(id),
                 Msg::Do(a) => ui.perform(a),
                 Msg::SideJump(line) => ui.side_jump(line),
                 Msg::SidePin => ui.toggle_side_pin(),
@@ -5615,6 +6129,8 @@ pub fn run(paths: Vec<String>) -> Result<(), FltkError> {
                 Msg::Tab(TabCmd::Close(id)) => ui.close_tab(id),
                 Msg::Tab(TabCmd::New) => ui.new_tab(),
                 Msg::Tab(TabCmd::Move(id, to)) => ui.move_tab(id, to),
+                Msg::Tab(TabCmd::Detach(id, x, y)) => ui.detach_tab(id, x, y),
+                Msg::Ipc(req) => ui.on_ipc(req),
                 Msg::Find(FindCmd::Search) => ui.search_button(),
                 Msg::Find(FindCmd::ClearReplace) => {
                     let mut r = ui.find_bar.replace.clone();
@@ -5622,6 +6138,8 @@ pub fn run(paths: Vec<String>) -> Result<(), FltkError> {
                     let _ = r.take_focus();
                 }
                 Msg::Find(FindCmd::Changed) => ui.find_changed(),
+                Msg::Find(FindCmd::ToggleRegex) => ui.toggle_mode(true),
+                Msg::Find(FindCmd::ToggleWord) => ui.toggle_mode(false),
                 Msg::Find(FindCmd::ReplaceOne) => ui.replace_one_bar(),
                 Msg::Find(FindCmd::ReplaceAll) => ui.replace_all_bar(),
                 Msg::Find(FindCmd::Clear) => ui.clear_find(),
@@ -5644,6 +6162,11 @@ pub fn run(paths: Vec<String>) -> Result<(), FltkError> {
     Ok(())
 }
 
+/// 形式が Auto のとき、Preview で見る種類（文字として編集できる物は Text のまま）。
+fn auto_previews(k: viewmode::Kind) -> bool {
+    matches!(k, viewmode::Kind::Book | viewmode::Kind::Doc | viewmode::Kind::Pdf | viewmode::Kind::Image | viewmode::Kind::Audio | viewmode::Kind::Archive)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -5658,7 +6181,17 @@ mod tests {
     }
 }
 
-/// 形式が Auto のとき、Preview で見る種類（文字として編集できる物は Text のまま）。
-fn auto_previews(k: viewmode::Kind) -> bool {
-    matches!(k, viewmode::Kind::Book | viewmode::Kind::Doc | viewmode::Kind::Pdf | viewmode::Kind::Image | viewmode::Kind::Audio | viewmode::Kind::Archive)
+#[cfg(test)]
+mod progressive_tests {
+    use super::split_at_line;
+
+    #[test]
+    fn split_at_line_stops_after_a_newline_or_at_the_end() {
+        let t = "ab\ncd\nef";
+        assert_eq!(split_at_line(t, 0), 3);
+        assert_eq!(split_at_line(t, 4), 6);
+        assert_eq!(split_at_line(t, 7), t.len());
+        assert_eq!(split_at_line(t, 99), t.len());
+        assert_eq!(split_at_line("あい\nう", 1), "あい\n".len()); // 文字の途中から探しても、改行の直後で切る
+    }
 }

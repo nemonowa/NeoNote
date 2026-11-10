@@ -10,6 +10,7 @@
 //   recent=C:\a\b.txt             最近開いたファイル（新しい順に 1 行ずつ。最大 recent::MAX 件）
 //   gutter_pin=true               行番号欄を常に表示（固定）する。false なら、カーソルが左端のときだけ出す
 //   side_pin=true                 右端の情報・縮小表示の欄を常に表示（固定）する。false なら、マウスが右端のときだけ出す
+//   backup=false                  上書き保存の前の控え（設定フォルダの backup/）を取らない（既定は取る。アプリは書き戻さない）
 //   resume=false                  前回のタブと未保存の変更を、次の起動で戻さない（既定は戻す。true のときは書かない）
 //   gutter_extra=20               行番号欄を桁数で決まる幅より広げる分（0 のときは書かない）
 //   side_w=260                    右端の欄の幅（既定 200 のときは書かない）
@@ -46,6 +47,8 @@ pub struct Config {
     pub side_w: Option<i32>,
     /// 前回のタブと未保存の変更を、引数なしの起動で戻す（既定は戻す）。
     pub resume: bool,
+    /// 上書きの前に元の中身を控える（`neo::backup`）。設定ファイルを手で書き換えたときだけ変わる。
+    pub backup: bool,
     /// 画面の言葉（ja・en）。
     pub lang: String,
     /// 行番号欄を広げる分。None なら 0。
@@ -79,6 +82,7 @@ impl Default for Config {
             side_w: None,
             gutter_extra: None,
             resume: true,
+            backup: true,
             lang: "ja".into(),
             light: false,
             theme: Some("dark".into()),
@@ -157,6 +161,7 @@ pub fn parse(text: &str) -> Config {
             "side_w" => cfg.side_w = v.parse::<i32>().ok(),
             "gutter_extra" => cfg.gutter_extra = v.parse::<i32>().ok(),
             "resume" => cfg.resume = parse_bool(v),
+            "backup" => cfg.backup = parse_bool(v),
             "lang" => cfg.lang = v.trim().to_ascii_lowercase(),
             "theme" => {
                 cfg.light = v.eq_ignore_ascii_case("light");
@@ -412,7 +417,7 @@ mod tests {
     use super::*;
 
     fn cfg() -> Config {
-        Config { autosave: true, wrap: true, gutter_pin: true, side_pin: false, side_w: None, gutter_extra: None, resume: true, light: true, theme: Some("light".into()), custom: None, lang: "ja".into(), size: Some(18), font: Some(PathBuf::from("/f/Mono.ttf")), recent: vec![PathBuf::from("/a/1.txt"), PathBuf::from("/a/2.txt")], history: vec![PathBuf::from("/h/1.txt"), PathBuf::from("/h/2.txt"), PathBuf::from("/h/3.txt")], session: vec![PathBuf::from("/s/1.txt"), PathBuf::from("/s/2.txt")], session_active: Some(PathBuf::from("/s/2.txt")) }
+        Config { autosave: true, wrap: true, gutter_pin: true, side_pin: false, side_w: None, gutter_extra: None, resume: true, backup: true, light: true, theme: Some("light".into()), custom: None, lang: "ja".into(), size: Some(18), font: Some(PathBuf::from("/f/Mono.ttf")), recent: vec![PathBuf::from("/a/1.txt"), PathBuf::from("/a/2.txt")], history: vec![PathBuf::from("/h/1.txt"), PathBuf::from("/h/2.txt"), PathBuf::from("/h/3.txt")], session: vec![PathBuf::from("/s/1.txt"), PathBuf::from("/s/2.txt")], session_active: Some(PathBuf::from("/s/2.txt")) }
     }
 
     #[test]
