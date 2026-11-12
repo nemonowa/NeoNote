@@ -1183,3 +1183,7 @@ Run のサブメニューの **Header**、または編集領域の右クリッ�
 - 対処：リストの中では表に割合の幅を付けない（markdown.rs）。横展開：割合の幅の表を出すのは markdown.rs と audiometa.rs（リストの外だけ）。html ファイルの Preview は表の属性を作り直すので出ない。手元の Markdown 228 件を HelpView に入れて固まらないことを確かめた。
 - 名前の無いタブは、最初の中身のある行から 20 文字までの名前を出す（tabs::name_from_text）。ウィンドウの題名は「無題」のまま（未対応）。
 - 数式の Preview（texmath.rs）：記号・上付き・下付き・\frac→a/b・\sqrt→√ を文字にして等幅で出す簡易対応。分数の積み重ね・行列は出せない。画像で描く案（数MB増）は未着手。
+
+### macOS の CI で計測が止まる（2026-11-12）
+- 原因：`perf_text_buffer` が FLTK の TextBuffer をテストのスレッド（メインスレッドの外）で作り、macOS の FLTK が SIGABRT で止めた（Linux・Windows では動く）。macOS では計測を飛ばす。Mac が無いので、止まる理由が本当にこれかは未検証（次の CI で確かめる）。
+- 横展開：テストで FLTK の部品を作るのはこの計測だけ（app・menu・sidepanel・tabs のテストは作らない）。配布用の実行ファイルの保存は計測より前に移し、計測の失敗でリリースが止まらないようにした（ただし release は build の成功を待つ）。

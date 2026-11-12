@@ -45,6 +45,11 @@ fn perf_search() {
 #[test]
 #[ignore]
 fn perf_text_buffer() {
+    // macOS の FLTK は、メインスレッドの外で使うと止める（テストは別スレッドで動く。CI で SIGABRT になった）
+    if cfg!(target_os = "macos") {
+        println!("skip perf_text_buffer on macOS (FLTK needs the main thread)");
+        return;
+    }
     for mb in [8, 50, 200] {
         let text = sample(mb);
         let before = mem_kib("VmRSS:");
