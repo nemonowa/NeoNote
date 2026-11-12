@@ -155,10 +155,10 @@ pub const LANG: &[MenuEntry] = &[e("日本語", "日本語", Action::SetLang(cra
 
 /// 配色のボタンのメニュー（theme::PALETTES と同じ順）。
 pub const THEME: &[MenuEntry] = &[
-    e("Nureba", "濡羽", Action::SetTheme(0)),
-    ed("Geppaku", "月白", Action::SetTheme(1)),
-    e("Classic Dark", "旧ダーク", Action::SetTheme(2)),
-    e("Classic Light", "旧ライト", Action::SetTheme(3)),
+    e("Dark", "ダーク", Action::SetTheme(0)),
+    ed("Light", "ライト", Action::SetTheme(1)),
+    e("Nureba", "濡羽", Action::SetTheme(2)),
+    e("Geppaku", "月白", Action::SetTheme(3)),
     e("Nord", "ノルド", Action::SetTheme(4)),
     e("Abyss", "アビス", Action::SetTheme(5)),
     e("Paper", "ペーパー", Action::SetTheme(6)),

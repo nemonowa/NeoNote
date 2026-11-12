@@ -4,7 +4,7 @@
 // 名前変更の考え方: 「パス一覧」を 1 行 1 パスの文字にして編集し、同じ行数で戻す（`to_edit_text` → `parse_edit_text`）。
 // 行を足す・消すことはできない（名前の変更だけ）。zip は中身（圧縮データ）に一切触れず、名前と目録だけを書き換える。
 use std::collections::HashSet;
-use crate::neo::{extfs, tarlist};
+use crate::neo::{extfs, isofs, tarlist};
 use std::path::{Path, PathBuf};
 
 pub const MAX_ENTRIES: usize = 50_000;
@@ -46,7 +46,41 @@ fn has_zip_magic(p: &Path) -> bool {
 /// 一覧（階層ツリーの Preview）で開く対象か。フォルダ・zip・tar・tar.gz・tgz・gz。
 /// 拡張子だけで決めるので、中身が違えば（一覧を読めなければ）ふつうのファイルとして開き直される。
 pub fn is_archive_path(p: &Path) -> bool {
-    p.is_dir() || is_zip_path(p) || tarlist::kind_of(p).is_some() || extfs::is_ext_path(p)
+    p.is_dir() || is_zip_path(p) || tarlist::kind_of(p).is_some() || image_kind(p).is_some()
+}
+
+/// 中を読み取り専用で見るディスクイメージの種類（ext2/3/4・ISO 9660）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ImageKind {
+    Ext,
+    Iso,
+}
+
+/// `p` がディスクイメージなら、その種類（先頭の中身で見分ける。.img はどちらもあり得る）。
+pub fn image_kind(p: &Path) -> Option<ImageKind> {
+    if extfs::is_ext_path(p) {
+        Some(ImageKind::Ext)
+    } else if isofs::is_iso_path(p) {
+        Some(ImageKind::Iso)
+    } else {
+        None
+    }
+}
+
+/// ディスクイメージの中のファイル 1 つの中身。
+pub fn image_read(p: &Path, kind: ImageKind, path: &str, max: u64) -> Result<Vec<u8>, String> {
+    match kind {
+        ImageKind::Ext => extfs::read_path(p, path, max),
+        ImageKind::Iso => isofs::read_path(p, path, max),
+    }
+}
+
+/// ディスクイメージの中のファイルを一時フォルダへ取り出す（開くため）。
+pub fn image_extract(p: &Path, kind: ImageKind, path: &str) -> Result<PathBuf, String> {
+    match kind {
+        ImageKind::Ext => extfs::extract_to_temp(p, path),
+        ImageKind::Iso => isofs::extract_to_temp(p, path),
+    }
 }
 
 /// 名前の変更（`Rename (text)`）ができる対象か。フォルダと zip だけ（tar 系は一覧を見るだけ）。
@@ -309,8 +343,11 @@ pub fn list_path(p: &Path) -> Result<Vec<Entry>, String> {
         list_dir(p)
     } else if let Some(k) = tarlist::kind_of(p) {
         tarlist::list_file(p, k)
-    } else if extfs::is_ext_path(p) {
-        extfs::list_file(p)
+    } else if let Some(k) = image_kind(p) {
+        match k {
+            ImageKind::Ext => extfs::list_file(p),
+            ImageKind::Iso => isofs::list_file(p),
+        }
     } else {
         list_zip_file(p)
     }
@@ -443,8 +480,12 @@ pub fn search_contents(root: &Path, entries: &[Entry], needle: &str, cancel: &dy
             }
             true
         });
-    } else if extfs::is_ext_path(root) {
-        let _ = extfs::each_file(root, CONTENT_MAX_FILE as u64, |name, data| {
+    } else if let Some(k) = image_kind(root) {
+        let each = |f: &mut dyn FnMut(&str, Vec<u8>) -> bool| match k {
+            ImageKind::Ext => extfs::each_file(root, CONTENT_MAX_FILE as u64, f),
+            ImageKind::Iso => isofs::each_file(root, CONTENT_MAX_FILE as u64, f),
+        };
+        let _ = each(&mut |name, data| {
             if cancel() {
                 return false;
             }

@@ -32,6 +32,8 @@ pub enum Content {
     Link { title: String, note: String },
     /// Minecraft のテキスト部品の見た目（色・太字・斜体・下線・取り消し線）と、その下の説明。
     Rich(Vec<crate::neo::textcomp::Span>, String),
+    /// 1 行目（名前と大きさ）と、その下の複数行（ファイルの先頭・フォルダの中身。等幅で出す）。
+    Lines { title: String, lines: Vec<String> },
 }
 
 /// テキスト部品の見本の背景（Minecraft のツールチップに近い暗い色。白や黄色の文字が読めるように、配色によらず固定）。
@@ -98,6 +100,9 @@ pub fn is_shown() -> bool {
     WIN.with(|w| w.borrow().is_some()) && !NOTE.with(|n| n.get())
 }
 
+/// 複数行の小窓の幅の上限（長い行は切る）。
+const LINES_MAX_W: i32 = 640;
+
 /// 画像を縮小して読む。読めない・大きすぎる・壊れているときは None。
 fn thumb(p: &Path) -> Option<SharedImage> {
     let meta = std::fs::metadata(p).ok()?;
@@ -136,6 +141,12 @@ pub fn show(x: i32, y: i32, content: Content) {
             (PAD * 2 + bw.max(tw(note)), PAD * 2 + TEXT_SIZE * 2 + 6 + TEXT_SIZE + 4)
         }
         Content::Note(note) => (PAD * 2 + tw(note), PAD * 2 + TEXT_SIZE + 4),
+        Content::Lines { title, lines } => {
+            draw::set_font(Font::Courier, TEXT_SIZE);
+            let lw = lines.iter().map(|l| tw(l)).max().unwrap_or(0);
+            draw::set_font(Font::Helvetica, TEXT_SIZE);
+            ((PAD * 2 + tw(title).max(lw)).min(LINES_MAX_W), PAD * 3 + (TEXT_SIZE + 4) * (1 + lines.len() as i32))
+        }
         Content::Link { title, note } => (PAD * 2 + tw(title).max(tw(note)), PAD * 2 + (TEXT_SIZE + 4) * 2),
         Content::Rich(spans, note) => {
             let (rw, rh) = rich_size(&rich_lines(spans));
@@ -180,6 +191,20 @@ pub fn show(x: i32, y: i32, content: Content) {
             label_frame(PAD, PAD + TEXT_SIZE * 2 + 6, w - PAD * 2, TEXT_SIZE + 4, &note, sub, TEXT_SIZE);
         }
         Content::Note(note) => label_frame(PAD, PAD, w - PAD * 2, TEXT_SIZE + 4, &note, text, TEXT_SIZE),
+        Content::Lines { title, lines } => {
+            label_frame(PAD, PAD, w - PAD * 2, TEXT_SIZE + 4, &title, text, TEXT_SIZE);
+            let mut f = Frame::new(PAD, PAD * 2 + TEXT_SIZE + 4, w - PAD * 2, (TEXT_SIZE + 4) * lines.len() as i32, None);
+            f.set_frame(FrameType::NoBox);
+            f.draw(move |f| {
+                draw::push_clip(f.x(), f.y(), f.w(), f.h());
+                draw::set_font(Font::Courier, TEXT_SIZE);
+                draw::set_draw_color(rgb(sub));
+                for (i, l) in lines.iter().enumerate() {
+                    draw::draw_text(l, f.x(), f.y() + (TEXT_SIZE + 4) * i as i32 + TEXT_SIZE);
+                }
+                draw::pop_clip();
+            });
+        }
         Content::Link { title, note } => {
             label_frame(PAD, PAD, w - PAD * 2, TEXT_SIZE + 4, &title, text, TEXT_SIZE);
             label_frame(PAD, PAD + TEXT_SIZE + 4, w - PAD * 2, TEXT_SIZE + 4, &note, sub, TEXT_SIZE);

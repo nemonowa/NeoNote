@@ -11,3 +11,4 @@ pub mod tabs;
 pub mod theme;
 pub mod toolbar;
 pub mod treemap;
+pub mod welcome;

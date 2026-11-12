@@ -1,6 +1,6 @@
 [package]
 name = "neonote"
-version = "2.1.77"
+version = "2.1.78"
 edition = "2021"
 description = "Light, fast, clickless plain text editor"
 

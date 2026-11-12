@@ -8,7 +8,7 @@
 ![Rust](https://img.shields.io/badge/Rust-fltk--rs-b7410e?logo=rust)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-555)
 ![Binary](https://img.shields.io/badge/binary-single%20exe-2ea44f)
-![Tests](https://img.shields.io/badge/tests-388%20passed-brightgreen)
+![Tests](https://img.shields.io/badge/tests-395%20passed-brightgreen)
 
 ![NeoNote](docs/screenshots/main.png)
 
@@ -24,7 +24,7 @@
 
 ```text
 App      : NeoNote
-Version  : 2.1.77
+Version  : 2.1.78
 Language : Rust (fltk-rs)
 Tested   : Windows 11（Linux・macOS）
 Author   : argonaute_nemo
@@ -47,7 +47,7 @@ Author   : argonaute_nemo
 - 🎯 **乗せて確かめる**：カラーコードにマウスを乗せると色の見本、文字参照や UNIX 時刻はその文字・日時、画像のパスは縮小画像を出す
 - ⛏️ **Minecraft の NBT を編集**：`level.dat` や `.mca` を、テキストでもツリー形式でも編集できる
 - 🧩 **HEX 編集**：バイナリは自動で HEX 表示で開き、そのまま保存できる
-- 🗂️ **フォルダ・アーカイブ・ディスクイメージ**：フォルダ・zip・tar に加え、Linux の ext2/3/4 のディスクイメージも中を見て開ける（読み取り専用）
+- 🗂️ **フォルダ・アーカイブ・ディスクイメージ**：フォルダ・zip・tar に加え、ISO（CD・DVD・Blu-ray）と Linux の ext2/3/4 のディスクイメージも中を見て開ける（読み取り専用）
 
 ---
 
@@ -86,9 +86,9 @@ cargo build --release
 
 ## ❱ 配色【Themes】
 
-既定は、暗いテーマの **濡羽**（黒と緑）と、明るいテーマの **月白**（白と青）。
+既定は、灰色の **ダーク** と白の **ライト**。黒と緑の **濡羽**、白と青の **月白** なども選べる。
 
-| classic_dark | classic_light | nord |
+| dark | light | nord |
 |:---:|:---:|:---:|
 | ![dark](docs/screenshots/theme_dark.png) | ![light](docs/screenshots/theme_light.png) | ![nord](docs/screenshots/theme_nord.png) |
 | **abyss** | **paper** | **sakura** |
@@ -96,7 +96,7 @@ cargo build --release
 
 ほかに **Discord 風**・**GitHub 風** の配色もある。
 
-検索欄の左の月のボタンを押すと濡羽と月白を切り替え、マウスを乗せると一覧から選べる。**custom** を選ぶと、設定ファイルに書いた5色（`#rrggbb`）で独自の配色を作れる。
+検索欄の左の月のボタンを押すとダークとライトを切り替え、マウスを乗せると一覧から選べる。**custom** を選ぶと、設定ファイルに書いた5色（`#rrggbb`）で独自の配色を作れる。
 どのテーマも、文字と背景のコントラスト比をテストで確認済み。
 
 ---
@@ -110,14 +110,14 @@ cargo build --release
 | 💾 保存 | 自動保存・外部での変更の検知・続きから（前回のタブと未保存の変更を戻す）・ファイルごとの表示位置の記憶・ファイル履歴・失う変更がある時だけ閉じる前に確認 |
 | 🔤 文字コード | UTF-8 / Windows-31J / EUC-JP / UTF-16LE / UTF-16BE / ISO-8859-1 / US-ASCII・保存できない文字があれば事前に警告 |
 | ↩️ 改行 | CRLF / LF / 混在の表示と変換 |
-| 👀 プレビュー | Markdown（GitHub に近い見た目。コード・引用・注記・表・チェックボックス）・HTML（色と揃えも再現）・CSV / TSV・xlsx / ods・docx / pptx / epub・zip / tar / gz / ext2/3/4 イメージの一覧・画像・音声。txt なども形式を選んで表示 |
+| 👀 プレビュー | Markdown（GitHub に近い見た目。コード・引用・注記・表・チェックボックス・数式の簡易表示）・HTML（色と揃えも再現）・CSV / TSV・xlsx / ods・docx / pptx / epub・zip / tar / gz / ISO / ext2/3/4 イメージの一覧・画像・音声。txt なども形式を選んで表示 |
 | 🌈 色分け | Python・JavaScript / TypeScript・Java・C / C++・Rust・Go・シェル・SQL・CSS・JSON など。Minecraft の `.mcfunction` は、括弧と引用符の閉じ忘れに細い下線 |
 | 🎯 乗せて確かめる | Minecraft のテキスト部品（`{"text":…}` の色と装飾の見本）・カラーコード（`#rrggbb`・`rgb()`・色の名前）・文字参照と `\u` エスケープ・UNIX 時刻・画像のパス |
 | 📊 右パネル | ファイル情報・ミニマップ。フォルダ・zip では中身の大きさを面積で表す図（WizTree のような表示） |
 | ⛏️ NBT・データパック | データパックの雛形を作る・`.dat`・`.nbt`・`.schem`・`.litematic`・`.mca`（チャンクの一覧から開く） |
 | 🧩 HEX | 1行16バイト・不正な箇所があれば位置を示して保存を中止 |
 | 🖥️ 表示 | 折り返し（既定で有効）・文字サイズ・全画面（`F11`）・最前面に固定・文字数 / 行数 / 単語数・行番号と右パネルの幅の調整 |
-| 🛠️ ほか | JSON の整形・コマンドプロンプトでの実行・パスのコピー・デスクトップへのショートカット・Windows のジャンプリスト（タスクバーの右クリックで最近のファイル） |
+| 🛠️ ほか | JSON の整形・コマンドプロンプトでの実行・パスのコピー・デスクトップへのショートカット・Windows のジャンプリスト（タスクバーの右クリックで最近のファイル）・更新ボタンで新しい版を確認 |
 
 ---
 
@@ -166,9 +166,9 @@ cargo build --release
 
 ## ❱ 更新履歴【ChangeLog】
 
-- **最新（v2.1.77）：** Minecraft の NBT をテキストとツリー形式で編集できるようにし、配色の追加と右パネルを加えた。
+- **最新（v2.1.78）：** ウィンドウを増やさない動き・続きから・保存前の控え・正規表現の検索・コードの色分け・GitHub に近い Markdown のプレビュー（数式の簡易表示）・HTML の色の再現・フォルダの大きさの図・ext イメージの閲覧・乗せて確かめる値・日本語と英語の切り替え・配色の追加・更新ボタンでの新しい版の確認を加えた。
+- **v2.1.77：** Minecraft の NBT をテキストとツリー形式で編集できるようにし、配色の追加と右パネルを加えた。
 - **すべての履歴：** [changelog.md](changelog.md)
-- **開発中：** 続きから・マウスを乗せて開くメニュー・乗せて確かめる値・HTML の色の再現・フォルダの大きさの図・最前面の固定・アプリの中に出す確認画面・日本語と英語の切り替え・新しい既定の配色（濡羽・月白）・Discord と GitHub の配色・コードの色分け・GitHub に近い Markdown のプレビュー・ウィンドウを増やさない動き・正規表現の検索・ext イメージの閲覧を加えた。
 - **Discord：** [更新履歴チャンネル](https://discord.com/channels/1233036571243188296/1363604094895521944)
 
 ---
