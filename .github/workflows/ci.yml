@@ -50,6 +50,13 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
           echo "BIN=$BIN" >> "$GITHUB_ENV"
 
+      # 配布用の実行ファイルは、計測より先に保存する（計測が失敗してもリリースに載るように）
+      - uses: actions/upload-artifact@v4
+        with:
+          name: neonote-${{ runner.os }}
+          path: ${{ env.BIN }}
+          if-no-files-found: error
+
       # 検索・全置換・TextBuffer の時間。通常のテストでは動かない（#[ignore]）計測を、ここで 1 回だけ回す
       - name: Measure
         shell: bash
@@ -62,12 +69,6 @@ jobs:
             grep '^PERF\|PERF ' perf.txt | sed 's/^.*PERF /PERF /'
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: neonote-${{ runner.os }}
-          path: ${{ env.BIN }}
-          if-no-files-found: error
 
   # タグ（v1.2.3 など）を push したときだけ、3 つの OS の実行ファイルを zip にして Releases に載せる。
   # 同じタグのリリースが既にあればファイルだけを差し替え、無ければ下書きで作る（説明を書いてから公開する）。
