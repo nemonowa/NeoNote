@@ -19,6 +19,10 @@ pub struct Images<'a> {
 /// 罫線つきの表の開始タグ。
 const TABLE_OPEN: &str = "<table border=\"1\" cellspacing=\"0\" cellpadding=\"6\">";
 
+fn escape(s: &str) -> String {
+    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+}
+
 /// プレビューの色（どれも `#rrggbb`）。
 pub struct Colors<'a> {
     pub bg: &'a str,
@@ -53,12 +57,16 @@ pub fn to_html(md: &str, c: &Colors, imgs: &Images) -> String {
         | Options::ENABLE_STRIKETHROUGH
         | Options::ENABLE_TASKLISTS
         | Options::ENABLE_FOOTNOTES
-        | Options::ENABLE_GFM;
+        | Options::ENABLE_GFM
+        | Options::ENABLE_MATH;
     // リンクは HelpView に辿らせない（辿ると、ファイルとして読みに行って失敗する）。
     // 文字はリンクの色で出し、リンク先は出さない（GitHub と同じ見た目）。
     let mut events: Vec<Event> = Vec::new();
     // 開いている引用ごとに、閉じる時に font も閉じるか（普通の引用は文字を薄くする）
     let mut quotes: Vec<bool> = Vec::new();
+    // リストの入れ子の深さ。字下げした位置に width="100%" の表を置くと、HelpView は「表がはみ出す→文書を広げて組み直す→
+    // 表も 100% なのでまた広がる」を繰り返して固まる。リストの中では表に割合の幅を付けない
+    let mut lists = 0usize;
     // 画像: 中の文字（alt）を集めておき、終わりで「ローカルの画像なら <img>、そうでなければ alt（+ URL）」にする
     let mut img: Option<(String, String)> = None; // (参照先, alt)
     for ev in Parser::new_ext(md, opts) {
@@ -94,9 +102,18 @@ pub fn to_html(md: &str, c: &Colors, imgs: &Images) -> String {
             Event::Start(Tag::CodeBlock(_)) if !quotes.is_empty() => events.push(html_ev("<pre>".into())),
             Event::End(TagEnd::CodeBlock) if !quotes.is_empty() => events.push(html_ev("</pre>".into())),
             Event::Start(Tag::CodeBlock(_)) => events.push(html_ev(format!(
-                "<table width=\"100%\" border=\"0\" cellspacing=\"0\" cellpadding=\"10\"><tr><td bgcolor=\"{}\"><pre>",
+                "<table{} border=\"0\" cellspacing=\"0\" cellpadding=\"10\"><tr><td bgcolor=\"{}\"><pre>",
+                if lists == 0 { " width=\"100%\"" } else { "" },
                 c.sub
             ))),
+            Event::Start(Tag::List(n)) => {
+                lists += 1;
+                events.push(Event::Start(Tag::List(n)));
+            }
+            Event::End(TagEnd::List(o)) => {
+                lists = lists.saturating_sub(1);
+                events.push(Event::End(TagEnd::List(o)));
+            }
             Event::End(TagEnd::CodeBlock) => events.push(html_ev("</pre></td></tr></table>".into())),
             // 引用: 左の帯を細い列で描く。注記（[!NOTE] など）は帯と見出しに色を付ける
             Event::Start(Tag::BlockQuote(kind)) => {
@@ -108,15 +125,19 @@ pub fn to_html(md: &str, c: &Colors, imgs: &Images) -> String {
                     None => (c.border, format!("<font color=\"{}\">", c.subtext)),
                 };
                 quotes.push(kind.is_none());
+                let (tw, cw) = if lists == 0 { (" width=\"100%\"", " width=\"99%\"") } else { ("", "") };
                 events.push(html_ev(format!(
-                    "<table width=\"100%\" border=\"0\" cellspacing=\"0\" cellpadding=\"0\"><tr>\
-                     <td bgcolor=\"{bar}\" width=\"4\"><font size=\"1\">&nbsp;</font></td><td width=\"14\"></td><td width=\"99%\">{head}"
+                    "<table{tw} border=\"0\" cellspacing=\"0\" cellpadding=\"0\"><tr>\
+                     <td bgcolor=\"{bar}\" width=\"4\"><font size=\"1\">&nbsp;</font></td><td width=\"14\"></td><td{cw}>{head}"
                 )));
             }
             Event::End(TagEnd::BlockQuote(_)) => {
                 let font = if quotes.pop().unwrap_or(false) { "</font>" } else { "" };
                 events.push(html_ev(format!("{font}</td></tr></table>")));
             }
+            // 数式は記号を文字に直して等幅で出す（HelpView は数式を描けない。texmath.rs）
+            Event::InlineMath(t) => events.push(html_ev(format!("<tt>{}</tt>", escape(&super::texmath::to_text(&t))))),
+            Event::DisplayMath(t) => events.push(html_ev(format!("<center><tt>{}</tt></center>", escape(&super::texmath::to_text(&t))))),
             Event::TaskListMarker(done) => events.push(Event::Text(if done { "\u{2611} " } else { "\u{2610} " }.into())),
             // 大きな見出しの下には線を引く
             Event::End(TagEnd::Heading(level)) => {
@@ -274,4 +295,23 @@ mod tests {
     fn empty_text_still_gives_a_page() {
         assert!(conv("").contains("<body"));
     }
+
+    #[test]
+    fn math_is_shown_as_text() {
+        let h = conv("Energy $E = mc^2$ and\n\n$$\\frac{a}{b} < 1$$\n");
+        assert!(h.contains("<tt>E = mc²</tt>"), "{h}");
+        assert!(h.contains("<center><tt>a/b &lt; 1</tt></center>"), "{h}");
+        assert!(conv("price $5 and $6").contains("$5"));
+    }
+
+    #[test]
+    fn no_percent_width_tables_inside_lists() {
+        // リストの中の 100% 幅の表は HelpView を固まらせる（コードブロック・引用のどちらも）
+        let h = conv("1. a\n\n   ```\n   code\n   ```\n\n   > quote\n\n- b\n  - c\n\n    ```\n    x\n    ```\n");
+        let inside: Vec<&str> = h.split("<li>").skip(1).map(|s| s.split("</li>").next().unwrap_or("")).collect();
+        assert!(inside.iter().any(|s| s.contains("<pre>")));
+        assert!(inside.iter().all(|s| !s.contains("width=\"100%\"") && !s.contains("width=\"99%\"")), "{h}");
+        assert!(conv("```\nx\n```").contains("width=\"100%\""));
+    }
 }
+

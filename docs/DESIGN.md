@@ -50,7 +50,7 @@
 | 項目 | 内容 |
 | --- | --- |
 | README | [Discord](https://discord.com/channels/1233036571243188296/1360947282106777712/1360947282106777712) |
-| Download | [Google Drive](https://drive.google.com/file/d/1zSsNEQi-YDSH6ytb8NSPXDFqjqP862ZH/view?usp=sharing) |
+| Download | [GitHub Releases](https://github.com/nemonowa/NeoNote/releases)（更新ボタンは API で最新の公開リリースと比べる） |
 | HomePage | 未設定（Java 版コードでは `https://nemonowa.github.io/` を使用） |
 | YouTube PV | 未設定 |
 
@@ -1177,3 +1177,9 @@ Run のサブメニューの **Header**、または編集領域の右クリッ�
 
 - **文字の途中でのスライス**（大きなファイルの区切りで見つけた）: 文字列を、文字の切れ目と限らないバイト位置で切る箇所を `grep` で洗い出した（`[x + N..]`・`[..CONST]`・`.min(..)` での切り詰め・`truncate`）。残りは、ASCII の記号を `find` した位置からの計算か、`floor_boundary`・`is_char_boundary` で合わせてある物だけで、ほかに落ちる箇所は無かった。
 - **壊れた入力での範囲外・桁あふれ・巨大な確保**（ext イメージで見つけた）: 中身を読む処理（inflate・gzip・zlib・tar・tar.gz・zip・mca・NBT・音声タグ・画像メタデータ・xlsx/ods・docx/odt/pptx/odp/epub・PDF）へ、乱数・印つきの乱数・正しいデータを壊した物を渡すテスト（`neo/fuzz.rs`。通常は各 600 件）を足した。2 万件で 1 回流して panic・異常終了は無かった。Office 系は正しい zip の種を持たないので、zip の層より奥はほとんど試せていない。
+
+### Markdown の Preview が固まる（2026-11-12）
+- 原因：FLTK の HelpView は、字下げした位置（リストの中）に `width="100%"` の表があると「はみ出す→文書の幅を広げて組み直す→表も広がる」を繰り返して止まらない。コードブロック・引用を表で描いていたため、リストの中で起きた。
+- 対処：リストの中では表に割合の幅を付けない（markdown.rs）。横展開：割合の幅の表を出すのは markdown.rs と audiometa.rs（リストの外だけ）。html ファイルの Preview は表の属性を作り直すので出ない。手元の Markdown 228 件を HelpView に入れて固まらないことを確かめた。
+- 名前の無いタブは、最初の中身のある行から 20 文字までの名前を出す（tabs::name_from_text）。ウィンドウの題名は「無題」のまま（未対応）。
+- 数式の Preview（texmath.rs）：記号・上付き・下付き・\frac→a/b・\sqrt→√ を文字にして等幅で出す簡易対応。分数の積み重ね・行列は出せない。画像で描く案（数MB増）は未着手。

@@ -184,7 +184,7 @@ pub fn clamp_width(w: i32) -> i32 {
 /// `on_jump(行)` は縮小表示のクリック・ドラッグ、`on_pin` は `Pin` の押下、
 /// `on_resize(幅, 離した)` は境目のドラッグ中と離したときに呼ぶ。
 /// `on_menu` は面積図の四角を右クリックした時に、その道筋（一覧の中の相対パス）とフォルダかを受け取る。
-pub fn build(on_jump: impl Fn(i32) + 'static, on_pin: impl Fn() + 'static, on_resize: impl Fn(i32, bool) + 'static, on_menu: impl Fn(String, bool) + 'static) -> SidePanel {
+pub fn build(on_jump: impl Fn(i32) + 'static, on_pin: impl Fn() + 'static, on_resize: impl Fn(i32, bool) + 'static, on_menu: impl Fn(String, bool) + 'static, on_peek: impl Fn(Option<(String, bool)>, bool) + 'static) -> SidePanel {
     let state = Rc::new(RefCell::new(State::default()));
     let mut w = Widget::default();
     {
@@ -268,8 +268,10 @@ pub fn build(on_jump: impl Fn(i32) + 'static, on_pin: impl Fn() + 'static, on_re
                         let h = tree_hit(&st, fltk::app::event_x(), fltk::app::event_y());
                         if h != st.hover {
                             st.hover = h;
+                            let cell = h.and_then(|i| st.cells.get(i)).map(|c| (c.path.clone(), c.is_dir));
                             drop(st);
                             w.redraw();
+                            on_peek(cell, false);
                         }
                     }
                 }
@@ -281,6 +283,7 @@ pub fn build(on_jump: impl Fn(i32) + 'static, on_pin: impl Fn() + 'static, on_re
             Event::Leave => {
                 if state.borrow_mut().hover.take().is_some() {
                     w.redraw();
+                    on_peek(None, false);
                 }
                 if let Some(mut win) = w.window() {
                     win.set_cursor(Cursor::Default);
@@ -298,6 +301,16 @@ pub fn build(on_jump: impl Fn(i32) + 'static, on_pin: impl Fn() + 'static, on_re
                 };
                 if let Some((path, is_dir)) = hit {
                     on_menu(path, is_dir);
+                }
+                true
+            }
+            Event::Push if state.borrow().tree.is_some() && fltk::app::event_mouse_button() == fltk::app::MouseButton::Left => {
+                let hit = {
+                    let st = state.borrow();
+                    tree_hit(&st, fltk::app::event_x(), fltk::app::event_y()).and_then(|i| st.cells.get(i)).map(|c| (c.path.clone(), c.is_dir))
+                };
+                if hit.is_some() {
+                    on_peek(hit, true);
                 }
                 true
             }

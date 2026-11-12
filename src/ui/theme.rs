@@ -27,7 +27,7 @@ pub struct Palette {
     pub subtext: Rgb,
 }
 
-/// ダークの既定「濡羽色」（#000B00 を地に、緑の文字とアクセント）。
+/// 「濡羽色」（#000B00 を地に、緑の文字とアクセント）。
 pub const DARK: Palette = Palette {
     main: (0, 11, 0),
     sub: (10, 32, 16), // 地が黒に近く一段暗くできないので、バーは一段明るい緑にする
@@ -36,7 +36,7 @@ pub const DARK: Palette = Palette {
     subtext: (72, 150, 90),
 };
 
-/// ライトの既定「月白色」（#EAF4FC を地に、紺の文字と青のアクセント）。
+/// 「月白色」（#EAF4FC を地に、紺の文字と青のアクセント）。
 pub const LIGHT: Palette = Palette {
     main: (234, 244, 252),
     sub: (214, 229, 242),
@@ -45,7 +45,7 @@ pub const LIGHT: Palette = Palette {
     subtext: (84, 102, 126),
 };
 
-/// 以前のダーク（SwingNeoNote 由来の配色。本文の文字だけ、subtext から text に変えた）。
+/// 既定のダーク（SwingNeoNote 由来の配色。本文の文字だけ、subtext から text に変えた）。
 pub const CLASSIC_DARK: Palette = Palette {
     main: (43, 43, 43),
     sub: (30, 30, 30),
@@ -54,7 +54,7 @@ pub const CLASSIC_DARK: Palette = Palette {
     subtext: (128, 128, 128),
 };
 
-/// 以前のライト。
+/// 既定のライト。
 pub const CLASSIC_LIGHT: Palette = Palette {
     main: (250, 250, 250),
     sub: (232, 232, 232),
@@ -73,10 +73,10 @@ pub struct Named {
 /// 使えるパレット。先頭の 2 つがダークとライト（Toggle Theme はこの 2 つを行き来する）。
 /// 3 つ目からは見比べ用の候補（起動時に環境変数 NEONOTE_THEME=名前 で選べる）。
 pub const PALETTES: &[Named] = &[
-    Named { name: "nureba", palette: DARK, light: false },
-    Named { name: "geppaku", palette: LIGHT, light: true },
     Named { name: "classic_dark", palette: CLASSIC_DARK, light: false },
     Named { name: "classic_light", palette: CLASSIC_LIGHT, light: true },
+    Named { name: "nureba", palette: DARK, light: false },
+    Named { name: "geppaku", palette: LIGHT, light: true },
     Named { name: "nord", palette: Palette { main: (38, 42, 51), sub: (29, 32, 40), accent: (94, 129, 172), text: (229, 233, 240), subtext: (140, 150, 170) }, light: false },
     Named { name: "abyss", palette: Palette { main: (22, 27, 34), sub: (13, 17, 23), accent: (0, 122, 112), text: (214, 222, 230), subtext: (125, 135, 148) }, light: false },
     Named { name: "paper", palette: Palette { main: (247, 241, 227), sub: (233, 224, 204), accent: (166, 90, 30), text: (52, 44, 36), subtext: (110, 96, 80) }, light: true },
@@ -141,7 +141,7 @@ pub fn is_light() -> bool {
 pub fn palette() -> Palette {
     match PALETTES.get(CURRENT.load(Ordering::Relaxed)) {
         Some(p) => p.palette,
-        None => custom().unwrap_or(DARK),
+        None => custom().unwrap_or(CLASSIC_DARK),
     }
 }
 

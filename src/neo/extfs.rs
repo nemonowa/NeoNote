@@ -545,7 +545,11 @@ fn safe_name(part: &str) -> String {
 /// 取り出したファイルは読み取り専用にする（編集しても、イメージには書き戻らないため、保存で誤解しないように）。
 /// 一時フォルダは終了時に `cleanup_temp` で消す。
 pub fn extract_to_temp(image: &Path, path: &str) -> Result<std::path::PathBuf, String> {
-    let data = read_path(image, path, EXTRACT_MAX)?;
+    write_temp(image, path, &read_path(image, path, EXTRACT_MAX)?)
+}
+
+/// イメージ（ext・ISO）から読んだ中身 `data` を、一時フォルダの `path` の場所へ書き、そのパスを返す（読み取り専用にする）。
+pub fn write_temp(image: &Path, path: &str, data: &[u8]) -> Result<std::path::PathBuf, String> {
     // 同じ名前のファイルが別のイメージから来ても混ざらないよう、イメージのパスで分ける
     let tag = image.to_string_lossy().bytes().fold(2166136261u32, |h, b| (h ^ b as u32).wrapping_mul(16777619));
     let mut out = temp_root().join(format!("{tag:08x}"));
@@ -558,7 +562,7 @@ pub fn extract_to_temp(image: &Path, path: &str) -> Result<std::path::PathBuf, S
     if out.exists() {
         make_writable(&out);
     }
-    std::fs::write(&out, &data).map_err(|e| format!("{}\n{e}", out.display()))?;
+    std::fs::write(&out, data).map_err(|e| format!("{}\n{e}", out.display()))?;
     if let Ok(meta) = std::fs::metadata(&out) {
         let mut perm = meta.permissions();
         perm.set_readonly(true);

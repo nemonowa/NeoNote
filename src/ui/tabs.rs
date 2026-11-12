@@ -54,11 +54,12 @@ pub fn point_in(x: i32, y: i32, left: i32, top: i32, w: i32, h: i32) -> bool {
     x >= left && y >= top && x < left + w && y < top + h
 }
 
-/// タブに出す名前。未保存の新規は "Untitled"、変更ありは先頭に `*`、読込中は `Loading... `。
-pub fn tab_label(path: Option<&Path>, dirty: bool, loading: bool) -> String {
+/// タブに出す名前。名前の無い文書は `guess`（中身から作った名前）、それも無ければ "Untitled"。変更ありは先頭に `*`、読込中は `Loading... `。
+pub fn tab_label(path: Option<&Path>, guess: Option<&str>, dirty: bool, loading: bool) -> String {
     let name = path
         .map(|p| crate::log::file_name(&p.to_string_lossy()).to_string())
         .filter(|n| !n.is_empty())
+        .or_else(|| guess.map(str::to_string))
         .unwrap_or_else(|| crate::lang::tr("無題", "Untitled").to_string());
     let mark = if dirty { "*" } else { "" };
     if loading {
@@ -66,6 +67,28 @@ pub fn tab_label(path: Option<&Path>, dirty: bool, loading: bool) -> String {
     } else {
         format!("{mark}{name}")
     }
+}
+
+/// 名前の無い文書のタブ名を、最初の中身のある行から作る（記号だけの行は飛ばす）。
+/// 空白で区切れる文は 20 文字に収まる語まで、区切れない文（日本語など）は 20 文字で切って `…` を付ける。
+pub fn name_from_text<'a>(lines: impl IntoIterator<Item = &'a str>) -> Option<String> {
+    const MAX: usize = 20;
+    let line = lines.into_iter().take(50).map(|l| l.trim_start_matches(|c: char| !c.is_alphanumeric()).trim_end()).find(|l| !l.is_empty())?;
+    if line.chars().count() <= MAX {
+        return Some(line.to_string());
+    }
+    let mut out = String::new();
+    for w in line.split_whitespace() {
+        let next = if out.is_empty() { w.to_string() } else { format!("{out} {w}") };
+        if next.chars().count() > MAX {
+            break;
+        }
+        out = next;
+    }
+    if out.is_empty() {
+        out = line.chars().take(MAX).collect::<String>() + "…";
+    }
+    Some(out)
 }
 
 /// FLTK のラベルは `&`（ショートカット）と `@`（記号）を特別扱いするので、重ねて無効にする。
@@ -416,12 +439,20 @@ mod tests {
     }
 
     #[test]
+    fn untitled_name_comes_from_the_first_line() {
+        assert_eq!(name_from_text(["", "  # 買い物メモ  ", "x"]).as_deref(), Some("買い物メモ"));
+        assert_eq!(name_from_text(["hello world and more words here"]).as_deref(), Some("hello world and more"));
+        assert_eq!(name_from_text(["あいうえおかきくけこさしすせそたちつてとなにぬねの"]).as_deref(), Some("あいうえおかきくけこさしすせそたちつてと…"));
+        assert_eq!(name_from_text(["", "   ", "// ---"]), None);
+    }
+
+    #[test]
     fn label_shows_name_dirty_mark_and_loading() {
-        assert_eq!(tab_label(None, false, false), "無題");
-        assert_eq!(tab_label(None, true, false), "*無題");
-        assert_eq!(tab_label(Some(Path::new("/a/b/c.txt")), true, false), "*c.txt");
-        assert_eq!(tab_label(Some(Path::new("C:\\x\\y.json")), false, false), "y.json");
-        assert_eq!(tab_label(Some(Path::new("/a/b/c.txt")), true, true), "読込中... c.txt");
+        assert_eq!(tab_label(None, None, false, false), "無題");
+        assert_eq!(tab_label(None, None, true, false), "*無題");
+        assert_eq!(tab_label(Some(Path::new("/a/b/c.txt")), None, true, false), "*c.txt");
+        assert_eq!(tab_label(Some(Path::new("C:\\x\\y.json")), None, false, false), "y.json");
+        assert_eq!(tab_label(Some(Path::new("/a/b/c.txt")), None, true, true), "読込中... c.txt");
     }
 
     #[test]

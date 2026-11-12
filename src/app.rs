@@ -112,6 +112,10 @@ enum Msg {
     Loaded(u64, PathBuf, Result<(document::Loaded, Eol), String>),
     /// 大きな文書の残りを、少しずつ足す（文書の id）。
     AppendTail(u64),
+    /// 新しい版の確認の結果（最新のリリース、または失敗の理由）。
+    UpdateChecked(Result<crate::neo::update::Latest, String>),
+    /// 面積図の四角にマウスが乗った・押された（None は離れた）。true は押した（zip の中の文字も読む）。
+    SidePeek(Option<(String, bool)>, bool),
     /// ツールバーのボタンが選ばれた。
     Do(Action),
     /// タブバーの操作。
@@ -276,6 +280,12 @@ impl Doc {
         let st = self.st.borrow();
         st.path.is_none() && st.loading_path.is_none() && !st.loading && !st.dirty && !st.hex && self.buf.length() == 0
     }
+
+    /// 何も開いていないときの説明のタブで、書き換えられていない。
+    fn is_welcome(&self) -> bool {
+        let st = self.st.borrow();
+        st.path.is_none() && !st.dirty && st.title.as_deref() == Some(Path::new(crate::ui::welcome::TITLE))
+    }
 }
 
 struct Ui {
@@ -358,6 +368,8 @@ struct Ui {
     mouse_right: Cell<bool>,
     /// Alt で両端の欄を開いている（もう一度 Alt で閉じる。保存しない）。
     alt_open: Cell<bool>,
+    /// 小窓を出しているのが面積図か（本文の見回りは、面積図の小窓を消さない）。
+    side_peeking: Cell<bool>,
     /// Alt を押してから、ほかのキー・クリックが無い（離したときに開閉する）。
     alt_armed: Cell<bool>,
     /// 右端の欄の情報を最後に作ったときの (文書の id, 文字数, 未保存, 選択の長さ)。変わらなければ作り直さない。
@@ -468,6 +480,17 @@ fn with_eol(r: Result<document::Loaded, String>) -> Result<(document::Loaded, Eo
         }
         (l, eol)
     })
+}
+
+/// 名前の無い文書のタブ名（最初の中身のある行から）。
+fn untitled_name(buf: &TextBuffer) -> Option<String> {
+    let mut lines = Vec::new();
+    let mut pos = 0;
+    while pos < buf.length() && lines.len() < 50 {
+        lines.push(buf.line_text(pos));
+        pos = buf.line_end(pos) + 1;
+    }
+    tabs::name_from_text(lines.iter().map(String::as_str))
 }
 
 /// これより大きな文書は、先頭だけ先に出して残りを少しずつ足す。
@@ -664,7 +687,9 @@ impl Ui {
             return;
         }
         let was_clean = !std::mem::replace(&mut d.st.borrow_mut().dirty, true);
-        if was_clean {
+        // 名前の無い文書は、タブ名を先頭の行から作るので、先頭近くの編集でも出し直す（変わっていなければ refresh_tabs は何もしない）
+        let unnamed = { let st = d.st.borrow(); st.path.is_none() && st.title.is_none() };
+        if was_clean || (unnamed && pos < 4096) {
             if self.is_active(&d) {
                 self.refresh_title();
             }
@@ -798,7 +823,7 @@ impl Ui {
     /// 終了する。いま開いているタブの組と表示中のタブを config.txt に残してから。
     fn quit(&self) {
         self.stop_all_audio();
-        extfs::cleanup_temp(); // ext イメージから取り出した一時ファイル
+        extfs::cleanup_temp(); // ext・ISO のイメージから取り出した一時ファイル
         for d in self.docs.borrow().iter() {
             self.remember_view(d);
         }
@@ -945,7 +970,7 @@ impl Ui {
                 let shown = st.path.as_deref().or(st.loading_path.as_deref()).or(meta.as_deref()).or(st.title.as_deref());
                 TabInfo {
                     id: d.id,
-                    label: tabs::tab_label(shown, st.dirty, st.loading),
+                    label: tabs::tab_label(shown, shown.is_none().then(|| untitled_name(&d.buf)).flatten().as_deref(), st.dirty, st.loading),
                     tip: match (&st.meta_of, &st.arch_of, shown) {
                         (Some(img), _, _) => if crate::lang::is_en() { format!("Metadata of {}", img.display()) } else { format!("{} のメタデータ", img.display()) },
                         (None, Some(root), _) => if crate::lang::is_en() { format!("Rename list of {}", root.display()) } else { format!("{} の名前変更一覧", root.display()) },
@@ -1124,8 +1149,12 @@ impl Ui {
             return d.id;
         }
         let cur = self.doc();
-        let d = if cur.is_pristine() { cur } else { self.new_doc() };
+        let d = if cur.is_pristine() { cur.clone() } else { self.new_doc() };
         self.load_into(&d, path, None);
+        // 説明のタブは、ファイルを開いたら役目を終えるので閉じる
+        if cur.is_welcome() {
+            self.remove_doc(cur.id);
+        }
         d.id
     }
 
@@ -1610,6 +1639,12 @@ impl Ui {
                 self.set_text_quiet(&d, "");
                 *d.archive.borrow_mut() = Some(entries);
                 *self.arch_content.borrow_mut() = None; // 一覧が変わったので、本文の検索結果は捨てる
+                // 開いた時に一度だけ、Alt と同じ左右の欄を開く（面積図があることに気づけるように）。固定中はそのまま。Alt で閉じる
+                if self.is_active(&d) && !self.side_pinned.get() && !self.alt_open.get() {
+                    self.alt_open.set(true);
+                    self.update_gutter();
+                    self.update_side();
+                }
                 {
                     let mut st = d.st.borrow_mut();
                     st.loading = false;
@@ -2257,8 +2292,8 @@ impl Ui {
             self.open_paths(vec![rel.split('/').fold(root, |p, c| p.join(c))]);
             return true;
         }
-        if extfs::is_ext_path(&root) {
-            match extfs::extract_to_temp(&root, rel) {
+        if let Some(kind) = archive::image_kind(&root) {
+            match archive::image_extract(&root, kind, rel) {
                 Ok(p) => {
                     self.open_paths(vec![p]);
                 }
@@ -2269,6 +2304,82 @@ impl Ui {
         false
     }
 
+    /// 面積図の四角の簡単なプレビュー（乗せた・押した）。フォルダは中の大きい順、文字のファイルは先頭の数行、画像は縮小。
+    /// zip の中のファイルの中身は、押したときだけ読む（乗せるたびに zip 全体を読まないため）。tar・ext は名前と大きさだけ。
+    fn side_peek(&self, cell: Option<(String, bool)>, clicked: bool) {
+        use crate::neo::entrypeek;
+        let Some((rel, is_dir)) = cell else {
+            if self.side_peeking.replace(false) {
+                peekwin::hide();
+            }
+            return;
+        };
+        self.peek_at.set(None);
+        self.side_peeking.set(true);
+        let d = self.doc();
+        let Some(root) = d.st.borrow().path.clone() else { return };
+        let entries = d.archive.borrow();
+        let Some(entries) = entries.as_ref() else { return };
+        let rel = rel.trim_end_matches('/').to_string();
+        let under = format!("{rel}/");
+        let size: u64 = entries.iter().filter(|e| !e.is_dir && (e.path == rel || e.path.starts_with(&under))).map(|e| e.size).sum();
+        let title = format!("{}  {}", rel, archive::human_size(size));
+        let (mx, my) = app::get_mouse();
+        let lines = |l: Vec<String>| peekwin::Content::Lines { title: title.clone(), lines: l };
+        let en = crate::lang::is_en();
+        let content = if is_dir {
+            let (kids, files) = entrypeek::dir_children(entries, &rel);
+            let mut l: Vec<String> = kids.iter().take(entrypeek::MAX_LINES - 1).map(|(n, s, dir)| format!("{:>9}  {}{}", archive::human_size(*s), n, if *dir { "/" } else { "" })).collect();
+            let more = kids.len().saturating_sub(l.len());
+            l.push(match (en, more) {
+                (true, 0) => format!("{files} files"),
+                (true, m) => format!("{files} files, {m} more items"),
+                (false, 0) => format!("ファイル {files} 個"),
+                (false, m) => format!("ファイル {files} 個（ほか {m} 項目）"),
+            });
+            lines(l)
+        } else {
+            let full = rel.split('/').fold(root.clone(), |p, c| p.join(c));
+            let head: Option<Vec<u8>> = if root.is_dir() {
+                if imagefile::is_image_path(&full) {
+                    peekwin::show(mx, my, peekwin::Content::Image(full, title));
+                    return;
+                }
+                use std::io::Read;
+                std::fs::File::open(&full).ok().and_then(|f| {
+                    let mut b = Vec::new();
+                    f.take(entrypeek::HEAD_BYTES as u64).read_to_end(&mut b).ok().map(|_| b)
+                })
+            } else if clicked && archive::is_zip_path(&root) && std::fs::metadata(&root).is_ok_and(|m| m.len() <= 64 * 1024 * 1024) {
+                std::fs::read(&root).ok().and_then(|z| archive::read_entry(&z, &rel, 1 << 20).ok())
+            } else if let Some(kind) = archive::image_kind(&root) {
+                // ディスクイメージは必要な所だけ読むので、乗せただけでも先頭を読む。画像は取り出して縮小を出す
+                if imagefile::is_image_path(Path::new(&rel)) && size <= 16 << 20 {
+                    if let Ok(p) = archive::image_extract(&root, kind, &rel) {
+                        peekwin::show(mx, my, peekwin::Content::Image(p, title));
+                        return;
+                    }
+                }
+                if size > entrypeek::HEAD_BYTES as u64 * 128 {
+                    // 大きなファイルは丸ごと読むことになるので、押したときだけ
+                    clicked.then(|| archive::image_read(&root, kind, &rel, 64 << 20).ok()).flatten()
+                } else {
+                    archive::image_read(&root, kind, &rel, 1 << 20).ok()
+                }
+            } else {
+                None
+            };
+            match head.as_deref().map(entrypeek::text_head) {
+                Some(Some(l)) if !l.is_empty() => lines(l),
+                Some(Some(_)) => lines(vec![crate::lang::tr("（空のファイル）", "(empty file)").into()]),
+                Some(None) => lines(vec![crate::lang::tr("（バイナリ）", "(binary)").into()]),
+                None if archive::is_zip_path(&root) || archive::image_kind(&root).is_some() => lines(vec![crate::lang::tr("クリックで中身を表示", "Click to show the contents").into()]),
+                None => peekwin::Content::Note(title.clone()),
+            }
+        };
+        peekwin::show(mx, my, content);
+    }
+
     /// 面積図の四角の右クリック: 開く・場所を表示・名前の変更・ごみ箱へ・パスのコピー。
     /// zip の中身は、名前の変更とパスのコピーだけ（取り出し・削除はしない）。
     fn side_menu(self: &Rc<Self>, rel: &str, is_dir: bool) {
@@ -2276,7 +2387,7 @@ impl Ui {
         let Some(root) = d.st.borrow().path.clone() else { return };
         let Some(old) = d.archive.borrow().clone() else { return };
         let in_folder = root.is_dir();
-        let in_ext = !in_folder && extfs::is_ext_path(&root);
+        let in_ext = !in_folder && archive::image_kind(&root).is_some(); // ext・ISO（読み取り専用）
         let full = rel.split('/').fold(root.clone(), |p, c| p.join(c));
         let rows = [
             (crate::lang::tr("NeoNote で開く", "Open in NeoNote"), in_folder || (in_ext && !is_dir)),
@@ -3232,7 +3343,7 @@ impl Ui {
             Action::NextTab => self.activate_relative(1),
             Action::PrevTab => self.activate_relative(-1),
             Action::OpenHomePage => self.open_site(platform::HOMEPAGE),
-            Action::CheckUpdate => self.open_site(platform::DOWNLOAD_URL),
+            Action::CheckUpdate => self.check_update(),
             Action::MakeShortcut => self.make_shortcut(),
             Action::OpenRecent => self.recent_menu(),
             Action::OpenConfig => self.open_config(),
@@ -3625,6 +3736,17 @@ impl Ui {
         self.set_preview_for(&d, true);
     }
 
+    /// 何も開いていない（空の新規タブ 1 つだけ）なら、そのタブを説明のタブにする。
+    fn show_welcome_if_empty(self: &Rc<Self>) {
+        let only = { let docs = self.docs.borrow(); (docs.len() == 1).then(|| Rc::clone(&docs[0])) };
+        let Some(blank) = only.filter(|d| d.is_pristine()) else { return };
+        let Some(d) = self.open_bundled(crate::ui::welcome::TITLE, &crate::ui::welcome::text()) else { return };
+        d.format_auto.set(false);
+        d.preview_as.set(Some(viewmode::Kind::Markdown));
+        self.set_preview_for(&d, true);
+        self.remove_doc(blank.id);
+    }
+
     /// 第三者のライセンス文を、本文のタブとして文字のまま開く（長いので Preview にはしない）。
     fn open_licenses(self: &Rc<Self>) {
         self.open_bundled("THIRD_PARTY_LICENSES.txt", THIRD_PARTY_LICENSES);
@@ -3655,6 +3777,14 @@ impl Ui {
     /// メニュー・確認画面・お知らせは出すたびに言語を見るので、ここでは触らない。
     fn apply_lang(&self) {
         toolbar::relabel(&self.bar, &self.top_pin, &self.gap);
+        // 説明のタブも今の言語で書き直す
+        let welcome: Vec<Rc<Doc>> = self.docs.borrow().iter().filter(|d| d.is_welcome()).cloned().collect();
+        for d in welcome {
+            self.set_text_quiet(&d, &crate::ui::welcome::text());
+            if self.is_active(&d) {
+                self.set_preview_for(&d, true);
+            }
+        }
         self.refresh_tabs();
         self.refresh_title();
     }
@@ -4215,6 +4345,45 @@ impl Ui {
     // ---- 残りの項目（Open HomePage / Open Recent / Auto Save / 選択系 など）----
 
     /// ブラウザで URL を開く。開けなければ理由を出す。
+    /// GitHub の最新のリリースを裏で読み、結果を UpdateChecked で受け取る。
+    fn check_update(&self) {
+        use crate::neo::update;
+        self.flash(crate::lang::tr("新しい版を確かめています…", "Checking for a new version..."));
+        let tx = self.tx;
+        thread::spawn(move || {
+            let r = platform::fetch_text(&update::api_url())
+                .map_err(|e| e.to_string())
+                .and_then(|j| update::parse_latest(&j).ok_or_else(|| crate::lang::tr("公開されたリリースがありません", "No published release").to_string()));
+            tx.send(Msg::UpdateChecked(r));
+            app::awake();
+        });
+    }
+
+    fn on_update_checked(&self, r: Result<crate::neo::update::Latest, String>) {
+        use crate::neo::update;
+        let en = crate::lang::is_en();
+        match r {
+            Ok(l) if update::is_newer(&l.tag, dev::version()) => {
+                let msg = if en { format!("A new version {} is available (current: {}).", l.tag, dev::version()) } else { format!("新しい版 {} が出ています（いまの版: {}）。", l.tag, dev::version()) };
+                if confirm::choice(&msg, crate::lang::tr("閉じる", "Close"), crate::lang::tr("配布ページを開く", "Open the download page"), "") == Some(1) {
+                    self.open_site(&l.page);
+                }
+            }
+            Ok(l) => self.flash(&if en { format!("Up to date ({}; latest release {})", dev::version(), l.tag) } else { format!("最新です（{}。公開中の最新 {}）", dev::version(), l.tag) }),
+            Err(e) => {
+                log::warn(TAG, &format!("update check failed: {e}"));
+                let msg = if en { format!("Could not check for a new version.
+
+{e}") } else { format!("新しい版を確かめられませんでした。
+
+{e}") };
+                if confirm::choice(&msg, crate::lang::tr("閉じる", "Close"), crate::lang::tr("リリースのページを開く", "Open the releases page"), "") == Some(1) {
+                    self.open_site(&update::releases_page());
+                }
+            }
+        }
+    }
+
     fn open_site(&self, url: &str) {
         log::info(TAG, &format!("open site: {url}"));
         if let Err(e) = platform::open_url(url) {
@@ -4780,6 +4949,16 @@ impl Ui {
         self.peek_still.set((mx, my, n));
         let ed = &self.editor;
         let d = self.doc();
+        if self.side_peeking.get() {
+            // 面積図の小窓は、面積図の上にいる間はそのまま。欄が隠れた・離れたのに Leave が来なかったときは、ここで消す
+            let sw = &self.side.widget;
+            let (sx, sy) = (mx - self.win.x_root(), my - self.win.y_root());
+            if sw.visible() && sx >= sw.x() && sx < sw.x() + sw.w() && sy >= sw.y() && sy < sw.y() + sw.h() {
+                return;
+            }
+            self.side_peeking.set(false);
+            peekwin::hide();
+        }
         let usable = self.win.visible() && ed.visible() && !d.preview.get() && !d.st.borrow().hex && !d.st.borrow().loading;
         let (ex, ey) = (mx - self.win.x_root(), my - self.win.y_root());
         let inside = ex >= ed.x() + self.gutter_width() && ex < ed.x() + ed.w() - app::scrollbar_size() && ey >= ed.y() && ey < ed.y() + ed.h();
@@ -5831,6 +6010,7 @@ pub fn run(paths: Vec<String>, new_window: bool) -> Result<(), FltkError> {
     let tx_jump = tx_bar2;
     let tx_side_pin = tx_bar2;
     let tx_side_menu = tx_bar2;
+    let tx_side_peek = tx_bar2;
     let tx_side_w = tx_bar2;
     let side = sidepanel::build(
         move |line| {
@@ -5847,6 +6027,10 @@ pub fn run(paths: Vec<String>, new_window: bool) -> Result<(), FltkError> {
         },
         move |rel, is_dir| {
             tx_side_menu.send(Msg::SideMenu(rel, is_dir));
+            app::awake();
+        },
+        move |cell, clicked| {
+            tx_side_peek.send(Msg::SidePeek(cell, clicked));
             app::awake();
         },
     );
@@ -5908,6 +6092,7 @@ pub fn run(paths: Vec<String>, new_window: bool) -> Result<(), FltkError> {
         peek_still: Cell::new((i32::MIN, i32::MIN, 0)),
         mouse_right: Cell::new(false),
         alt_open: Cell::new(false),
+        side_peeking: Cell::new(false),
         alt_armed: Cell::new(false),
         side_key: Cell::new((0, -1, false, 0)),
         pin: pin.clone(),
@@ -6098,7 +6283,7 @@ pub fn run(paths: Vec<String>, new_window: bool) -> Result<(), FltkError> {
     ui.activate(first.id);
     win.show();
     ui.start_ipc();
-    log::info(TAG, &format!("started {}", dev::version()));
+    log::info(TAG, &format!("started {} (build {})", dev::version(), dev::BUILD));
     if dev::is_dev_user() {
         log::info("alert", "開発環境のためスキップ");
     }
@@ -6113,16 +6298,19 @@ pub fn run(paths: Vec<String>, new_window: bool) -> Result<(), FltkError> {
     } else {
         ui.open_paths(paths.into_iter().map(PathBuf::from).collect());
     }
+    ui.show_welcome_if_empty();
 
     while app.wait() {
         while let Some(msg) = rx.recv() {
             match msg {
                 Msg::Loaded(id, p, r) => ui.on_loaded(id, p, r),
                 Msg::AppendTail(id) => ui.append_tail(id),
+                Msg::UpdateChecked(r) => ui.on_update_checked(r),
                 Msg::Do(a) => ui.perform(a),
                 Msg::SideJump(line) => ui.side_jump(line),
                 Msg::SidePin => ui.toggle_side_pin(),
                 Msg::SideMenu(rel, is_dir) => ui.side_menu(&rel, is_dir),
+                Msg::SidePeek(cell, clicked) => ui.side_peek(cell, clicked),
                 Msg::SideWidth(w, done) => ui.set_side_width(w, done),
                 Msg::GutterWidth(w, done) => ui.drag_gutter_width(w, done),
                 Msg::Tab(TabCmd::Activate(id)) => ui.activate(id),

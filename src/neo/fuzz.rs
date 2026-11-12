@@ -134,5 +134,26 @@ fn parsers_do_not_panic_on_broken_input() {
     bad.extend(run("pdf", &inputs(11, &[b"%PDF-1.4\n"], &[], n / 3), |b| {
         let _ = pdftext::extract(b);
     }));
+    // UDF: 実物のイメージの、記述子のある所（先頭 300 セクター）を壊す。大きいので数を減らす
+    for (seed, name) in [(14, "102"), (15, "250")] {
+        let img = udffs::tests::fixture(name);
+        let mut r = Rng(seed);
+        let mut data = Vec::new();
+        for _ in 0..n / 6 {
+            let mut v = img.clone();
+            for _ in 0..1 + r.next() % 8 {
+                let i = (r.next() as usize) % (300 * 2048).min(v.len());
+                v[i] = r.next() as u8;
+            }
+            if r.next().is_multiple_of(5) {
+                v.truncate((r.next() as usize) % v.len());
+            }
+            data.push(v);
+        }
+        bad.extend(run(&format!("udf{name}"), &data, |b| {
+            let _ = udffs::list(std::io::Cursor::new(b));
+            let _ = udffs::read_path(std::io::Cursor::new(b), "資料/data.bin", 1 << 20);
+        }));
+    }
     assert!(bad.is_empty(), "panicked on: {}", bad.join(", "));
 }

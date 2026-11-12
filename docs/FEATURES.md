@@ -158,7 +158,7 @@ Keywords: dark mode, light theme, custom theme, Japanese English UI, side panel,
 | --- | --- | --- |
 | 最小の画面 | 行番号・右パネルはマウスを端へ寄せるか `Alt` で表示。ツールバーは押せば主な操作、乗せると関連の一覧 | `src/ui/` |
 | 右パネル | ファイル情報・ミニマップ（フォルダ・zip・イメージはツリーマップ） | `src/ui/sidepanel.rs` |
-| 配色 | 10 のテーマ（濡羽・月白・classic・nord・abyss・paper・sakura・Discord 風・GitHub 風ほか）と custom（5 色）。月のボタンで明暗。コントラスト比をテストで確認 | `src/ui/theme.rs`, `src/ui/skin.rs` |
+| 配色 | 10 のテーマ（ダーク・ライト（既定）・濡羽・月白・nord・abyss・paper・sakura・Discord 風・GitHub 風ほか）と custom（5 色）。月のボタンで明暗。コントラスト比をテストで確認 | `src/ui/theme.rs`, `src/ui/skin.rs` |
 | 言語 | 日本語 / English（旗のボタン） | `src/lang.rs` |
 | 表示 | 全画面 `F11`・最前面に固定（Windows）・行番号と右パネルの幅の調整・同梱フォント NeoFont | `src/ui/` |
 

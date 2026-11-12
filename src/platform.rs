@@ -8,8 +8,6 @@ use std::{
 };
 
 pub const HOMEPAGE: &str = "https://nemonowa.github.io/";
-/// 配布ページ（Check Update で開く。設計書「連携情報」の Download）。
-pub const DOWNLOAD_URL: &str = "https://drive.google.com/file/d/1zSsNEQi-YDSH6ytb8NSPXDFqjqP862ZH/view?usp=sharing";
 
 pub fn is_http_url(s: &str) -> bool {
     let l = s.to_ascii_lowercase();
@@ -70,38 +68,49 @@ fn spawn_detached(mut cmd: Command) -> io::Result<()> {
     Ok(())
 }
 
-/// URL の画像を、OS の `curl` で `dest` に保存する（依存を増やさないため、HTTP の部品は持たない）。
-/// http(s) 以外・大きすぎるもの（32 MiB 超）・20 秒を超えるものは失敗にする。シェルを通さない。
-pub fn download(url: &str, dest: &Path) -> io::Result<()> {
+/// OS の `curl` を、シェルを通さず窓を出さずに走らせる（依存を増やさないため、HTTP の部品は持たない）。
+/// http(s) 以外・大きすぎるもの（32 MiB 超）・20 秒を超えるものは失敗にする。`out` が None なら中身を標準出力で受け取る。
+fn curl(url: &str, out: Option<&Path>) -> io::Result<Vec<u8>> {
     if !is_http_url(url) {
         return Err(io::Error::new(io::ErrorKind::InvalidInput, crate::lang::tr("http(s) の URL ではありません", "Not an http(s) URL")));
     }
     let mut cmd = Command::new("curl");
-    cmd.args(["-fsSL", "--max-time", "20", "--max-filesize", "33554432", "--proto", "=http,https", "-o"])
-        .arg(dest)
-        .args(["--url", url])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped());
+    cmd.args(["-fsSL", "--max-time", "20", "--max-filesize", "33554432", "--proto", "=http,https", "-A", "NeoNote"]);
+    if let Some(dest) = out {
+        cmd.arg("-o").arg(dest);
+    }
+    cmd.args(["--url", url]).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::process::CommandExt;
         cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
     }
-    let out = cmd.output().map_err(|e| {
+    let result = cmd.output().map_err(|e| {
         if e.kind() == io::ErrorKind::NotFound {
-            io::Error::new(io::ErrorKind::NotFound, crate::lang::tr("curl が見つかりません（画像の URL を開くには curl が必要です）", "curl not found (curl is needed to open image URLs)"))
+            io::Error::new(io::ErrorKind::NotFound, crate::lang::tr("curl が見つかりません（インターネットから読むには curl が必要です）", "curl not found (curl is needed to read from the internet)"))
         } else {
             e
         }
     })?;
-    if out.status.success() {
-        Ok(())
+    if result.status.success() {
+        Ok(result.stdout)
     } else {
-        let _ = std::fs::remove_file(dest);
-        let msg = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        if let Some(dest) = out {
+            let _ = std::fs::remove_file(dest);
+        }
+        let msg = String::from_utf8_lossy(&result.stderr).trim().to_string();
         Err(io::Error::other(if msg.is_empty() { crate::lang::tr("ダウンロードに失敗しました", "Download failed").to_string() } else { msg }))
     }
+}
+
+/// URL の画像を `dest` に保存する。
+pub fn download(url: &str, dest: &Path) -> io::Result<()> {
+    curl(url, Some(dest)).map(|_| ())
+}
+
+/// URL の中身を文字として読む。
+pub fn fetch_text(url: &str) -> io::Result<String> {
+    curl(url, None).map(|b| String::from_utf8_lossy(&b).into_owned())
 }
 
 /// 既定のブラウザで URL を開く。シェルを通さないので `&` などを含んでも安全。
