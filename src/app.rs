@@ -2834,6 +2834,11 @@ impl Ui {
         let root = d.st.borrow().path.clone();
         let mut st = self.map_main.state.borrow_mut();
         st.set_tree(tree);
+        st.set_thumb_source(match &root {
+            Some(p) if p.is_dir() => Some(crate::ui::mapthumb::Source::Folder(p.clone())),
+            Some(p) => Some(crate::ui::mapthumb::Source::Packed(p.clone())),
+            None => None,
+        });
         st.head = match root {
             Some(p) if p.is_dir() => Some(Self::folder_head(p)),
             Some(p) => Self::packed_head(p),
@@ -5503,6 +5508,7 @@ impl Ui {
         {
             let mut st = self.side.state.borrow_mut();
             st.set_tree(tree);
+            st.set_thumb_source(folder_root.clone().map(crate::ui::mapthumb::Source::Folder));
             st.head = folder_root.map(Self::folder_head);
             st.rows = rows;
             st.lines = lines;

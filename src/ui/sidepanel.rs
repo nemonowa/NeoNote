@@ -5,7 +5,7 @@
 // 左の境目をドラッグすると幅を変えられる（WIDTH_MIN〜WIDTH_MAX）。
 // 行番号欄と同じく、マウスが右端にあるときだけ出す（`Pin` で常に出す）。出し方の判定は呼び出し側。
 use super::{
-    cushion, map3d, mapprev,
+    cushion, map3d, mapprev, mapthumb,
     mapview::{self, Camera, Kind, Lod},
     theme::*,
     treemap,
@@ -98,6 +98,9 @@ pub struct State {
     previews: mapprev::Cache,
     pub head: Option<HeadReader>,
     pending: bool,
+    /// 画像のファイルの四角に出す、縮めた画像（裏で読む）。読む所はアプリが `set_thumb_source` で付ける。
+    thumbs: mapthumb::Thumbs,
+    thumb_source: Option<mapthumb::Source>,
     /// メインの面積図として使う（情報欄・縮小表示・境目・押しピンは無く、部品の全面に面積図を描く）。
     pub full: bool,
     /// 面積図を別の場所（メイン）に出している間、右の欄は情報の行だけにして、面積図は描かない（そこへツリーを重ねる）。
@@ -141,6 +144,8 @@ const DRAG_MIN: i32 = 3;
 /// 中身のプレビューを読むのは、1 回の描画で数個・数 ms まで（残りは少し後の描画で続ける。画面を止めない）。
 const PREVIEW_PER_DRAW: usize = 4;
 const PREVIEW_BUDGET: Duration = Duration::from_millis(8);
+/// 縮めた画像を出す、四角の短い辺の下限（画素）。
+const THUMB_MIN: f64 = 12.0;
 
 impl State {
     /// 木を差し替える（並べ直しは次に描くとき）。拡大は全体に戻る。
@@ -226,6 +231,14 @@ impl State {
     /// 面積図を操作できる状態か（木があり、別の場所に出していない）。
     fn active(&self) -> bool {
         self.tree.is_some() && !self.overlay
+    }
+
+    /// 縮めた画像を読む所（フォルダ・一覧で開いたファイル）。同じなら、覚えた物をそのまま使う。
+    pub fn set_thumb_source(&mut self, source: Option<mapthumb::Source>) {
+        if self.thumb_source != source {
+            self.thumbs.set_source(source.clone());
+            self.thumb_source = source;
+        }
     }
 
     /// 3D 表示の入り切り（並べ直す）。
@@ -338,6 +351,29 @@ fn base_color(c: &mapview::VCell, bg: (u8, u8, u8)) -> (u8, u8, u8) {
 }
 
 /// 見えていて十分大きな（質感以上の）ファイルのうち、まだ読んでいないものを、大きい四角から数個だけ読む。
+/// 画像のファイルの四角のうち、見えていて十分大きい物の縮めた画像を、大きく見えている順に頼む（読むのは裏）。
+fn request_thumbs(st: &mut State, r: (i32, i32, i32, i32)) {
+    if !st.thumbs.has_source() {
+        return;
+    }
+    st.thumbs.receive();
+    let mut want: Vec<(f64, String)> = Vec::new();
+    for c in &st.cells {
+        if c.kind != Kind::File || !mapthumb::is_image_name(&c.path) || st.thumbs.contains(&c.path) {
+            continue;
+        }
+        let s = st.cam.screen_rect(c.r);
+        if s.w >= THUMB_MIN && s.h >= THUMB_MIN && cushion::pixel_rect(s, r).is_some() {
+            want.push((s.w * s.h, c.path.clone()));
+        }
+    }
+    want.sort_by(|a, b| b.0.total_cmp(&a.0));
+    st.thumbs.request(&want.into_iter().map(|(_, p)| p).collect::<Vec<_>>());
+    if st.thumbs.waiting() {
+        st.pending = true;
+    }
+}
+
 fn load_previews(st: &mut State, r: (i32, i32, i32, i32)) {
     st.pending = false;
     if st.head.is_none() {
@@ -408,9 +444,28 @@ fn draw_preview(p: &mapprev::Preview, lod: Lod, (x, y, cw, ch): (i32, i32, i32, 
 }
 
 /// 四角の 1 つの面（画面の四角 `s`）に、名前・大きさ・中身のプレビューを出す（平らな表示でも 3D でも同じ）。
-fn draw_face_content(previews: &mut mapprev::Cache, c: &mapview::VCell, s: treemap::Rect, frame: (i32, i32, i32, i32), base: (u8, u8, u8)) {
+fn draw_face_content(previews: &mut mapprev::Cache, thumbs: &mut mapthumb::Thumbs, c: &mapview::VCell, s: treemap::Rect, frame: (i32, i32, i32, i32), base: (u8, u8, u8)) {
     let Some((x, y, cw, ch)) = cushion::pixel_rect(s, frame) else { return };
     let lod = Lod::of(s.w, s.h, INFO_SIZE as f64);
+    // 画像のファイルは、縮めた画像を縦横比を保って収める。名前は、四角が十分高い時だけ上に出し、画像はその下に置く
+    if c.kind == Kind::File && s.w >= THUMB_MIN && s.h >= THUMB_MIN {
+        if let Some(img) = thumbs.get(&c.path) {
+            let named = lod >= Lod::Name && ch >= 3 * ROW_H;
+            let top = if named { ROW_H + 2 } else { 0 };
+            if let Some((ix, iy, iw, ih)) = mapthumb::fit_rect(img.data_w() as usize, img.data_h() as usize, (x + 1, y + 1 + top, cw - 2, ch - 2 - top)) {
+                draw::push_clip(x, y, cw, ch);
+                img.scale(iw, ih, false, true);
+                img.draw(ix, iy, iw, ih);
+                if named {
+                    let name = c.path.rsplit('/').next().unwrap_or(&c.path);
+                    draw::set_draw_color(rgb(text_on(base)));
+                    draw::draw_text2(name, x + 3, y + 1, cw - 6, ROW_H, Align::Left | Align::Top);
+                }
+                draw::pop_clip();
+                return;
+            }
+        }
+    }
     // 十分大きければ、名前（と大きさ）を出す。フォルダは中の四角に隠れるので出さない。
     if c.kind != Kind::Dir && lod >= Lod::Name {
         let name = match c.kind {
@@ -464,10 +519,10 @@ fn draw_flat(st: &mut State, r: (i32, i32, i32, i32), bg: (u8, u8, u8)) {
     if let Some(sh) = &st.shade {
         let _ = draw::draw_image(&sh.img, r.0, r.1, r.2, r.3, ColorDepth::Rgb8);
     }
-    let State { cells, previews, hover, cam, selected, .. } = st;
+    let State { cells, previews, thumbs, hover, cam, selected, .. } = st;
     for (i, c) in cells.iter().enumerate() {
         let s = cam.screen_rect(c.r);
-        draw_face_content(previews, c, s, r, base_color(c, bg));
+        draw_face_content(previews, thumbs, c, s, r, base_color(c, bg));
         if *hover == Some(i) || is_selected(selected, c) {
             draw_outline(s, r);
         }
@@ -476,7 +531,7 @@ fn draw_flat(st: &mut State, r: (i32, i32, i32, i32), bg: (u8, u8, u8)) {
 
 /// 3D 表示。奥から手前の順に、側面・上の面・中身を 1 つずつ描く（手前が奥を隠す）。
 fn draw_solids(st: &mut State, r: (i32, i32, i32, i32), bg: (u8, u8, u8)) {
-    let State { cells, solids, previews, hover, selected, .. } = st;
+    let State { cells, solids, previews, thumbs, hover, selected, .. } = st;
     for sol in solids.iter() {
         let c = &cells[sol.idx];
         let base = base_color(c, bg);
@@ -495,7 +550,7 @@ fn draw_solids(st: &mut State, r: (i32, i32, i32, i32), bg: (u8, u8, u8)) {
                 draw::draw_line(x, y, x, y + h - 1);
             }
         }
-        draw_face_content(previews, c, sol.top, r, base);
+        draw_face_content(previews, thumbs, c, sol.top, r, base);
         if *hover == Some(sol.idx) || is_selected(selected, c) {
             draw_outline(sol.top, r);
         }
@@ -511,6 +566,7 @@ fn draw_tree(st: &mut State, w: &Widget) {
     st.ensure_cells(r);
     let bg = if st.full { color_main() } else { color_sub() };
     load_previews(st, r);
+    request_thumbs(st, r);
     draw::push_clip(r.0, r.1, r.2, r.3);
     if st.mode3d {
         draw_solids(st, r, bg);

@@ -4,6 +4,7 @@ pub mod hovermenu;
 pub mod icons;
 pub mod map3d;
 pub mod mapprev;
+pub mod mapthumb;
 pub mod mapview;
 pub mod menu;
 pub mod peekwin;

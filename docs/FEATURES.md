@@ -98,7 +98,7 @@ Keywords: treemap, disk usage, WizTree, folder size visualization, squarified, �
 
 | 機能 | 内容 | 場所 |
 | --- | --- | --- |
-| 面積図 | 右パネルに、フォルダ・zip・イメージの中身を大きさに比例した四角で表示（WizTree のような表示）。フォルダは入れ子の枠、ファイルは拡張子ごとの色。squarified 配置、小さすぎる四角は描かない | `src/ui/treemap.rs`, `src/ui/sidepanel.rs` |
+| 面積図 | 右パネルに、フォルダ・zip・イメージの中身を大きさに比例した四角で表示（WizTree のような表示）。フォルダは入れ子の枠、ファイルは拡張子ごとの色、画像のファイルはその画像を縮めて表示。squarified 配置、小さすぎる四角は描かない | `src/ui/treemap.rs`, `src/ui/sidepanel.rs`, `src/ui/mapthumb.rs` |
 | 高速化 | フォルダの走査は並列。数万件のフォルダでも木づくりは数 ms | `src/neo/archive.rs`, `src/ui/treemap.rs` |
 
 ## HEX・バイナリ Hex & binary
