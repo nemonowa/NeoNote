@@ -1,7 +1,7 @@
 name: CI
 
 # Windows / macOS / Linux で、テストとリリースビルドを回し、バイナリの大きさと検索の時間を記録する。
-# 結果は各ジョブの Summary に出る。基準値は docs/MEASURE.md に残す。
+# 結果は各ジョブの Summary に出る。
 on:
   push:
   pull_request:
@@ -70,7 +70,7 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-  # タグ（v1.2.3 など）を push したときだけ、3 つの OS の実行ファイルを zip にして Releases に載せる。
+  # タグ（v1.2.3 など）を push したときだけ、3 つの OS の実行ファイルを Releases に載せる（Windows は exe、macOS・Linux は zip）。
   # 同じタグのリリースが既にあればファイルだけを差し替え、無ければ下書きで作る（説明を書いてから公開する）。
   release:
     if: startsWith(github.ref, 'refs/tags/v')
@@ -83,17 +83,19 @@ jobs:
         with:
           path: dist
 
-      - name: Zip each executable
+      # Windows は exe をそのまま載せる。macOS・Linux は、そのまま落とすと実行の許可が外れるので zip に入れる（zip なら許可が残る）
+      - name: Package each executable
         shell: bash
         run: |
           TAG="${GITHUB_REF_NAME}"
           cd dist
-          for pair in "Windows:windows-x64" "macOS:macos-arm64" "Linux:linux-x64"; do
+          cp "neonote-Windows/neonote.exe" "neonote-$TAG-windows-x64.exe"
+          for pair in "macOS:macos-arm64" "Linux:linux-x64"; do
             os="${pair%%:*}"; name="${pair##*:}"
             chmod +x "neonote-$os"/* || true
             (cd "neonote-$os" && zip -9 "../neonote-$TAG-$name.zip" *)
           done
-          ls -la *.zip
+          ls -la *.zip *.exe
 
       - name: Upload to the release
         env:
@@ -105,4 +107,4 @@ jobs:
           if ! gh release view "$TAG" >/dev/null 2>&1; then
             gh release create "$TAG" --draft --title "⚓｜NeoNote - FileEditor [$TAG]" --notes ""
           fi
-          gh release upload "$TAG" dist/*.zip --clobber
+          gh release upload "$TAG" dist/*.zip dist/*.exe --clobber

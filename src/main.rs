@@ -1,4 +1,4 @@
-// NeoNote: 設計は docs/DESIGN.md を参照。
+// NeoNote: 作りの概要は docs/ARCHITECTURE.md を参照。
 // Windows ではダブルクリックで黒い窓が出ないよう GUI アプリとして作る（端末から起動したときは attach_parent_console でその端末へ出力する）。
 #![cfg_attr(windows, windows_subsystem = "windows")]
 mod app;

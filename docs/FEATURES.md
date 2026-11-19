@@ -5,7 +5,7 @@
 > 軽く・速く・省クリックで動く、単一実行ファイルの超汎用ファイルエディタ。メモ帳の代わりに使える軽さで、バイナリ・文書・ディスクイメージまで開ける。
 
 このファイルは、機能を **言葉（検索語）・対応形式・実装の場所（ファイル）** で引けるようにした一覧。人にも、リポジトリを検索する AI エージェントにも向けて書いている。
-詳しい操作は [USAGE.md](USAGE.md)、設計は [DESIGN.md](DESIGN.md)、実測値は [MEASURE.md](MEASURE.md)、未実装の案は [IDEAS.md](IDEAS.md)。
+作りの概要は [ARCHITECTURE.md](ARCHITECTURE.md)。
 `src/neo/` は GUI を import しない層（単体テストできる）、`src/ui/` は fltk の画面、`src/app.rs` が全体をつなぐ。
 
 ## 目次 / Index
@@ -99,7 +99,7 @@ Keywords: treemap, disk usage, WizTree, folder size visualization, squarified, �
 | 機能 | 内容 | 場所 |
 | --- | --- | --- |
 | 面積図 | 右パネルに、フォルダ・zip・イメージの中身を大きさに比例した四角で表示（WizTree のような表示）。フォルダは入れ子の枠、ファイルは拡張子ごとの色。squarified 配置、小さすぎる四角は描かない | `src/ui/treemap.rs`, `src/ui/sidepanel.rs` |
-| 高速化 | 木づくりは名前の HashMap（4 万件で約 45 → 5〜9 ms）、走査は並列（約 50 → 34 ms）。WizTree の調査と見送った案は IDEAS.md | `docs/MEASURE.md`, `docs/IDEAS.md` |
+| 高速化 | フォルダの走査は並列。数万件のフォルダでも木づくりは数 ms | `src/neo/archive.rs`, `src/ui/treemap.rs` |
 
 ## HEX・バイナリ Hex & binary
 Keywords: hex editor, binary editor, byte editing, 16 bytes per line, バイナリ編集
@@ -179,9 +179,9 @@ Keywords: GitHub Actions CI, Rust cross-platform CI, binary size, performance be
 | 項目 | 内容 | 場所 |
 | --- | --- | --- |
 | テスト | `cargo test`（GUI なしの層を単体テスト。ext は `mke2fs` で作ったイメージとバイト照合） | `src/neo/*.rs` |
-| 計測 | 検索・TextBuffer・フォルダ走査の時間（`cargo test --release perf_ -- --ignored --nocapture --test-threads=1`）。基準値は MEASURE.md | `src/neo/perf.rs`, `docs/MEASURE.md` |
+| 計測 | 検索・TextBuffer・フォルダ走査の時間（`cargo test --release perf_ -- --ignored --nocapture --test-threads=1`） | `src/neo/perf.rs` |
 | CI | Windows / macOS / Linux でテスト・リリースビルド・バイナリサイズ・計測を記録 | `.github/workflows/ci.yml` |
-| 大きさ | リリースビルドで約 16.1 MB（約 10 MB は同梱フォント）。正規表現を入れて +1.10 MiB | `docs/MEASURE.md` |
+| 大きさ | リリースビルドで約 16 MB（約 10 MB は同梱フォント） | |
 
 ## やらないこと Non-goals
 IDE 化しない。AI 機能・拡張機構・メモ帳に不要な煩雑な機能は足さない。拡張の入口は「ツールバーのボタン」と「右クリックメニューの項目」だけ。

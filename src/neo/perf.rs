@@ -2,7 +2,7 @@
 //
 //   cargo test --release perf_ -- --ignored --nocapture --test-threads=1
 //
-// 結果は標準出力へ `PERF key=value ...` の 1 行で出す。docs/MEASURE.md に基準値を残す。
+// 結果は標準出力へ `PERF key=value ...` の 1 行で出す。
 use super::replace;
 use fltk::text::TextBuffer;
 use std::time::Instant;

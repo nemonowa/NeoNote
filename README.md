@@ -160,7 +160,7 @@ cargo build --release
 - 検索欄の左の旗のボタンで言語、月のボタンで配色を切り替える。マウスを乗せると一覧が出る。
 - タブはドラッグで並べ替えられる。入る場所に線が出る。ウィンドウの外へドラッグして別のウィンドウの上で離すと、そこへ移る。
 
-その他の操作は [docs/USAGE.md](docs/USAGE.md)、全機能の一覧は [docs/FEATURES.md](docs/FEATURES.md) を参照。
+全機能の一覧は [docs/FEATURES.md](docs/FEATURES.md) を参照。
 
 ---
 
@@ -187,7 +187,6 @@ cargo build --release
 
 - **README：** [Discord](https://discord.com/channels/1233036571243188296/1360947282106777712/1360947282106777712)
 - **Download：** [Releases](../../releases)
-- **Usage：** [docs/USAGE.md](docs/USAGE.md)
 - **Features：** [docs/FEATURES.md](docs/FEATURES.md)
-- **Design：** [docs/DESIGN.md](docs/DESIGN.md)
+- **Design：** [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 - **Contributing：** [contributing.md](contributing.md)
