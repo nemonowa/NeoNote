@@ -1,6 +1,10 @@
 pub mod confirm;
+pub mod cushion;
 pub mod hovermenu;
 pub mod icons;
+pub mod map3d;
+pub mod mapprev;
+pub mod mapview;
 pub mod menu;
 pub mod peekwin;
 pub mod nbttree;

@@ -10,7 +10,12 @@ pub const HEAD_BYTES: usize = 8 * 1024;
 
 /// 文字のファイルなら先頭の数行（タブは空白に、長い行は切って `…`）。NUL を含む・UTF-8 として崩れが多いものは None（バイナリ）。
 pub fn text_head(bytes: &[u8]) -> Option<Vec<String>> {
-    let b = &bytes[..bytes.len().min(HEAD_BYTES)];
+    text_lines(bytes, HEAD_BYTES, MAX_LINES, MAX_COLS)
+}
+
+/// `text_head` の、読む量・行数・桁数を選べる版（面積図の四角の中のプレビューは、これより多く読む）。
+pub fn text_lines(bytes: &[u8], max_bytes: usize, max_lines: usize, max_cols: usize) -> Option<Vec<String>> {
+    let b = &bytes[..bytes.len().min(max_bytes)];
     if b.contains(&0) {
         return None;
     }
@@ -22,11 +27,11 @@ pub fn text_head(bytes: &[u8]) -> Option<Vec<String>> {
     }
     let s = s.strip_prefix('\u{FEFF}').unwrap_or(&s);
     let mut out = Vec::new();
-    for line in s.lines().take(MAX_LINES) {
+    for line in s.lines().take(max_lines) {
         let line = line.replace('\t', "    ");
         let line = line.trim_end();
-        if line.chars().count() > MAX_COLS {
-            out.push(line.chars().take(MAX_COLS).collect::<String>() + "…");
+        if line.chars().count() > max_cols {
+            out.push(line.chars().take(max_cols).collect::<String>() + "…");
         } else {
             out.push(line.to_string());
         }
@@ -84,6 +89,17 @@ mod tests {
         let mut j = "あいう".repeat(10).into_bytes();
         j.pop();
         assert!(text_head(&j).is_some());
+    }
+
+    #[test]
+    fn text_lines_takes_the_limits_it_is_given() {
+        let body: String = (0..300).map(|i| format!("{}\n", "y".repeat(i % 7 + 150))).collect();
+        let l = text_lines(body.as_bytes(), 1 << 20, 160, 120).unwrap();
+        assert_eq!(l.len(), 160);
+        assert!(l.iter().all(|x| x.chars().count() <= 121));
+        // 読む量の上限で切る。text_head は従来どおり
+        assert!(text_lines(body.as_bytes(), 100, 160, 120).unwrap().len() <= 1);
+        assert_eq!(text_head(body.as_bytes()).unwrap().len(), MAX_LINES);
     }
 
     #[test]

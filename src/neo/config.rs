@@ -45,6 +45,8 @@ pub struct Config {
     pub side_pin: bool,
     /// 右端の欄の幅。None なら既定。
     pub side_w: Option<i32>,
+    /// フォルダ・zip の見せ方（`map`・`map3d`）。None ならツリー（既定）。
+    pub archive_view: Option<String>,
     /// 前回のタブと未保存の変更を、引数なしの起動で戻す（既定は戻す）。
     pub resume: bool,
     /// 上書きの前に元の中身を控える（`neo::backup`）。設定ファイルを手で書き換えたときだけ変わる。
@@ -80,6 +82,7 @@ impl Default for Config {
             gutter_pin: false,
             side_pin: false,
             side_w: None,
+            archive_view: None,
             gutter_extra: None,
             resume: true,
             backup: true,
@@ -159,6 +162,7 @@ pub fn parse(text: &str) -> Config {
             "gutter_pin" => cfg.gutter_pin = parse_bool(v),
             "side_pin" => cfg.side_pin = parse_bool(v),
             "side_w" => cfg.side_w = v.parse::<i32>().ok(),
+            "archive_view" => cfg.archive_view = Some(v.to_ascii_lowercase()).filter(|v| matches!(v.as_str(), "map" | "map3d")),
             "gutter_extra" => cfg.gutter_extra = v.parse::<i32>().ok(),
             "resume" => cfg.resume = parse_bool(v),
             "backup" => cfg.backup = parse_bool(v),
@@ -215,6 +219,8 @@ pub fn render(existing: &str, cfg: &Config) -> String {
     let mut seen_side = false;
     let side_w_line = cfg.side_w.map(|w| format!("side_w={w}"));
     let mut seen_side_w = false;
+    let archive_view_line = cfg.archive_view.as_deref().map(|v| format!("archive_view={v}"));
+    let mut seen_archive_view = false;
     let gutter_extra_line = cfg.gutter_extra.map(|w| format!("gutter_extra={w}"));
     let mut seen_gutter_extra = false;
     let resume_line = format!("resume={}", cfg.resume);
@@ -282,6 +288,12 @@ pub fn render(existing: &str, cfg: &Config) -> String {
                     out.extend(gutter_extra_line.iter().cloned());
                 }
                 seen_gutter_extra = true;
+            }
+            Some("archive_view") => {
+                if !seen_archive_view {
+                    out.extend(archive_view_line.iter().cloned());
+                }
+                seen_archive_view = true;
             }
             Some("side_w") => {
                 if !seen_side_w {
@@ -362,6 +374,9 @@ pub fn render(existing: &str, cfg: &Config) -> String {
     if !seen_side_w {
         out.extend(side_w_line);
     }
+    if !seen_archive_view {
+        out.extend(archive_view_line);
+    }
     if !seen_gutter_extra {
         out.extend(gutter_extra_line);
     }
@@ -417,7 +432,7 @@ mod tests {
     use super::*;
 
     fn cfg() -> Config {
-        Config { autosave: true, wrap: true, gutter_pin: true, side_pin: false, side_w: None, gutter_extra: None, resume: true, backup: true, light: true, theme: Some("light".into()), custom: None, lang: "ja".into(), size: Some(18), font: Some(PathBuf::from("/f/Mono.ttf")), recent: vec![PathBuf::from("/a/1.txt"), PathBuf::from("/a/2.txt")], history: vec![PathBuf::from("/h/1.txt"), PathBuf::from("/h/2.txt"), PathBuf::from("/h/3.txt")], session: vec![PathBuf::from("/s/1.txt"), PathBuf::from("/s/2.txt")], session_active: Some(PathBuf::from("/s/2.txt")) }
+        Config { autosave: true, wrap: true, gutter_pin: true, side_pin: false, side_w: None, archive_view: None, gutter_extra: None, resume: true, backup: true, light: true, theme: Some("light".into()), custom: None, lang: "ja".into(), size: Some(18), font: Some(PathBuf::from("/f/Mono.ttf")), recent: vec![PathBuf::from("/a/1.txt"), PathBuf::from("/a/2.txt")], history: vec![PathBuf::from("/h/1.txt"), PathBuf::from("/h/2.txt"), PathBuf::from("/h/3.txt")], session: vec![PathBuf::from("/s/1.txt"), PathBuf::from("/s/2.txt")], session_active: Some(PathBuf::from("/s/2.txt")) }
     }
 
     #[test]
@@ -447,6 +462,11 @@ mod tests {
     fn side_pin_is_written_only_when_on_or_present() {
         assert!(!parse("").side_pin);
         assert!(parse("side_pin=true\n").side_pin);
+        assert_eq!(parse("archive_view=Map3D\n").archive_view.as_deref(), Some("map3d"));
+        assert_eq!(parse("archive_view=cube\n").archive_view, None);
+        assert!(!render("", &Config::default()).contains("archive_view"));
+        assert!(!render("archive_view=map\n", &Config::default()).contains("archive_view"), "ツリーに戻したら行を消す");
+        assert!(render("", &Config { archive_view: Some("map".into()), ..Default::default() }).contains("archive_view=map\n"));
         assert!(!render("", &Config::default()).contains("side_pin"));
         assert!(render("", &Config { side_pin: true, ..Default::default() }).contains("side_pin=true\n"));
         assert!(render("side_pin=true\n", &Config::default()).starts_with("side_pin=false\n"));

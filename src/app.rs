@@ -116,6 +116,10 @@ enum Msg {
     UpdateChecked(Result<crate::neo::update::Latest, String>),
     /// 面積図の四角にマウスが乗った・押された（None は離れた）。true は押した（zip の中の文字も読む）。
     SidePeek(Option<(String, bool)>, bool),
+    /// メインの面積図で、最大まで寄ったファイルをダブルクリックした（開く）。
+    SideOpen(String),
+    /// メインの面積図で四角を押した（ツリーでも選ぶ）。
+    MapPick(String),
     /// ツールバーのボタンが選ばれた。
     Do(Action),
     /// タブバーの操作。
@@ -239,6 +243,8 @@ struct Doc {
     cursor: Cell<i32>,
     /// md の Preview（整形表示）で見ているか。本文のバッファはそのまま持つ。
     preview: Cell<bool>,
+    /// フォルダ・zip の Preview の見せ方（ツリー・面積図・面積図 3D）。
+    map_mode: Cell<sidepanel::MapMode>,
     /// 拡張子で決まらない文字の文書を、この形式で Preview する（表示のメニューで選ぶ。タブを閉じるまで覚える）。
     preview_as: Cell<Option<viewmode::Kind>>,
     /// 形式を自動で決める（拡張子、無ければ中身から）。表示のメニューで形式を選ぶと外れる。
@@ -285,6 +291,15 @@ impl Doc {
     fn is_welcome(&self) -> bool {
         let st = self.st.borrow();
         st.path.is_none() && !st.dirty && st.title.as_deref() == Some(Path::new(crate::ui::welcome::TITLE))
+    }
+}
+
+/// 書式のチップに出す、Preview の名前（フォルダ・zip は、見せ方で変わる）。
+fn preview_label(d: &Doc) -> &'static str {
+    match (d.archive.borrow().is_some(), d.map_mode.get()) {
+        (true, sidepanel::MapMode::Map) => "Map",
+        (true, sidepanel::MapMode::Map3D) => "Map 3D",
+        _ => "Preview",
     }
 }
 
@@ -351,10 +366,18 @@ struct Ui {
     body: Flex,
     /// 右端の情報・縮小表示の欄。
     side: SidePanel,
+    /// フォルダ・zip を面積図・面積図 3D で見るときの、メインの面積図（隠れていて、そのときだけ出す）。
+    map_main: SidePanel,
+    /// ツリーを右の欄の上へ移している間（面積図・面積図 3D）は true。
+    tree_in_side: Cell<bool>,
+    /// map_main に木を渡した文書（Rc のアドレス。0 は未だ）。
+    map_fed: Cell<usize>,
     /// 右端の欄の「固定」（config.txt の side_pin に保存する）。
     side_pinned: Cell<bool>,
     /// 右端の欄の幅（config.txt の side_w に保存する）。
     side_w: Cell<i32>,
+    /// フォルダ・zip を開いたときの見せ方（最後に選んだもの。config.txt の archive_view）。
+    map_pref: Cell<sidepanel::MapMode>,
     /// 続きから（config.txt の resume）。
     resume: Cell<bool>,
     /// 最後に書いた控えの中身の指紋（同じなら書き直さない）。
@@ -641,6 +664,7 @@ impl Ui {
             quiet: Cell::new(false),
             cursor: Cell::new(0),
             preview: Cell::new(false),
+            map_mode: Cell::new(self.map_pref.get()),
             preview_as: Cell::new(None),
             format_auto: Cell::new(true),
             pending_restore: RefCell::new(None),
@@ -925,7 +949,7 @@ impl Ui {
             window_title(st.path.clone().or(st.meta_of.as_deref().map(meta_label)).or(st.arch_of.as_deref().map(arch_label)).or(st.chunk_of.as_ref().map(chunk_label)).as_deref(), pos, st.chars, &encoding_label(&st), if st.hex { "" } else { st.eol.label() }, st.dirty)
         };
         let chip_label = if st.loading { "…".to_string() } else if st.hex { "-".to_string() } else { encoding_label(&st) };
-        let view_now = if st.loading { "…" } else if d.preview.get() { "Preview" } else if st.hex { "HEX" } else { "Text" };
+        let view_now = if st.loading { "…" } else if d.preview.get() { preview_label(&d) } else if st.hex { "HEX" } else { "Text" };
         let chip_tip = if st.loading {
             String::new()
         } else {
@@ -1767,6 +1791,107 @@ impl Ui {
     }
 
     /// 画像のメタデータを、文字の新しいタブで開く（PNG の tEXt / iTXt、JPEG のコメント）。
+    /// 開いている NBT が Minecraft の地図（map_N.dat）なら、その色の番号。
+    fn map_colors(&self) -> Option<Vec<u8>> {
+        let root = nbt::from_snbt(&self.doc().buf.text()).ok()?;
+        crate::neo::mapart::colors_of(&root)
+    }
+
+    /// 地図（map_N.dat）の絵を PNG にして、新しいタブで開く（一時フォルダに書く）。
+    fn view_mc_map(self: &Rc<Self>) {
+        let Some(colors) = self.map_colors() else { return };
+        let stem = self.doc().st.borrow().path.as_deref().and_then(|p| p.file_stem()).map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "map".into());
+        let dir = std::env::temp_dir().join("neonote_map");
+        let file = dir.join(format!("{stem}.png"));
+        let written = std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(&file, crate::neo::mapart::to_png(&colors, 4)));
+        match written {
+            Ok(()) => {
+                self.open_path(file);
+            }
+            Err(e) => confirm::alert(&if crate::lang::is_en() { format!("Could not make the image.\n\n{e}") } else { format!("絵を作れませんでした。\n\n{e}") }),
+        }
+    }
+
+    /// 開いている画像を Minecraft の地図（map_N.dat）にする。枚数 → 減色 → 番号 → 保存先 の順に聞き、渡すコマンドをクリップボードへ写す。
+    fn save_mc_map(self: &Rc<Self>) {
+        use crate::neo::mapart;
+        use fltk::image::SharedImage;
+        let en = crate::lang::is_en();
+        let Some(path) = self.doc().st.borrow().path.clone() else { return };
+        let Some((rgba, w, h)) = SharedImage::load(&path).ok().and_then(|img| {
+            let (w, h) = (img.data_w().max(0) as usize, img.data_h().max(0) as usize);
+            let d = img.to_rgb_data();
+            let ch = if w * h == 0 { 0 } else { d.len() / (w * h) };
+            let px = |i: usize| -> [u8; 4] {
+                let p = &d[i * ch..i * ch + ch];
+                match ch {
+                    1 => [p[0], p[0], p[0], 255],
+                    2 => [p[0], p[0], p[0], p[1]],
+                    3 => [p[0], p[1], p[2], 255],
+                    _ => [p[0], p[1], p[2], p[3]],
+                }
+            };
+            (ch >= 1 && ch <= 4).then(|| ((0..w * h).flat_map(px).collect::<Vec<u8>>(), w, h))
+        }) else {
+            confirm::alert(crate::lang::tr("画像を読めませんでした。", "Could not read the image."));
+            return;
+        };
+        // 1. 枚数（縦横比に近い既定を勧める）
+        let suggest = if w >= h { format!("{}x1", ((w as f64 / h as f64).round() as usize).clamp(1, mapart::MAX_TILES)) } else { format!("1x{}", ((h as f64 / w as f64).round() as usize).clamp(1, mapart::MAX_TILES)) };
+        let prompt = if en { format!("Number of maps (columns x rows, up to {0}x{0}). The image is {w}x{h}.", mapart::MAX_TILES) } else { format!("地図の枚数（横x縦、{0}x{0} まで）。画像は {w}×{h}。", mapart::MAX_TILES) };
+        let Some(tiles) = dialog::input_default(&prompt, &suggest) else { return };
+        let Some((cols, rows)) = mapart::parse_tiles(&tiles) else {
+            confirm::alert(crate::lang::tr("枚数は「2x1」のように書いてください。", "Write the number of maps like \"2x1\"."));
+            return;
+        };
+        // 2. 減色
+        let dither = match confirm::choice(crate::lang::tr("色の合わせ方", "Color matching"), crate::lang::tr("キャンセル", "Cancel"), crate::lang::tr("誤差拡散（なめらか）", "Dithering (smooth)"), crate::lang::tr("一番近い色（ドット絵向き）", "Nearest color (pixel art)")) {
+            Some(1) => true,
+            Some(2) => false,
+            _ => return,
+        };
+        // 3. 番号
+        let Some(first) = dialog::input_default(crate::lang::tr("最初の地図の番号（map_番号.dat。使っていない番号にする）", "First map number (map_N.dat; use an unused number)"), "0") else { return };
+        let Some(first) = first.trim().parse::<i32>().ok().filter(|n| *n >= 0) else {
+            confirm::alert(crate::lang::tr("番号は 0 以上の数で書いてください。", "Write a number of 0 or more."));
+            return;
+        };
+        // 4. 保存先（ワールドの data フォルダ）
+        let Some(dir) = self.choose_file(FileDialogType::BrowseDir) else { return };
+        let count = cols * rows;
+        let names: Vec<PathBuf> = (0..count).map(|i| dir.join(format!("map_{}.dat", first + i as i32))).collect();
+        let existing = names.iter().filter(|p| p.exists()).count();
+        if existing > 0 {
+            let msg = if en { format!("{existing} of the map files already exist. Overwrite them?") } else { format!("地図のファイルが {existing} 個すでにあります。上書きしますか？") };
+            if confirm::choice(&msg, crate::lang::tr("キャンセル", "Cancel"), crate::lang::tr("上書き", "Overwrite"), "") != Some(1) {
+                return;
+            }
+        }
+        // 5. 作って書く
+        let tiles = match mapart::convert(&rgba, w, h, cols, rows, dither) {
+            Ok(t) => t,
+            Err(e) => {
+                confirm::alert(&e);
+                return;
+            }
+        };
+        for (p, t) in names.iter().zip(&tiles) {
+            if let Err(e) = document::write_atomic(p, &mapart::map_file(t)) {
+                confirm::alert(&if en { format!("Could not save {}.\n\n{e}", p.display()) } else { format!("{} を保存できませんでした。\n\n{e}", p.display()) });
+                return;
+            }
+        }
+        let cmds = mapart::give_commands(first, count);
+        app::copy(&cmds);
+        let last = first + count as i32 - 1;
+        let msg = if en {
+            format!("Saved map_{first}.dat to map_{last}.dat ({cols}x{rows}, left to right, top to bottom).\nThe /give commands were copied to the clipboard.\nSave the files in the world's data folder while the world is closed.")
+        } else {
+            format!("map_{first}.dat〜map_{last}.dat を保存しました（{cols}x{rows}。左上から右へ、上の段から順）。\n渡すコマンド（/give）をクリップボードへ写しました。\nワールドを閉じた状態で、ワールドの data フォルダへ置いてください。")
+        };
+        confirm::message(&msg);
+    }
+
     fn open_meta(self: &Rc<Self>) {
         let Some(img) = self.doc().st.borrow().path.clone() else { return };
         // 同じ画像のメタデータをすでに開いていれば、そのタブへ移る
@@ -2600,18 +2725,28 @@ impl Ui {
         let mut tree = self.nbt_tree.tree.clone();
         let arch_view = d.preview.get() && d.archive.borrow().is_some();
         let nbt_view = d.preview.get() && self.is_nbt_doc(d) || arch_view;
+        // 面積図・面積図 3D: メインが面積図、右の欄がツリー（ツリーは右の欄の上へ移す）
+        let map = if arch_view { d.map_mode.get() } else { sidepanel::MapMode::Tree };
         if nbt_view {
             if arch_view {
                 self.render_archive_tree(d);
             } else {
                 self.render_nbt_tree(d, None);
             }
-            tree.show();
-            let _ = tree.take_focus();
+            if map != sidepanel::MapMode::Tree {
+                self.enter_map_layout(d, map);
+            } else {
+                self.leave_map_layout();
+                tree.show();
+                let _ = tree.take_focus();
+            }
             ed.hide();
             pv.hide();
-        } else if tree.visible() && (self.is_nbt_doc(d) || d.archive.borrow().is_some()) {
-            *d.tree_open.borrow_mut() = Some(self.nbt_tree.open_paths());
+        } else {
+            self.leave_map_layout();
+            if tree.visible() && (self.is_nbt_doc(d) || d.archive.borrow().is_some()) {
+                *d.tree_open.borrow_mut() = Some(self.nbt_tree.open_paths());
+            }
         }
         if nbt_view {
         } else if d.preview.get() {
@@ -2635,6 +2770,132 @@ impl Ui {
         self.col.clone().layout();
         self.body.clone().layout();
         self.win.clone().redraw();
+    }
+
+    /// フォルダのファイルの先頭を読む（面積図の四角の中のプレビュー用）。
+    fn folder_head(root: PathBuf) -> sidepanel::HeadReader {
+        Box::new(move |rel: &str| -> Option<Vec<u8>> {
+            use std::io::Read;
+            let full = rel.split('/').fold(root.clone(), |p, c| p.join(c));
+            let f = std::fs::File::open(full).ok()?;
+            let mut b = Vec::new();
+            f.take(crate::ui::mapprev::HEAD_BYTES as u64).read_to_end(&mut b).ok()?;
+            Some(b)
+        })
+    }
+
+    /// zip・ディスクイメージの中のファイルの先頭を読む（面積図の四角の中のプレビュー用）。
+    /// 展開して 1 MiB を超えるファイルは読まない（先頭だけを取り出せないため）。zip は最初に読んだときに丸ごと覚える（64 MiB まで）。
+    fn packed_head(root: PathBuf) -> Option<sidepanel::HeadReader> {
+        const MAX_ENTRY: u64 = 1 << 20;
+        let cut = |mut b: Vec<u8>| {
+            b.truncate(crate::ui::mapprev::HEAD_BYTES);
+            b
+        };
+        if let Some(kind) = archive::image_kind(&root) {
+            return Some(Box::new(move |rel: &str| archive::image_read(&root, kind, rel, MAX_ENTRY).ok().map(cut)));
+        }
+        if !archive::is_zip_path(&root) || std::fs::metadata(&root).map_or(true, |m| m.len() > 64 * 1024 * 1024) {
+            return None;
+        }
+        let bytes: RefCell<Option<Rc<Vec<u8>>>> = RefCell::new(None);
+        Some(Box::new(move |rel: &str| {
+            let z = bytes.borrow_mut().get_or_insert_with(|| Rc::new(std::fs::read(&root).unwrap_or_default())).clone();
+            archive::read_entry(&z, rel, MAX_ENTRY as usize).ok().map(cut)
+        }))
+    }
+
+    /// メインの面積図に、文書の木を渡す。
+    fn feed_map_main(&self, d: &Rc<Doc>) {
+        let tree = d.archive.borrow().as_deref().map(treemap::build);
+        let root = d.st.borrow().path.clone();
+        let mut st = self.map_main.state.borrow_mut();
+        st.set_tree(tree);
+        st.head = match root {
+            Some(p) if p.is_dir() => Some(Self::folder_head(p)),
+            Some(p) => Self::packed_head(p),
+            None => None,
+        };
+        self.map_fed.set(Rc::as_ptr(d) as usize);
+    }
+
+    /// 面積図・面積図 3D の配置にする: メインに面積図を出し、ツリーを右の欄の上へ移す。
+    fn enter_map_layout(&self, d: &Rc<Doc>, map: sidepanel::MapMode) {
+        let mut tree = self.nbt_tree.tree.clone();
+        if !self.tree_in_side.get() {
+            let mut body = self.body.clone();
+            body.remove(&tree);
+            self.win.clone().add(&tree);
+            self.tree_in_side.set(true);
+        }
+        if self.map_fed.get() != Rc::as_ptr(d) as usize {
+            self.feed_map_main(d);
+        }
+        self.map_main.state.borrow_mut().set_mode3d(map == sidepanel::MapMode::Map3D);
+        self.side.state.borrow_mut().overlay = true;
+        self.map_main.widget.clone().show();
+        tree.show();
+        let _ = tree.take_focus();
+        self.place_side_tree();
+        self.update_side();
+    }
+
+    /// メインの面積図で押した項目を、右の欄のツリーでも選ぶ（面積図は動かさない）。
+    fn map_pick(&self, rel: &str) {
+        if !self.tree_in_side.get() {
+            return;
+        }
+        let path: Vec<Seg> = rel.trim_end_matches('/').split('/').filter(|s| !s.is_empty()).map(|s| Seg::Key(s.to_string())).collect();
+        if self.nbt_tree.select_path(&path) {
+            self.map_main.state.borrow_mut().focus_mark(rel);
+            self.map_main.widget.clone().redraw();
+        }
+    }
+
+    /// 右の欄のツリーで選んだ項目へ、メインの面積図を寄せる。
+    fn tree_picked(&self) {
+        if !self.tree_in_side.get() || !self.map_main.widget.visible() {
+            return;
+        }
+        let Some(it) = self.nbt_tree.tree.first_selected_item() else { return };
+        let Some((rel, _)) = self.archive_item(&it) else { return };
+        self.map_main.state.borrow_mut().focus_path(&rel);
+        self.map_main.widget.clone().redraw();
+    }
+
+    /// フォルダ・zip の見せ方の選びを覚える（次に開くフォルダ・zip もこれで開く）。
+    fn set_map_pref(&self, m: sidepanel::MapMode) {
+        if self.map_pref.get() != m {
+            self.map_pref.set(m);
+            self.persist();
+        }
+    }
+
+    /// 元の配置に戻す: ツリーをメインの並びへ戻し、メインの面積図を隠す。
+    fn leave_map_layout(&self) {
+        self.side.state.borrow_mut().overlay = false;
+        self.map_main.widget.clone().hide();
+        if self.tree_in_side.get() {
+            let tree = self.nbt_tree.tree.clone();
+            self.win.clone().remove(&tree);
+            let mut body = self.body.clone();
+            let idx = body.find(&self.map_main.widget);
+            body.insert(&tree, idx);
+            self.tree_in_side.set(false);
+            self.update_side();
+        }
+    }
+
+    /// 右の欄の上に重ねたツリーを、右の欄の情報の行の下へ置く（右の欄の大きさが変わるたびに呼ぶ）。
+    fn place_side_tree(&self) {
+        if !self.tree_in_side.get() {
+            return;
+        }
+        let (x, y, w, h) = self.side.tree_area();
+        let mut tree = self.nbt_tree.tree.clone();
+        if (tree.x(), tree.y(), tree.w(), tree.h()) != (x, y, w, h) {
+            tree.resize(x, y, w, h);
+        }
     }
 
     /// 文書の本文から Preview の中身を作り直す（切り替え・配色・文字サイズの変更のとき）。
@@ -3125,6 +3386,9 @@ impl Ui {
             PdfText,
             DocText,
             ArchiveRename,
+            Map(sidepanel::MapMode),
+            McMap,
+            ViewMcMap,
         }
         let (cur, is_hex, auto, eol, path, in_preview) = {
             let d = self.doc();
@@ -3169,7 +3433,15 @@ impl Ui {
                 viewmode::View::Hex => rows.push((Pick::View(v), "HEX".into(), !fmt_auto && !auto && is_hex && !in_preview, true, true)),
                 viewmode::View::Preview => {
                     let name = if v.implemented(kind) { "Preview" } else { crate::lang::tr("Preview（準備中）", "Preview (coming soon)") };
-                    rows.push((Pick::View(v), name.into(), !fmt_auto && in_preview, v.implemented(kind), false));
+                    let as_map = kind == viewmode::Kind::Archive && is_arch;
+                    let mode = self.doc().map_mode.get();
+                    rows.push((Pick::View(v), name.into(), !fmt_auto && in_preview && (!as_map || mode == sidepanel::MapMode::Tree), v.implemented(kind), false));
+                    // フォルダ・zip は、面積図でも見られる（選ぶと、メインが面積図、右の欄がツリーになる）
+                    if as_map {
+                        for (m, name) in [(sidepanel::MapMode::Map, crate::lang::tr("面積図", "Treemap")), (sidepanel::MapMode::Map3D, crate::lang::tr("面積図 3D", "Treemap 3D"))] {
+                            rows.push((Pick::Map(m), name.into(), !fmt_auto && in_preview && mode == m, true, false));
+                        }
+                    }
                 }
             }
         }
@@ -3207,6 +3479,12 @@ impl Ui {
         }
         if (kind == viewmode::Kind::Image && path.as_deref().is_some_and(imgmeta::supports)) || (is_audio && path.as_deref().is_some_and(audiometa::supports)) {
             rows.push((Pick::Meta, crate::lang::tr("メタデータを編集（テキスト）", "Edit Metadata (text)").into(), false, true, false));
+        }
+        if self.is_nbt_doc(&self.doc()) && self.map_colors().is_some() {
+            rows.push((Pick::ViewMcMap, crate::lang::tr("地図の絵を見る", "View Map Image").into(), false, true, false));
+        }
+        if kind == viewmode::Kind::Image && path.as_deref().is_some_and(|p| p.is_file()) {
+            rows.push((Pick::McMap, crate::lang::tr("Minecraft の地図として保存", "Save as Minecraft Map").into(), false, true, false));
         }
         if kind == viewmode::Kind::Pdf {
             rows.push((Pick::PdfText, crate::lang::tr("新しいタブでテキストを開く", "Text in New Tab").into(), false, true, false));
@@ -3249,6 +3527,7 @@ impl Ui {
         match rows[i].0 {
             Pick::FormatAuto => {
                 let d = self.doc();
+                d.map_mode.set(sidepanel::MapMode::Tree);
                 d.format_auto.set(true);
                 d.preview_as.set(None);
                 self.set_preview(false);
@@ -3265,7 +3544,23 @@ impl Ui {
             Pick::View(viewmode::View::Preview) => {
                 // Auto で中身から決めた形式は、選び直した後もそのまま使う
                 self.doc().preview_as.set((file_kind == viewmode::Kind::Other && kind != viewmode::Kind::Other).then_some(kind));
+                self.doc().map_mode.set(sidepanel::MapMode::Tree); // フォルダ・zip は、ツリー（メインがツリー、右の欄が面積図）
+                if is_arch {
+                    self.set_map_pref(sidepanel::MapMode::Tree);
+                }
                 self.set_preview(true);
+                if is_arch {
+                    self.apply_view(&self.doc());
+                }
+            }
+            Pick::Map(m) => {
+                let d = self.doc();
+                d.preview_as.set(None);
+                d.map_mode.set(m);
+                self.set_map_pref(m);
+                self.set_preview(true);
+                self.apply_view(&d);
+                self.refresh_title();
             }
             Pick::As(k) => {
                 let d = self.doc();
@@ -3288,6 +3583,8 @@ impl Ui {
             }
             Pick::Eol => self.convert_eol(),
             Pick::Meta => self.open_meta(),
+            Pick::McMap => self.save_mc_map(),
+            Pick::ViewMcMap => self.view_mc_map(),
             Pick::Play => self.toggle_audio(),
             Pick::PdfText => self.open_pdf_text(),
             Pick::DocText => self.open_doc_text(),
@@ -3359,6 +3656,18 @@ impl Ui {
             Action::UniqueLines => self.line_op(lineops::Op::Unique),
             Action::UpperCase => self.line_op(lineops::Op::Upper),
             Action::LowerCase => self.line_op(lineops::Op::Lower),
+            Action::UnicodeEscape => self.line_op(lineops::Op::UnicodeEscape),
+            Action::UnicodeUnescape => self.line_op(lineops::Op::UnicodeUnescape),
+            Action::UrlEncode => self.line_op(lineops::Op::UrlEncode),
+            Action::UrlDecode => self.line_op(lineops::Op::UrlDecode),
+            Action::ColorCycle => self.line_op(lineops::Op::ColorCycle),
+            Action::Base64Encode => self.line_op(lineops::Op::Base64Encode),
+            Action::Base64Decode => self.line_op(lineops::Op::Base64Decode),
+            Action::HtmlEscape => self.line_op(lineops::Op::HtmlEscape),
+            Action::HtmlUnescape => self.line_op(lineops::Op::HtmlUnescape),
+            Action::WidthToggle => self.line_op(lineops::Op::WidthToggle),
+            Action::KanaToggle => self.line_op(lineops::Op::KanaToggle),
+            Action::CaseCycle => self.line_op(lineops::Op::CaseCycle),
             Action::ReopenClosed => self.reopen_closed(),
             Action::ToggleAutoSave => self.toggle_autosave(),
             Action::ToggleWrap => self.set_wrap(!self.wrap.get()),
@@ -4474,6 +4783,7 @@ impl Ui {
             side_pin: self.side_pinned.get(),
             gutter_extra: Some(self.gutter_extra.get()).filter(|w| *w != 0),
             side_w: Some(self.side_w.get()).filter(|w| *w != sidepanel::WIDTH),
+            archive_view: self.map_pref.get().config_name().map(str::to_string),
             resume: self.resume.get(),
             lang: crate::lang::code(crate::lang::current()).to_string(),
             light: theme::is_light(),
@@ -4562,6 +4872,8 @@ impl Ui {
         if before != (theme::current_name(), theme::palette()) {
             self.apply_theme();
         }
+
+        self.map_pref.set(sidepanel::MapMode::from_config(cfg.archive_view.as_deref()));
 
         // 行番号欄の固定
         if cfg.gutter_pin != self.gutter_pinned.get() {
@@ -4959,7 +5271,8 @@ impl Ui {
             self.side_peeking.set(false);
             peekwin::hide();
         }
-        let usable = self.win.visible() && ed.visible() && !d.preview.get() && !d.st.borrow().hex && !d.st.borrow().loading;
+        // フォルダ・zip のタブは本文を持たず、FLTK の文字の高さが 0 のままで xy_to_position が 0 除算になりうる
+        let usable = self.win.visible() && ed.visible() && d.archive.borrow().is_none() && !d.preview.get() && !d.st.borrow().hex && !d.st.borrow().loading;
         let (ex, ey) = (mx - self.win.x_root(), my - self.win.y_root());
         let inside = ex >= ed.x() + self.gutter_width() && ex < ed.x() + ed.w() - app::scrollbar_size() && ey >= ed.y() && ey < ed.y() + ed.h();
         if !usable || !inside {
@@ -4992,8 +5305,28 @@ impl Ui {
         let off = (pos - ls) as usize;
         let (r, content) = if let Some((r, p)) = peek::at(&line, off, names) {
             (r, match p {
-            peek::Peek::Color(c, label) => peekwin::Content::Swatch(c, label),
+            peek::Peek::Color(c, _) => peekwin::Content::Swatch(c, crate::neo::textconv::color_formats(c)),
             peek::Peek::Char(c, cp) => peekwin::Content::Text { big: c, note: cp },
+            peek::Peek::Date(as_utc) => {
+                // 書かれた日時は、この PC の時間帯の時刻とみなす
+                let off = platform::local_offset(as_utc).unwrap_or(0);
+                let off = platform::local_offset(as_utc - off).unwrap_or(off);
+                let secs = as_utc - off;
+                peekwin::Content::Text { big: secs.to_string(), note: if crate::lang::is_en() { format!("UNIX time (s)  ms: {}000", secs) } else { format!("UNIX 時刻（秒）  ミリ秒: {}000", secs) } }
+            }
+            peek::Peek::Number(n) => peekwin::Content::Text { big: n.to_string(), note: format!("0x{n:X}  0b{n:b}  0o{n:o}") },
+            peek::Peek::McCode(c) => {
+                let name = match c {
+                    '0' => "black", '1' => "dark_blue", '2' => "dark_green", '3' => "dark_aqua", '4' => "dark_red", '5' => "dark_purple", '6' => "gold", '7' => "gray",
+                    '8' => "dark_gray", '9' => "blue", 'a' => "green", 'b' => "aqua", 'c' => "red", 'd' => "light_purple", 'e' => "yellow", 'f' => "white",
+                    'k' => "obfuscated", 'l' => "bold", 'm' => "strikethrough", 'n' => "underline", 'o' => "italic", _ => "reset",
+                };
+                match crate::neo::textcomp::named_color(name) {
+                    Some(rgb) => peekwin::Content::Swatch(rgb, format!("§{c}  {name}  {}", crate::neo::htmlstyle::hex(rgb))),
+                    None => peekwin::Content::Text { big: format!("§{c}"), note: name.into() },
+                }
+            }
+            peek::Peek::Url(s) => peekwin::Content::Text { big: s, note: crate::lang::tr("URL エンコード", "URL encoded").into() },
             peek::Peek::Time(secs, ms) => {
                 let t = std::time::UNIX_EPOCH + std::time::Duration::from_secs(secs as u64);
                 peekwin::Content::Text { big: platform::local_datetime(t), note: if ms { crate::lang::tr("UNIX 時刻（ミリ秒）", "UNIX time (ms)").into() } else { crate::lang::tr("UNIX 時刻（秒）", "UNIX time (s)").into() } }
@@ -5030,7 +5363,7 @@ impl Ui {
     // ---- 右端の欄（マウスが右端・固定・Alt のどれかで出す）----
 
     fn update_side(&self) {
-        let want = self.side_pinned.get() || self.mouse_right.get() || self.alt_open.get();
+        let want = self.side_pinned.get() || self.mouse_right.get() || self.alt_open.get() || self.tree_in_side.get();
         let mut w = self.side.widget.clone();
         if want == w.visible() {
             return;
@@ -5137,13 +5470,22 @@ impl Ui {
         }
         let tree = d.archive.borrow().as_deref().map(treemap::build);
         let (lines, truncated) = if hex || tree.is_some() { (Vec::new(), false) } else { sidepanel::runs_of(&text) };
+        // 面積図の四角の中のプレビュー（拡大したときだけ読む）。フォルダだけ。zip・tar・ディスクイメージの中は、押したときだけ読む（side_peek）。
+        let folder_root = if tree.is_some() { d.st.borrow().path.clone().filter(|p| p.is_dir()) } else { None };
         {
             let mut st = self.side.state.borrow_mut();
             st.set_tree(tree);
+            st.head = folder_root.map(Self::folder_head);
             st.rows = rows;
             st.lines = lines;
             st.truncated = truncated;
             st.font = Some(self.font.get());
+        }
+        // メインの面積図が出ているなら、同じ木を渡し直す（出ていないなら、出すときに渡す）
+        if self.map_main.widget.visible() {
+            self.feed_map_main(&d);
+        } else {
+            self.map_fed.set(0);
         }
         self.side.widget.clone().redraw();
     }
@@ -5156,6 +5498,11 @@ impl Ui {
         }
         let ed = &self.editor;
         let d = self.doc();
+        // フォルダ・zip のタブは縮小表示の代わりにツリーマップを描くので、見えている範囲（top・visible）は使わない。
+        // 本文を持たないタブでは FLTK の文字の高さが 0 のままのことがあり、xy_to_position が 0 除算で落ちる。
+        if d.archive.borrow().is_some() {
+            return;
+        }
         let x = ed.x() + self.gutter_width() + 4;
         let top_pos = ed.xy_to_position(x, ed.y() + 2, PositionType::Cursor);
         let bottom_pos = ed.xy_to_position(x, ed.y() + ed.h() - app::scrollbar_size() - 2, PositionType::Cursor);
@@ -5509,7 +5856,7 @@ impl Ui {
         let d = self.doc();
         {
             let st = d.st.borrow();
-            if st.loading || st.hex || d.preview.get() {
+            if st.loading || st.hex || d.preview.get() || d.archive.borrow().is_some() {
                 return false;
             }
         }
@@ -5555,7 +5902,7 @@ impl Ui {
         let mut b = d.buf.clone();
         let text = b.text();
         let sel = b.selection_position().map(|(s, e)| (s.min(e) as usize, s.max(e) as usize)).unwrap_or((0, 0));
-        let span = lineops::line_span(&text, sel.0..sel.1);
+        let span = if op.exact() && sel.0 != sel.1 { sel.0..sel.1 } else { lineops::line_span(&text, sel.0..sel.1) };
         let Some(out) = lineops::apply(&text[span.clone()], op) else {
             self.flash(crate::lang::tr("変わりませんでした", "No change"));
             return;
@@ -6012,6 +6359,25 @@ pub fn run(paths: Vec<String>, new_window: bool) -> Result<(), FltkError> {
     let tx_side_menu = tx_bar2;
     let tx_side_peek = tx_bar2;
     let tx_side_w = tx_bar2;
+    let (tx_map_menu, tx_map_peek, tx_map_open) = (tx_bar2, tx_bar2, tx_bar2);
+    let map_main = sidepanel::build_main(
+        move |rel, is_dir| {
+            tx_map_menu.send(Msg::SideMenu(rel, is_dir));
+            app::awake();
+        },
+        // メインの面積図は、寄れば中身を四角の中に直接出すので、乗せた・押したときの小窓は出さない。押した項目はツリーで選ぶ
+        move |cell, clicked| {
+            if let (true, Some((rel, _))) = (clicked, cell) {
+                tx_map_peek.send(Msg::MapPick(rel));
+                app::awake();
+            }
+        },
+    );
+    map_main.state.borrow_mut().on_open = Some(Box::new(move |rel| {
+        tx_map_open.send(Msg::SideOpen(rel));
+        app::awake();
+    }));
+    map_main.widget.clone().hide();
     let side = sidepanel::build(
         move |line| {
             tx_jump.send(Msg::SideJump(line));
@@ -6083,8 +6449,12 @@ pub fn run(paths: Vec<String>, new_window: bool) -> Result<(), FltkError> {
         edge_dwell: Cell::new((0, 0)),
         body: body.clone(),
         side,
+        map_main,
+        tree_in_side: Cell::new(false),
+        map_fed: Cell::new(0),
         side_pinned: Cell::new(cfg.side_pin),
         side_w: Cell::new(side_w),
+        map_pref: Cell::new(sidepanel::MapMode::from_config(cfg.archive_view.as_deref())),
         resume: Cell::new(cfg.resume),
         unsaved_sig: Cell::new(0),
         view_states: RefCell::new(config_path.as_deref().and_then(Path::parent).map(viewstate::load).unwrap_or_default()),
@@ -6116,6 +6486,12 @@ pub fn run(paths: Vec<String>, new_window: bool) -> Result<(), FltkError> {
         font_path: RefCell::new(start_font_path),
         tx,
     });
+    // 右の欄の大きさが変わるたびに（窓の大きさ・欄の幅・出し入れ）、重ねたツリーを置き直す
+    {
+        let u = ui.clone();
+        let mut sw = ui.side.widget.clone();
+        sw.resize_callback(move |_, _, _, _, _| u.place_side_tree());
+    }
     // 最初のタブは、表示中の文書を見る処理（右パネルの固定など）より先に作る
     let first = ui.new_doc();
     ui.active.set(first.id);
@@ -6185,6 +6561,12 @@ pub fn run(paths: Vec<String>, new_window: bool) -> Result<(), FltkError> {
     {
         let u = Rc::clone(&ui);
         let mut tree = nbt_tree.tree.clone();
+        let u2 = Rc::clone(&ui);
+        tree.set_callback(move |t| {
+            if t.callback_reason() == fltk::tree::TreeReason::Selected {
+                u2.tree_picked();
+            }
+        });
         tree.handle(move |t, ev| match ev {
             // 一覧（フォルダ・zip）の木: 右クリックで右パネルと同じメニュー、ファイルのダブルクリックで開く
             Event::Push if app::event_mouse_button() == app::MouseButton::Right && u.doc().archive.borrow().is_some() => {
@@ -6311,6 +6693,10 @@ pub fn run(paths: Vec<String>, new_window: bool) -> Result<(), FltkError> {
                 Msg::SidePin => ui.toggle_side_pin(),
                 Msg::SideMenu(rel, is_dir) => ui.side_menu(&rel, is_dir),
                 Msg::SidePeek(cell, clicked) => ui.side_peek(cell, clicked),
+            Msg::MapPick(rel) => ui.map_pick(&rel),
+            Msg::SideOpen(rel) => {
+                ui.open_archive_file(&rel);
+            }
                 Msg::SideWidth(w, done) => ui.set_side_width(w, done),
                 Msg::GutterWidth(w, done) => ui.drag_gutter_width(w, done),
                 Msg::Tab(TabCmd::Activate(id)) => ui.activate(id),

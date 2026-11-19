@@ -1,4 +1,5 @@
-// 行の一括操作（GUI なし）: 並べ替え・重複の削除・大文字/小文字。
+// 行の一括操作（GUI なし）: 並べ替え・重複の削除・大文字/小文字と、文字の変換（Unicode エスケープ・URL・色の表記。textconv）。
+// 文字の変換は、選択があれば選んだ範囲そのもの（行に広げない）に当てる（`Op::exact`）。
 // 対象は「選択範囲がかかっている行の全体」（選択が無ければ全文）。改行の形（CRLF / LF）と、最後の改行の有無は保つ。
 use std::ops::Range;
 
@@ -12,6 +13,37 @@ pub enum Op {
     Unique,
     Upper,
     Lower,
+    /// ASCII 以外を `\uXXXX` に。
+    UnicodeEscape,
+    /// `\uXXXX` などを文字に。
+    UnicodeUnescape,
+    /// `%XX` に。
+    UrlEncode,
+    /// `%XX` を文字に。
+    UrlDecode,
+    /// 色の表記を `#16 進` → `rgb()` → `hsv()` → `#16 進` と進める。
+    ColorCycle,
+    /// Base64 に。
+    Base64Encode,
+    /// Base64 を文字に（UTF-8 として読めなければ変えない）。
+    Base64Decode,
+    /// HTML の文字参照に。
+    HtmlEscape,
+    /// HTML の文字参照を文字に。
+    HtmlUnescape,
+    /// 全角と半角を切り替える。
+    WidthToggle,
+    /// ひらがなとカタカナを切り替える。
+    KanaToggle,
+    /// 名前の書き方を snake_case → camelCase → PascalCase → kebab-case と進める。
+    CaseCycle,
+}
+
+impl Op {
+    /// 選択を行に広げず、選んだ範囲そのものに当てるか。
+    pub fn exact(self) -> bool {
+        !matches!(self, Op::Sort | Op::SortDesc | Op::Unique | Op::Upper | Op::Lower)
+    }
 }
 
 /// `text` の `sel`（バイト範囲）がかかっている行の範囲。選択が空なら全文。末尾の改行は範囲に含めない。
@@ -37,6 +69,18 @@ pub fn apply(part: &str, op: Op) -> Option<String> {
     let out = match op {
         Op::Upper => part.to_uppercase(),
         Op::Lower => part.to_lowercase(),
+        Op::UnicodeEscape => super::textconv::unicode_escape(part),
+        Op::UnicodeUnescape => super::textconv::unicode_unescape(part),
+        Op::UrlEncode => super::textconv::url_encode(part),
+        Op::UrlDecode => super::textconv::url_decode(part),
+        Op::ColorCycle => super::textconv::color_cycle(part),
+        Op::Base64Encode => super::textconv::base64_encode(part),
+        Op::Base64Decode => super::textconv::base64_decode(part).unwrap_or_else(|| part.to_string()),
+        Op::HtmlEscape => super::textconv::html_escape(part),
+        Op::HtmlUnescape => super::textconv::html_unescape(part),
+        Op::WidthToggle => super::textconv::width_toggle(part),
+        Op::KanaToggle => super::textconv::kana_toggle(part),
+        Op::CaseCycle => super::textconv::case_cycle(part),
         _ => {
             let mut lines: Vec<&str> = part.split(eol).collect();
             match op {

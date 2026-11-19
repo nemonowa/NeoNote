@@ -262,6 +262,14 @@ impl NbtTree {
     pub fn select_path(&self, path: &[Seg]) -> bool {
         let Some(it) = self.items.borrow().iter().find(|(_, p)| p.as_slice() == path).map(|(it, _)| it.clone()) else { return false };
         let mut tree = self.tree.clone();
+        // 閉じたフォルダの中の項目も見えるように、親を開く
+        let mut up = it.parent();
+        while let Some(mut p) = up {
+            if !p.is_open() {
+                p.open();
+            }
+            up = p.parent();
+        }
         let _ = tree.select_only(&it, false);
         tree.show_item_middle(&it);
         tree.redraw();

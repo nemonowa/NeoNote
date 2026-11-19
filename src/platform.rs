@@ -373,6 +373,13 @@ pub fn local_datetime(t: std::time::SystemTime) -> String {
     }
 }
 
+/// この PC の時間帯の、UTC からのずれ（秒。`secs` の時点。分の単位）。
+pub fn local_offset(secs: i64) -> Option<i64> {
+    let (y, mo, d, h, mi) = local_fields(secs)?;
+    let local = crate::neo::textconv::days_from_civil(y as i64, mo, d) * 86_400 + h as i64 * 3600 + mi as i64 * 60;
+    Some(local - secs.div_euclid(60) * 60)
+}
+
 #[cfg(windows)]
 fn local_fields(secs: i64) -> Option<(i32, u32, u32, u32, u32)> {
     #[repr(C)]

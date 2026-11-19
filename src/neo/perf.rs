@@ -104,3 +104,41 @@ fn perf_scan() {
     let tree = crate::ui::treemap::build(&wide);
     println!("PERF treemap_build_wide entries={} ms={:.1} size={}", wide.len(), ms(t), tree.size);
 }
+
+/// 面積図の「見る側」（`mapview::layout_view`）の時間。20 万ファイル（200 フォルダ × 1000）を、倍率 1・10・100 で並べる。
+/// 並べ方（`treemap::layout`）との比較つき。四角の数は、倍率を上げると画面の中だけに絞られて減る。
+#[test]
+#[ignore]
+fn perf_map_view() {
+    use crate::neo::archive::Entry;
+    use crate::ui::mapview::{layout_view, Camera, Opts};
+    use crate::ui::treemap::{layout, Rect};
+    let mut seed = 1u64;
+    let mut next = || {
+        seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        seed >> 33
+    };
+    let mut ents: Vec<Entry> = Vec::new();
+    for d in 0..200 {
+        for i in 0..1000 {
+            let e = 1 + next() % 17;
+            ents.push(Entry { path: format!("dir{d}/sub{}/file{i}.txt", i % 10), is_dir: false, size: 1 + next() % (1u64 << e), packed: None });
+        }
+    }
+    let t = Instant::now();
+    let tree = crate::ui::treemap::build(&ents);
+    println!("PERF map_view entries={} build_ms={:.1}", ents.len(), ms(t));
+    let frame = Rect { x: 0.0, y: 0.0, w: 1000.0, h: 700.0 };
+    let t = Instant::now();
+    let old = layout(&tree, frame, 2.0, 3.0);
+    println!("PERF map_view layout_ms={:.1} cells={}", ms(t), old.len());
+    let opts = Opts::default();
+    for zoom in [1.0, 10.0, 100.0, 1000.0] {
+        let mut cam = Camera::FIT;
+        cam.zoom_at(300.0, 200.0, zoom);
+        cam.clamp(frame);
+        let t = Instant::now();
+        let cells = layout_view(&tree, frame, &cam, &opts);
+        println!("PERF map_view zoom={zoom} layout_view_ms={:.1} cells={}", ms(t), cells.len());
+    }
+}

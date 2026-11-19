@@ -1,6 +1,6 @@
 // 本文の中の「見るとわかる値」を見分ける（GUI なし）。マウスを乗せたときの小窓（ui/peekwin.rs）が使う。
 // 見分けるもの: 色（#rgb・#rrggbb・rgb()・色の名前）、文字の参照（&amp; や &#x3042; と \u3042 などのエスケープ）、
-// UNIX 時刻（10 桁の秒・13 桁のミリ秒）、画像ファイルのパス。
+// UNIX 時刻（10 桁の秒・13 桁のミリ秒）、日時（UNIX 時刻へ）、数（0x・0b・0o の付いた数）、Minecraft の色コード（§a・&a）、画像ファイルのパス。
 // 1 行の中で、指定の位置にかかっている最初の 1 つだけを返す。何も見つからなければ None。
 use super::htmlstyle::{self, Rgb};
 use std::ops::Range;
@@ -17,8 +17,16 @@ pub enum Peek {
     Color(Rgb, String),
     /// 文字参照・エスケープが表す文字と、その U+XXXX。
     Char(String, String),
+    /// URL エンコード（`%XX` の並び）を戻した文字。
+    Url(String),
     /// UNIX 時刻（秒）。ミリ秒で書かれていたら true。
     Time(i64, bool),
+    /// `YYYY-MM-DD HH:MM[:SS]` の日時。値は、書かれた日時を UTC とみなしたときの UNIX 時刻（時間帯は呼び出し側で直す）。
+    Date(i64),
+    /// 数（`0xFF`・`0b1010`・`0o17`）。
+    Number(u64),
+    /// Minecraft の書式コード（`§a`・`&a` の `a`。小文字にしたもの）。
+    McCode(char),
     /// 画像のパス（書かれたまま。実在するかは呼び出し側が確かめる）。
     Image(String),
 }
@@ -75,10 +83,48 @@ fn find(t: &str, at: usize, names: bool) -> Option<(Range<usize>, Peek)> {
         }
     }
 
+    // §a / &a（Minecraft の書式コード）。& は、後ろに小文字が続くとき（&and など）は除く
+    for s in at.saturating_sub(2)..=at {
+        if !t.is_char_boundary(s) {
+            continue;
+        }
+        let rest = &t[s..];
+        let (lead, n) = if rest.starts_with('§') { ('§', '§'.len_utf8()) } else if rest.starts_with('&') { ('&', 1) } else { continue };
+        let Some(code) = rest[n..].chars().next().map(|c| c.to_ascii_lowercase()) else { continue };
+        if !(code.is_ascii_digit() || ('a'..='f').contains(&code) || ('k'..='o').contains(&code) || code == 'r') {
+            continue;
+        }
+        let end = s + n + 1;
+        if at >= end || (lead == '&' && t[end..].starts_with(|c: char| c.is_ascii_lowercase())) {
+            continue;
+        }
+        return Some((s..end, Peek::McCode(code)));
+    }
+
+    // YYYY-MM-DD HH:MM[:SS]
+    if let Some((r, secs)) = date_around(t, at) {
+        return Some((r, Peek::Date(secs)));
+    }
+
     // rgb( ... ) / rgba( ... )
     if let Some(r) = func_around(t, at, &["rgb(", "rgba("]) {
         if let Some(c) = htmlstyle::parse_color(&t[r.clone()]) {
             return Some((r, Peek::Color(c, htmlstyle::hex(c))));
+        }
+    }
+
+    // hsv( ... )
+    if let Some(r) = func_around(t, at, &["hsv("]) {
+        if let Some(c) = super::textconv::parse_hsv(&t[r.clone()]) {
+            return Some((r, Peek::Color(c, htmlstyle::hex(c))));
+        }
+    }
+
+    // %E3%81%82 のような URL エンコードの並び（戻すと ASCII 以外の文字になるときだけ。%20 だけなどは出さない）
+    if let Some(r) = percent_around(t, at) {
+        let s = super::textconv::url_decode(&t[r.clone()]);
+        if !s.is_ascii() && !s.contains('%') {
+            return Some((r, Peek::Url(s)));
         }
     }
 
@@ -112,6 +158,22 @@ fn find(t: &str, at: usize, names: bool) -> Option<(Range<usize>, Peek)> {
                 }
             }
         }
+        // 数（0x・0b・0o の付いた数。ただの 10 進は、どこにでもあって小窓がうるさいので出さない）
+        if (ws == 0 || b[ws - 1] != b'.') && (we >= b.len() || b[we] != b'.') {
+            let low = w.to_ascii_lowercase();
+            let n = if let Some(h) = low.strip_prefix("0x") {
+                u64::from_str_radix(h, 16).ok()
+            } else if let Some(h) = low.strip_prefix("0b") {
+                u64::from_str_radix(h, 2).ok()
+            } else if let Some(h) = low.strip_prefix("0o") {
+                u64::from_str_radix(h, 8).ok()
+            } else {
+                None
+            };
+            if let Some(n) = n {
+                return Some((ws..we, Peek::Number(n)));
+            }
+        }
         // 色の名前（前が # や英数字でないときだけ。`--red` のような変数名は名前として扱わない）
         if names && w.bytes().all(|c| c.is_ascii_alphabetic()) && (ws == 0 || !matches!(b[ws - 1], b'#' | b'-' | b'.' | b'$' | b'@')) {
             if let Some(c) = htmlstyle::parse_color(w) {
@@ -135,6 +197,33 @@ fn find(t: &str, at: usize, names: bool) -> Option<(Range<usize>, Peek)> {
     None
 }
 
+/// `at` を含む `YYYY-MM-DD HH:MM[:SS]`（`/` 区切り・`T` も読む）と、それを UTC とみなした UNIX 時刻。
+fn date_around(t: &str, at: usize) -> Option<(Range<usize>, i64)> {
+    use std::sync::OnceLock;
+    static RE: OnceLock<regex::Regex> = OnceLock::new();
+    let re = RE.get_or_init(|| regex::Regex::new(r"\b(\d{4})[-/](\d{1,2})[-/](\d{1,2})[ T](\d{1,2}):(\d{2})(?::(\d{2}))?\b").expect("日時の正規表現"));
+    let lo = at.saturating_sub(24);
+    let mut lo = lo;
+    while !t.is_char_boundary(lo) {
+        lo -= 1;
+    }
+    for c in re.captures_iter(&t[lo..]) {
+        let m = c.get(0)?;
+        let (s, e) = (lo + m.start(), lo + m.end());
+        if !(s <= at && at < e) {
+            continue;
+        }
+        let n = |i: usize| c.get(i).map_or(Some(0), |m| m.as_str().parse::<i64>().ok());
+        let (y, mo, d, h, mi, sec) = (n(1)?, n(2)?, n(3)?, n(4)?, n(5)?, n(6)?);
+        if !(1..=12).contains(&mo) || !(1..=31).contains(&d) || h > 23 || mi > 59 || sec > 60 {
+            return None;
+        }
+        let days = super::textconv::days_from_civil(y, mo as u32, d as u32);
+        return Some((s..e, days * 86_400 + h * 3600 + mi * 60 + sec));
+    }
+    None
+}
+
 fn codepoint(c: char) -> String {
     format!("U+{:04X}", c as u32)
 }
@@ -154,6 +243,21 @@ fn func_around(t: &str, at: usize, names: &[&str]) -> Option<Range<usize>> {
         }
     }
     None
+}
+
+/// `at` が乗っている、続いた `%XX` の並び。
+fn percent_around(t: &str, at: usize) -> Option<Range<usize>> {
+    let b = t.as_bytes();
+    let is_pct = |p: usize| p + 2 < b.len() && b[p] == b'%' && b[p + 1].is_ascii_hexdigit() && b[p + 2].is_ascii_hexdigit();
+    let mut s = (at.saturating_sub(2)..=at).find(|&p| is_pct(p))?;
+    while s >= 3 && is_pct(s - 3) {
+        s -= 3;
+    }
+    let mut e = s;
+    while is_pct(e) {
+        e += 3;
+    }
+    Some(s..e)
 }
 
 /// `at` を含む `&...;`（中は英数字と #・x だけ、長さ 32 まで）。
@@ -209,6 +313,26 @@ mod tests {
     }
     fn at_(line: &str, i: usize, names: bool) -> Option<Peek> {
         at(line, i, names).map(|(_, p)| p)
+    }
+
+    #[test]
+    fn numbers_dates_and_minecraft_codes() {
+        assert_eq!(at("x = 0xFF;", 5, false).map(|x| x.1), Some(Peek::Number(255)));
+        assert_eq!(at("0b1010", 2, false).map(|x| x.1), Some(Peek::Number(10)));
+        assert_eq!(at("count 255 items", 7, false), None, "ただの 10 進は出さない");
+        assert_eq!(at("at 2026-11-19 09:30 done", 8, false), Some((3..19, Peek::Date(1_795_046_400 + 9 * 3600 + 30 * 60))));
+        assert_eq!(at("2026/1/2T03:04:05", 3, false).map(|x| x.1), Some(Peek::Date(1_767_312_000 + 3 * 3600 + 4 * 60 + 5)));
+        assert_eq!(at("§aHello", 0, false), Some((0..3, Peek::McCode('a'))));
+        assert_eq!(at("&lBold", 1, false), Some((0..2, Peek::McCode('l'))));
+        assert_eq!(at("&and", 1, false), None, "& の後に小文字が続くものは除く");
+    }
+
+    #[test]
+    fn hsv_and_percent_encoding_are_recognized() {
+        assert_eq!(at("c: hsv(0, 100%, 100%);", 5, false).map(|x| x.1), Some(Peek::Color((255, 0, 0), "#ff0000".into())));
+        let t = "q=%E3%81%82%E3%81%84&x";
+        assert_eq!(at(t, 6, false), Some((2..20, Peek::Url("あい".into()))));
+        assert_eq!(at("a%20b", 2, false), None, "ASCII だけになる並びは出さない");
     }
 
     #[test]

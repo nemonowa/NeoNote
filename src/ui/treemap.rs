@@ -71,15 +71,22 @@ pub struct Rect {
 
 /// 大きい順の `sizes` を `r` の中へ squarified で並べた四角（sizes と同じ順）。
 pub fn squarify(sizes: &[u64], r: Rect) -> Vec<Rect> {
+    squarify_rows(sizes, r).into_iter().map(|(c, _)| c).collect()
+}
+
+/// `squarify` と同じ並べ方で、四角に「何列目か」を添える。後ろの列ほど小さい項目で、
+/// 列から先の四角を合わせると 1 つの長方形になる（小さな項目をまとめて描くのに使う）。
+pub fn squarify_rows(sizes: &[u64], r: Rect) -> Vec<(Rect, usize)> {
     let total: f64 = sizes.iter().map(|&s| s as f64).sum();
     if total <= 0.0 || r.w <= 0.0 || r.h <= 0.0 {
-        return vec![Rect { w: 0.0, h: 0.0, ..r }; sizes.len()];
+        return vec![(Rect { w: 0.0, h: 0.0, ..r }, 0); sizes.len()];
     }
     let scale = r.w * r.h / total;
     let areas: Vec<f64> = sizes.iter().map(|&s| s as f64 * scale).collect();
     let mut out = Vec::with_capacity(sizes.len());
     let mut rest = r;
     let mut i = 0;
+    let mut row_no = 0usize;
     while i < areas.len() {
         let side = rest.w.min(rest.h);
         let mut j = i + 1;
@@ -93,7 +100,7 @@ pub fn squarify(sizes: &[u64], r: Rect) -> Vec<Rect> {
             let mut y = rest.y;
             for a in row {
                 let h = a / cw;
-                out.push(Rect { x: rest.x, y, w: cw, h });
+                out.push((Rect { x: rest.x, y, w: cw, h }, row_no));
                 y += h;
             }
             rest = Rect { x: rest.x + cw, w: (rest.w - cw).max(0.0), ..rest };
@@ -102,11 +109,12 @@ pub fn squarify(sizes: &[u64], r: Rect) -> Vec<Rect> {
             let mut x = rest.x;
             for a in row {
                 let w = a / rh;
-                out.push(Rect { x, y: rest.y, w, h: rh });
+                out.push((Rect { x, y: rest.y, w, h: rh }, row_no));
                 x += w;
             }
             rest = Rect { y: rest.y + rh, h: (rest.h - rh).max(0.0), ..rest };
         }
+        row_no += 1;
         i = j;
     }
     out
@@ -122,6 +130,7 @@ fn worst(row: &[f64], side: f64) -> f64 {
 
 /// 描く四角 1 つ。`depth` はフォルダの深さ、`path` は `/` 区切り。
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct Cell {
     pub r: Rect,
     pub is_dir: bool,
@@ -131,6 +140,7 @@ pub struct Cell {
 }
 
 /// 木を `r` に並べる。フォルダは枠の内側へ `pad` 詰めて子を並べ、`min` より小さい四角は描かない。
+#[allow(dead_code)] // 右パネルは mapview::layout_view に替えた。テストと、比較の計測に残す。
 pub fn layout(root: &Node, r: Rect, pad: f64, min: f64) -> Vec<Cell> {
     let mut out = Vec::new();
     place(root, r, pad, min, 0, "", &mut out);
@@ -203,6 +213,22 @@ mod tests {
         for c in &v {
             assert!(c.x >= -1e-9 && c.y >= -1e-9 && c.x + c.w <= 100.0 + 1e-6 && c.y + c.h <= 50.0 + 1e-6);
         }
+    }
+
+    #[test]
+    fn squarify_rows_agrees_with_squarify_and_rows_never_go_back() {
+        let r = Rect { x: 5.0, y: 7.0, w: 300.0, h: 200.0 };
+        let sizes: Vec<u64> = (1..=60u64).rev().map(|i| i * i).collect();
+        let rows = squarify_rows(&sizes, r);
+        let plain = squarify(&sizes, r);
+        assert_eq!(rows.len(), plain.len());
+        for ((a, _), b) in rows.iter().zip(&plain) {
+            assert_eq!(a, b);
+        }
+        assert!(rows.windows(2).all(|w| w[0].1 <= w[1].1 && w[1].1 <= w[0].1 + 1));
+        // 空・面積 0 は squarify と同じく、大きさ 0 の四角を件数ぶん返す。
+        assert_eq!(squarify_rows(&[], r).len(), 0);
+        assert!(squarify_rows(&[5, 3], Rect { w: 0.0, ..r }).iter().all(|(c, row)| c.w == 0.0 && c.h == 0.0 && *row == 0));
     }
 
     #[test]

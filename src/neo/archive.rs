@@ -49,11 +49,16 @@ pub fn is_archive_path(p: &Path) -> bool {
     p.is_dir() || is_zip_path(p) || tarlist::kind_of(p).is_some() || image_kind(p).is_some()
 }
 
-/// 中を読み取り専用で見るディスクイメージの種類（ext2/3/4・ISO 9660）。
+/// 中を読み取り専用で見るディスクイメージの種類（ext2/3/4・ISO 9660）と、Windows のサムネイルのキャッシュ（thumbcache_*.db）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ImageKind {
     Ext,
     Iso,
+    ThumbCache,
+    /// アイコン（.ico・.cur・.icns）。大きさごとの画像を並べる。
+    Icon,
+    /// SQLite のデータベース。表ごとの CSV と schema.sql を並べる。
+    Sqlite,
 }
 
 /// `p` がディスクイメージなら、その種類（先頭の中身で見分ける。.img はどちらもあり得る）。
@@ -62,6 +67,12 @@ pub fn image_kind(p: &Path) -> Option<ImageKind> {
         Some(ImageKind::Ext)
     } else if isofs::is_iso_path(p) {
         Some(ImageKind::Iso)
+    } else if super::thumbcache::is_thumbcache_path(p) {
+        Some(ImageKind::ThumbCache)
+    } else if super::iconfile::is_icon_path(p) {
+        Some(ImageKind::Icon)
+    } else if super::sqlite::is_sqlite_path(p) {
+        Some(ImageKind::Sqlite)
     } else {
         None
     }
@@ -72,6 +83,9 @@ pub fn image_read(p: &Path, kind: ImageKind, path: &str, max: u64) -> Result<Vec
     match kind {
         ImageKind::Ext => extfs::read_path(p, path, max),
         ImageKind::Iso => isofs::read_path(p, path, max),
+        ImageKind::ThumbCache => super::thumbcache::read_path(p, path, max),
+        ImageKind::Icon => super::iconfile::read_path(p, path, max),
+        ImageKind::Sqlite => super::sqlite::read_path(p, path, max),
     }
 }
 
@@ -80,6 +94,9 @@ pub fn image_extract(p: &Path, kind: ImageKind, path: &str) -> Result<PathBuf, S
     match kind {
         ImageKind::Ext => extfs::extract_to_temp(p, path),
         ImageKind::Iso => isofs::extract_to_temp(p, path),
+        ImageKind::ThumbCache => super::thumbcache::extract_to_temp(p, path),
+        ImageKind::Icon => super::iconfile::extract_to_temp(p, path),
+        ImageKind::Sqlite => super::sqlite::extract_to_temp(p, path),
     }
 }
 
@@ -347,6 +364,9 @@ pub fn list_path(p: &Path) -> Result<Vec<Entry>, String> {
         match k {
             ImageKind::Ext => extfs::list_file(p),
             ImageKind::Iso => isofs::list_file(p),
+            ImageKind::ThumbCache => super::thumbcache::list_file(p),
+            ImageKind::Icon => super::iconfile::list_file(p),
+            ImageKind::Sqlite => super::sqlite::list_file(p),
         }
     } else {
         list_zip_file(p)
@@ -484,6 +504,9 @@ pub fn search_contents(root: &Path, entries: &[Entry], needle: &str, cancel: &dy
         let each = |f: &mut dyn FnMut(&str, Vec<u8>) -> bool| match k {
             ImageKind::Ext => extfs::each_file(root, CONTENT_MAX_FILE as u64, f),
             ImageKind::Iso => isofs::each_file(root, CONTENT_MAX_FILE as u64, f),
+            ImageKind::ThumbCache => super::thumbcache::each_file(root, CONTENT_MAX_FILE as u64, f),
+            ImageKind::Icon => super::iconfile::each_file(root, CONTENT_MAX_FILE as u64, f),
+            ImageKind::Sqlite => super::sqlite::each_file(root, CONTENT_MAX_FILE as u64, f),
         };
         let _ = each(&mut |name, data| {
             if cancel() {
