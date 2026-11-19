@@ -461,6 +461,10 @@ fn file_meta_rows(p: &Path) -> Vec<(String, String)> {
         if let Some((w, h)) = image_size(p) {
             rows.push((crate::lang::tr("画像", "Image").into(), format!("{w} x {h} px")));
         }
+    } else if crate::neo::lnkfile::is_lnk_path(p) && std::fs::metadata(p).is_ok_and(|m| m.len() <= 1 << 20) {
+        if let Ok(link) = std::fs::read(p).map_err(|e| e.to_string()).and_then(|b| crate::neo::lnkfile::parse(&b)) {
+            rows.extend(crate::neo::lnkfile::info_rows(&link).into_iter().map(|(k, v)| (k.to_string(), v)));
+        }
     } else if audiometa::supports(p) && std::fs::metadata(p).is_ok_and(|m| m.len() <= AUDIO_INFO_MAX) {
         if let Ok(info) = std::fs::read(p).map_err(|e| e.to_string()).and_then(|b| audiometa::info(&b)) {
             rows.extend(audiometa::info_rows(&info).into_iter().map(|(k, v)| (k.to_string(), v)));
@@ -1791,6 +1795,25 @@ impl Ui {
     }
 
     /// 画像のメタデータを、文字の新しいタブで開く（PNG の tEXt / iTXt、JPEG のコメント）。
+    /// ショートカット（.lnk）のリンク先を、新しいタブで開く（フォルダは一覧で）。
+    fn open_lnk_target(self: &Rc<Self>) {
+        use crate::neo::lnkfile;
+        let Some(path) = self.doc().st.borrow().path.clone() else { return };
+        let target = std::fs::read(&path).map_err(|e| e.to_string()).and_then(|b| lnkfile::parse(&b)).map(|l| lnkfile::resolve_target(&path, &l));
+        match target {
+            Ok(Some(t)) if t.exists() => {
+                self.open_path(t);
+            }
+            Ok(Some(t)) => confirm::alert(&if crate::lang::is_en() { format!("The link target was not found.
+
+{}", t.display()) } else { format!("リンク先が見つかりません。
+
+{}", t.display()) }),
+            Ok(None) => confirm::alert(crate::lang::tr("このショートカットには、開けるリンク先がありません（特別なフォルダなど）。", "This shortcut has no target that can be opened (special folder, etc.).")),
+            Err(e) => confirm::alert(&e),
+        }
+    }
+
     /// 開いている NBT が Minecraft の地図（map_N.dat）なら、その色の番号。
     fn map_colors(&self) -> Option<Vec<u8>> {
         let root = nbt::from_snbt(&self.doc().buf.text()).ok()?;
@@ -3389,6 +3412,7 @@ impl Ui {
             Map(sidepanel::MapMode),
             McMap,
             ViewMcMap,
+            LnkOpen,
         }
         let (cur, is_hex, auto, eol, path, in_preview) = {
             let d = self.doc();
@@ -3479,6 +3503,9 @@ impl Ui {
         }
         if (kind == viewmode::Kind::Image && path.as_deref().is_some_and(imgmeta::supports)) || (is_audio && path.as_deref().is_some_and(audiometa::supports)) {
             rows.push((Pick::Meta, crate::lang::tr("メタデータを編集（テキスト）", "Edit Metadata (text)").into(), false, true, false));
+        }
+        if path.as_deref().is_some_and(|p| crate::neo::lnkfile::is_lnk_path(p) && p.is_file()) {
+            rows.push((Pick::LnkOpen, crate::lang::tr("リンク先を開く", "Open Link Target").into(), false, true, false));
         }
         if self.is_nbt_doc(&self.doc()) && self.map_colors().is_some() {
             rows.push((Pick::ViewMcMap, crate::lang::tr("地図の絵を見る", "View Map Image").into(), false, true, false));
@@ -3585,6 +3612,7 @@ impl Ui {
             Pick::Meta => self.open_meta(),
             Pick::McMap => self.save_mc_map(),
             Pick::ViewMcMap => self.view_mc_map(),
+            Pick::LnkOpen => self.open_lnk_target(),
             Pick::Play => self.toggle_audio(),
             Pick::PdfText => self.open_pdf_text(),
             Pick::DocText => self.open_doc_text(),
@@ -4672,13 +4700,13 @@ impl Ui {
         use crate::neo::update;
         let en = crate::lang::is_en();
         match r {
-            Ok(l) if update::is_newer(&l.tag, dev::version()) => {
-                let msg = if en { format!("A new version {} is available (current: {}).", l.tag, dev::version()) } else { format!("新しい版 {} が出ています（いまの版: {}）。", l.tag, dev::version()) };
+            Ok(l) if update::is_newer(&l.tag, dev::VERSION) => {
+                let msg = if en { format!("A new version {} is available (current: {}).", l.tag, dev::VERSION) } else { format!("新しい版 {} が出ています（いまの版: {}）。", l.tag, dev::VERSION) };
                 if confirm::choice(&msg, crate::lang::tr("閉じる", "Close"), crate::lang::tr("配布ページを開く", "Open the download page"), "") == Some(1) {
                     self.open_site(&l.page);
                 }
             }
-            Ok(l) => self.flash(&if en { format!("Up to date ({}; latest release {})", dev::version(), l.tag) } else { format!("最新です（{}。公開中の最新 {}）", dev::version(), l.tag) }),
+            Ok(l) => self.flash(&if en { format!("Up to date ({}; latest release {})", dev::VERSION, l.tag) } else { format!("最新です（{}。公開中の最新 {}）", dev::VERSION, l.tag) }),
             Err(e) => {
                 log::warn(TAG, &format!("update check failed: {e}"));
                 let msg = if en { format!("Could not check for a new version.

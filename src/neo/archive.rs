@@ -59,6 +59,10 @@ pub enum ImageKind {
     Icon,
     /// SQLite のデータベース。表ごとの CSV と schema.sql を並べる。
     Sqlite,
+    /// 実行ファイル（.exe・.dll）の資源。アイコン・版の情報・マニフェストを並べる。
+    Pe,
+    /// Windows の cab。
+    Cab,
 }
 
 /// `p` がディスクイメージなら、その種類（先頭の中身で見分ける。.img はどちらもあり得る）。
@@ -73,6 +77,10 @@ pub fn image_kind(p: &Path) -> Option<ImageKind> {
         Some(ImageKind::Icon)
     } else if super::sqlite::is_sqlite_path(p) {
         Some(ImageKind::Sqlite)
+    } else if super::pefile::is_pe_path(p) {
+        Some(ImageKind::Pe)
+    } else if super::cabfile::is_cab_path(p) {
+        Some(ImageKind::Cab)
     } else {
         None
     }
@@ -86,6 +94,8 @@ pub fn image_read(p: &Path, kind: ImageKind, path: &str, max: u64) -> Result<Vec
         ImageKind::ThumbCache => super::thumbcache::read_path(p, path, max),
         ImageKind::Icon => super::iconfile::read_path(p, path, max),
         ImageKind::Sqlite => super::sqlite::read_path(p, path, max),
+        ImageKind::Pe => super::pefile::read_path(p, path, max),
+        ImageKind::Cab => super::cabfile::read_path(p, path, max),
     }
 }
 
@@ -97,6 +107,8 @@ pub fn image_extract(p: &Path, kind: ImageKind, path: &str) -> Result<PathBuf, S
         ImageKind::ThumbCache => super::thumbcache::extract_to_temp(p, path),
         ImageKind::Icon => super::iconfile::extract_to_temp(p, path),
         ImageKind::Sqlite => super::sqlite::extract_to_temp(p, path),
+        ImageKind::Pe => super::pefile::extract_to_temp(p, path),
+        ImageKind::Cab => super::cabfile::extract_to_temp(p, path),
     }
 }
 
@@ -367,6 +379,8 @@ pub fn list_path(p: &Path) -> Result<Vec<Entry>, String> {
             ImageKind::ThumbCache => super::thumbcache::list_file(p),
             ImageKind::Icon => super::iconfile::list_file(p),
             ImageKind::Sqlite => super::sqlite::list_file(p),
+            ImageKind::Pe => super::pefile::list_file(p),
+            ImageKind::Cab => super::cabfile::list_file(p),
         }
     } else {
         list_zip_file(p)
@@ -507,6 +521,8 @@ pub fn search_contents(root: &Path, entries: &[Entry], needle: &str, cancel: &dy
             ImageKind::ThumbCache => super::thumbcache::each_file(root, CONTENT_MAX_FILE as u64, f),
             ImageKind::Icon => super::iconfile::each_file(root, CONTENT_MAX_FILE as u64, f),
             ImageKind::Sqlite => super::sqlite::each_file(root, CONTENT_MAX_FILE as u64, f),
+            ImageKind::Pe => super::pefile::each_file(root, CONTENT_MAX_FILE as u64, f),
+            ImageKind::Cab => super::cabfile::each_file(root, CONTENT_MAX_FILE as u64, f),
         };
         let _ = each(&mut |name, data| {
             if cancel() {

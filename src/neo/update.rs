@@ -120,7 +120,7 @@ mod tests {
         assert!(is_newer("2.10.0", "v2.9.9"));
         assert!(!is_newer("v2.1.77", "v2.1.77"));
         assert!(!is_newer("v2.1.76", "v2.1.77"));
-        assert!(!is_newer("v2.1.77", "v999.99.9")); // 開発版より新しいものは無い
+        assert!(!is_newer("v2.1.77", "v999.99.9")); // 表示用の開発版の番号と比べると、何も新しくならない（だから比べるのは dev::VERSION）
         assert!(!is_newer("latest", "v2.1.77"));
     }
 }

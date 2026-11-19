@@ -202,9 +202,17 @@ fn fixed(b: &mut Bits, out: &mut Vec<u8>, max: usize) -> R<()> {
 
 /// 生の deflate を解凍する。`max_out` を超えて出そうになったら（壊れた・悪意ある入力による暴走を避けて）エラー。
 pub fn inflate(data: &[u8], max_out: usize) -> Result<Vec<u8>, String> {
+    inflate_with_dict(data, &[], max_out)
+}
+
+/// 前の続きとして解凍する（`dict` は直前に出た中身。後ろの 32 KiB を参照できる。cab の MSZIP のように、ブロックが前のブロックを参照する形）。
+/// 返すのは、新しく出た分だけ。
+pub fn inflate_with_dict(data: &[u8], dict: &[u8], max_out: usize) -> Result<Vec<u8>, String> {
+    let dict = &dict[dict.len().saturating_sub(32 * 1024)..];
+    let max_out = max_out.saturating_add(dict.len());
     let run = || -> R<Vec<u8>> {
         let mut b = Bits { d: data, pos: 0, buf: 0, n: 0 };
-        let mut out = Vec::new();
+        let mut out = dict.to_vec();
         loop {
             let last = b.bits(1)?;
             match b.bits(2)? {
@@ -214,7 +222,7 @@ pub fn inflate(data: &[u8], max_out: usize) -> Result<Vec<u8>, String> {
                 _ => return Err(crate::lang::tr("不正なブロックの種類です", "Invalid block type")),
             }
             if last == 1 {
-                return Ok(out);
+                return Ok(out.split_off(dict.len()));
             }
         }
     };

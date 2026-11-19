@@ -214,7 +214,7 @@ pub fn give_commands(first: i32, count: usize) -> String {
 
 /// 「2x3」「2×3」「2 3」「2」などを (横, 縦) に。
 pub fn parse_tiles(s: &str) -> Option<(usize, usize)> {
-    let parts: Vec<usize> = s.split(|c: char| matches!(c, 'x' | 'X' | '×' | '*' | ',' | ' ')).filter(|p| !p.trim().is_empty()).map(|p| p.trim().parse().ok()).collect::<Option<_>>()?;
+    let parts: Vec<usize> = s.split(['x', 'X', '×', '*', ',', ' ']).filter(|p| !p.trim().is_empty()).map(|p| p.trim().parse().ok()).collect::<Option<_>>()?;
     let (c, r) = match parts.as_slice() {
         [n] => (*n, *n),
         [c, r] => (*c, *r),
