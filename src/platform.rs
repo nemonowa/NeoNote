@@ -241,11 +241,12 @@ pub fn open_folder(path: &Path) -> io::Result<()> {
 pub fn reveal(path: &Path) -> io::Result<()> {
     #[cfg(target_os = "windows")]
     {
+        use std::os::windows::process::CommandExt;
         let mut c = Command::new("explorer");
-        // explorer は「/select,パス」を 1 つの引数として受ける（空白を含むパスも、そのまま渡せば読める）
-        let mut arg = std::ffi::OsString::from("/select,");
-        arg.push(path.as_os_str());
-        c.arg(arg);
+        // 「/select,"パス"」とそのまま渡す。Command::arg は空白を含む引数を丸ごと " で囲むので、explorer が /select を読めず
+        // ドキュメントのフォルダを開いてしまう。区切りも \ にそろえる（/ のままだと選べない）
+        let p = path.to_string_lossy().replace('/', "\\");
+        c.raw_arg(format!("/select,\"{p}\""));
         spawn_detached(c)
     }
     #[cfg(not(target_os = "windows"))]

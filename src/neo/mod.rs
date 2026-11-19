@@ -36,6 +36,8 @@ pub mod unsaved;
 pub mod udffs;
 pub mod update;
 pub mod imagefile;
+pub mod fontfile;
+pub mod imgdecode;
 pub mod imgmeta;
 pub mod indent;
 pub mod isofs;

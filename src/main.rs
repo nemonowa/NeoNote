@@ -10,6 +10,8 @@ mod lang;
 mod log;
 mod platform;
 mod ui;
+mod winmedia;
+mod winopen;
 
 /// 起動の引数。
 #[derive(Debug, Default, PartialEq, Eq)]

@@ -2,9 +2,9 @@
 // 判定条件は設計書以外の配布物には記載しない。
 const DEV_USER_NAME: &str = "nemo";
 
-pub const VERSION: &str = "v2.1.82";
+pub const VERSION: &str = "v2.1.83";
 /// ビルド番号。まとまった作業ごとに 1 つ上げる。ログから、どのビルドの物か分かるようにする。
-pub const BUILD: u32 = 82;
+pub const BUILD: u32 = 83;
 /// 開発者の PC で見せる版（表示だけ）。新しい版の確認などの比べには使わず、`VERSION` と比べる。
 pub const DEV_VERSION: &str = "v999.99.9";
 

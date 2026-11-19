@@ -1,6 +1,8 @@
 /* NeoNote の簡易再生用の、miniaudio の薄い包み。
- * デコーダー（MP3 / FLAC / WAV）とデバイス（再生）だけを使う。Rust からは下の関数だけを呼ぶ。
+ * デコーダー（MP3 / FLAC / WAV、stb_vorbis で OGG Vorbis）とデバイス（再生）だけを使う。Rust からは下の関数だけを呼ぶ。
  * 音は miniaudio のデバイスのコールバック（別スレッド）で鳴らす。UI スレッドは止めない。 */
+#define STB_VORBIS_HEADER_ONLY
+#include "../stb/stb_vorbis.c"
 #define MINIAUDIO_IMPLEMENTATION
 #define MA_NO_ENCODING
 #define MA_NO_GENERATION
@@ -8,6 +10,8 @@
 #define MA_NO_NODE_GRAPH
 #define MA_NO_RESOURCE_MANAGER
 #include "miniaudio.h"
+#undef STB_VORBIS_HEADER_ONLY
+#include "../stb/stb_vorbis.c"
 
 #include <stdlib.h>
 #include <string.h>
@@ -146,6 +150,39 @@ int neo_audio_poll(neo_audio* a, double* pos_sec) {
     }
     if (done) return 2;
     return a->running ? 1 : 0;
+}
+
+/* 長さ（秒）。分からなければ 0。 */
+double neo_audio_length(neo_audio* a) {
+    ma_uint64 frames = 0;
+    ma_uint32 rate = a->decoder.outputSampleRate;
+    if (ma_decoder_get_length_in_pcm_frames(&a->decoder, &frames) != MA_SUCCESS || rate == 0) return 0.0;
+    return (double)frames / (double)rate;
+}
+
+/* 位置（秒）へ動かす。コールバックと同時にデコーダーを触らないよう、鳴らしている時は止めてから動かす。成功で 0。 */
+int neo_audio_seek(neo_audio* a, double sec) {
+    ma_uint32 rate = a->decoder.outputSampleRate;
+    ma_uint64 frame = (ma_uint64)((sec < 0 ? 0 : sec) * rate);
+    int was = a->running;
+    ma_result r;
+    if (was) neo_audio_stop(a);
+    r = ma_decoder_seek_to_pcm_frame(&a->decoder, frame);
+    if (r == MA_SUCCESS) {
+        ma_spinlock_lock(&a->lock);
+        a->played = frame;
+        a->done = 0;
+        ma_spinlock_unlock(&a->lock);
+    }
+    if (was) {
+        if (ma_device_start(&a->device) == MA_SUCCESS) a->running = 1;
+    }
+    return r == MA_SUCCESS ? 0 : -1;
+}
+
+/* 音量（0〜1）。 */
+void neo_audio_volume(neo_audio* a, double v) {
+    if (a->device_ready) ma_device_set_master_volume(&a->device, (float)(v < 0 ? 0 : v > 1 ? 1 : v));
 }
 
 void neo_audio_close(neo_audio* a) {

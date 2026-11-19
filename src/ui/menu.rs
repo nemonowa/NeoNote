@@ -16,13 +16,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 static AUTOSAVE_ON: AtomicBool = AtomicBool::new(false);
 /// Word Wrap の状態（同上）。
 static WRAP_ON: AtomicBool = AtomicBool::new(false);
-/// 続きから（前回のタブと未保存の変更を戻す）の状態（同上）。
-static RESUME_ON: AtomicBool = AtomicBool::new(true);
-
-pub fn set_resume_checked(on: bool) {
-    RESUME_ON.store(on, Ordering::Relaxed);
-}
-
 pub fn set_wrap_checked(on: bool) {
     WRAP_ON.store(on, Ordering::Relaxed);
 }
@@ -111,7 +104,6 @@ pub enum Action {
     CopyLine,
     PasteBefore,
     PasteAfter,
-    ToggleResume,
     ToggleLang,
     SetLang(crate::lang::Lang),
     /// theme::PALETTES の番号の配色にする。
@@ -193,7 +185,6 @@ pub const LOAD: &[MenuEntry] = &[
     e("Homepage", "サイト", Action::OpenHomePage),
     e("Font", "フォント", Action::ChooseFont),
     e("Config", "設定", Action::OpenConfig),
-    e("Resume", "続きから", Action::ToggleResume),   // config.txt をタブで開く
     e("Shortcut", "ショートカット", Action::MakeShortcut),
     ed("Update", "更新", Action::CheckUpdate),
     e("Exit", "終了", Action::Exit),
@@ -361,7 +352,6 @@ pub fn checked(a: Action) -> Option<bool> {
     match a {
         Action::ToggleAutoSave => Some(AUTOSAVE_ON.load(Ordering::Relaxed)),
         Action::ToggleWrap => Some(WRAP_ON.load(Ordering::Relaxed)),
-        Action::ToggleResume => Some(RESUME_ON.load(Ordering::Relaxed)),
         Action::SetLang(l) => Some(crate::lang::current() == l),
         Action::SetTheme(i) => Some(crate::ui::theme::PALETTES.get(i).is_some_and(|p| p.name == crate::ui::theme::current_name())),
         Action::EditCustomTheme => Some(crate::ui::theme::current_name() == crate::ui::theme::CUSTOM_NAME),
@@ -432,7 +422,6 @@ pub fn describe(a: Action) -> &'static str {
         ToggleWrap => crate::lang::tr("右端で折り返すかを切り替える", "Turn line wrapping at the right edge on or off"),
         GotoLine => crate::lang::tr("行番号を入れて、その行へ移る", "Enter a line number and jump to it"),
         ConvertEol => crate::lang::tr("改行コード（CRLF・LF）を変換する", "Convert line endings (CRLF, LF)"),
-        ToggleResume => crate::lang::tr("次の起動で、前回のタブと未保存の変更を戻す（切ると、終了時に未保存の変更の保存を確認する）", "Restore last tabs and unsaved changes at next launch (when off, ask about unsaved changes on exit)"),
         ToggleLang => crate::lang::tr("日本語と英語を切り替える", "Switch between Japanese and English"),
         SetLang(_) => crate::lang::tr("画面の言葉をこの言語にする", "Use this language for the interface"),
         SetTheme(_) => crate::lang::tr("この配色にする", "Use this color theme"),

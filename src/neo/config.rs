@@ -11,7 +11,6 @@
 //   gutter_pin=true               行番号欄を常に表示（固定）する。false なら、カーソルが左端のときだけ出す
 //   side_pin=true                 右端の情報・縮小表示の欄を常に表示（固定）する。false なら、マウスが右端のときだけ出す
 //   backup=false                  上書き保存の前の控え（設定フォルダの backup/）を取らない（既定は取る。アプリは書き戻さない）
-//   resume=false                  前回のタブと未保存の変更を、次の起動で戻さない（既定は戻す。true のときは書かない）
 //   gutter_extra=20               行番号欄を桁数で決まる幅より広げる分（0 のときは書かない）
 //   side_w=260                    右端の欄の幅（既定 200 のときは書かない）
 //   lang=en                       画面の言葉。ja（既定。ja のときは書かない）・en
@@ -47,8 +46,6 @@ pub struct Config {
     pub side_w: Option<i32>,
     /// フォルダ・zip の見せ方（`map`・`map3d`）。None ならツリー（既定）。
     pub archive_view: Option<String>,
-    /// 前回のタブと未保存の変更を、引数なしの起動で戻す（既定は戻す）。
-    pub resume: bool,
     /// 上書きの前に元の中身を控える（`neo::backup`）。設定ファイルを手で書き換えたときだけ変わる。
     pub backup: bool,
     /// 画面の言葉（ja・en）。
@@ -84,7 +81,6 @@ impl Default for Config {
             side_w: None,
             archive_view: None,
             gutter_extra: None,
-            resume: true,
             backup: true,
             lang: "ja".into(),
             light: false,
@@ -164,7 +160,6 @@ pub fn parse(text: &str) -> Config {
             "side_w" => cfg.side_w = v.parse::<i32>().ok(),
             "archive_view" => cfg.archive_view = Some(v.to_ascii_lowercase()).filter(|v| matches!(v.as_str(), "map" | "map3d")),
             "gutter_extra" => cfg.gutter_extra = v.parse::<i32>().ok(),
-            "resume" => cfg.resume = parse_bool(v),
             "backup" => cfg.backup = parse_bool(v),
             "lang" => cfg.lang = v.trim().to_ascii_lowercase(),
             "theme" => {
@@ -223,8 +218,6 @@ pub fn render(existing: &str, cfg: &Config) -> String {
     let mut seen_archive_view = false;
     let gutter_extra_line = cfg.gutter_extra.map(|w| format!("gutter_extra={w}"));
     let mut seen_gutter_extra = false;
-    let resume_line = format!("resume={}", cfg.resume);
-    let mut seen_resume = false;
     let lang_line = format!("lang={}", cfg.lang);
     let mut seen_lang = false;
     // dark / light は light の値で決める（名前の付いた配色のときだけ、その名前を書く）
@@ -271,12 +264,7 @@ pub fn render(existing: &str, cfg: &Config) -> String {
                 }
                 seen_side = true;
             }
-            Some("resume") => {
-                if !seen_resume {
-                    out.push(resume_line.clone());
-                }
-                seen_resume = true;
-            }
+            Some("resume") => {} // 前の版の設定（いつも続きから）。書き戻さない
             Some("lang") => {
                 if !seen_lang {
                     out.push(lang_line.clone());
@@ -380,10 +368,6 @@ pub fn render(existing: &str, cfg: &Config) -> String {
     if !seen_gutter_extra {
         out.extend(gutter_extra_line);
     }
-    // 既定（true）のときは行を足さない
-    if !seen_resume && !cfg.resume {
-        out.push(resume_line);
-    }
     if !seen_lang && cfg.lang != "ja" {
         out.push(lang_line);
     }
@@ -432,7 +416,7 @@ mod tests {
     use super::*;
 
     fn cfg() -> Config {
-        Config { autosave: true, wrap: true, gutter_pin: true, side_pin: false, side_w: None, archive_view: None, gutter_extra: None, resume: true, backup: true, light: true, theme: Some("light".into()), custom: None, lang: "ja".into(), size: Some(18), font: Some(PathBuf::from("/f/Mono.ttf")), recent: vec![PathBuf::from("/a/1.txt"), PathBuf::from("/a/2.txt")], history: vec![PathBuf::from("/h/1.txt"), PathBuf::from("/h/2.txt"), PathBuf::from("/h/3.txt")], session: vec![PathBuf::from("/s/1.txt"), PathBuf::from("/s/2.txt")], session_active: Some(PathBuf::from("/s/2.txt")) }
+        Config { autosave: true, wrap: true, gutter_pin: true, side_pin: false, side_w: None, archive_view: None, gutter_extra: None, backup: true, light: true, theme: Some("light".into()), custom: None, lang: "ja".into(), size: Some(18), font: Some(PathBuf::from("/f/Mono.ttf")), recent: vec![PathBuf::from("/a/1.txt"), PathBuf::from("/a/2.txt")], history: vec![PathBuf::from("/h/1.txt"), PathBuf::from("/h/2.txt"), PathBuf::from("/h/3.txt")], session: vec![PathBuf::from("/s/1.txt"), PathBuf::from("/s/2.txt")], session_active: Some(PathBuf::from("/s/2.txt")) }
     }
 
     #[test]

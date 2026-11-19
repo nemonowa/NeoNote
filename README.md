@@ -8,7 +8,7 @@
 ![Rust](https://img.shields.io/badge/Rust-fltk--rs-b7410e?logo=rust)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-555)
 ![Binary](https://img.shields.io/badge/binary-single%20exe-2ea44f)
-![Tests](https://img.shields.io/badge/tests-395%20passed-brightgreen)
+![Tests](https://img.shields.io/badge/tests-496%20passed-brightgreen)
 
 ![NeoNote](docs/screenshots/main.png)
 
@@ -39,7 +39,7 @@ Author   : argonaute_nemo
 - 🖱️ **省クリック！**：ツールバーのボタンは押せば主な操作、マウスを乗せると関連する操作の一覧
 - 🪟 **ウィンドウを増やさない**：起動中に別のファイルを開くと、同じウィンドウのタブで開く（メモ帳のように）。タブはドラッグで別のウィンドウへ移せる
 - 🛟 **保存の前の控え**：上書きする前に、元の中身を設定フォルダへ 1 世代だけ控える（ワールドやデータパックのフォルダには何も足さない）
-- 🔁 **続きから**：前回のタブと未保存の変更を、次の起動でそのまま戻す（設定で切れる）
+- 🔁 **続きから**：前回のタブと未保存の変更を、次の起動でそのまま戻す
 - 🎨 **千変万化のカラーテーマ**：UIの構成配色を全て自由に変更可能。10のカラーテーマと無限の自由配色。月のボタンで明暗を切り替え
 - 🌐 **日本語と英語**：旗のボタンで、メニューや説明の言葉を切り替えられる
 - 🔤 **幅広い対応性**：あらゆる文字コード、フォーマットファイル形式など自動で読み込みプレビューできます。UTF-8・Shift_JIS・EUC-JP・UTF-16 + 改行コード（CRLF / LF）など。

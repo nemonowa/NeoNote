@@ -33,6 +33,10 @@ pub enum Kind {
     Archive,
     /// mp3 / flac / wav。情報とタグの Preview（再生・停止つき）。
     Audio,
+    /// mp4・mov・mkv など。再生の画面（Windows は Media Foundation。ほかの OS は再生できない旨だけ）。
+    Video,
+    /// ttf・otf・ttc。名前と、入っている文字を Unicode の順に並べた見本。
+    Font,
     /// level.dat などの NBT。Text は SNBT、Preview は階層の木（編集できる）。
     Nbt,
     Other,
@@ -50,11 +54,54 @@ pub fn kind_of(path: Option<&Path>) -> Kind {
         Some("xlsx" | "xlsm" | "ods") => Kind::Book,
         Some("docx" | "docm" | "odt" | "pptx" | "pptm" | "odp" | "epub") => Kind::Doc,
         Some("pdf") => Kind::Pdf,
-        Some("png" | "jpg" | "jpeg" | "gif" | "bmp") => Kind::Image,
-        Some("mp3" | "flac" | "wav") => Kind::Audio,
+        Some("png" | "jpg" | "jpeg" | "gif" | "bmp" | "webp" | "tif" | "tiff" | "tga" | "dds" | "psd") => Kind::Image,
+        Some("mp3" | "flac" | "wav" | "ogg" | "oga" | "m4a" | "aac" | "wma" | "opus") => Kind::Audio,
+        Some("ttf" | "otf" | "ttc" | "otc") => Kind::Font,
+        Some("mp4" | "m4v" | "mov" | "wmv" | "avi" | "mkv" | "webm" | "mpg" | "mpeg" | "m2ts" | "3gp" | "flv") => Kind::Video,
         _ if path.is_some_and(crate::neo::nbt::is_nbt_path) => Kind::Nbt,
         _ => Kind::Other,
     }
+}
+
+/// 前後へ切り替えられる種類（Preview で見る物。文字の文書・フォルダ・NBT は除く）。
+pub fn steppable(kind: Kind) -> bool {
+    matches!(kind, Kind::Image | Kind::Pdf | Kind::Book | Kind::Doc | Kind::Audio | Kind::Video | Kind::Font)
+}
+
+/// `path` と同じフォルダにある、同じ種類のファイルのうち、名前の順で `step`（-1 前・+1 次）の物。端なら None。
+pub fn sibling(path: &Path, step: i32) -> Option<std::path::PathBuf> {
+    let kind = kind_of(Some(path));
+    let dir = path.parent()?;
+    let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(dir)
+        .ok()?
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_file()))
+        .map(|e| e.path())
+        .filter(|p| kind_of(Some(p)) == kind)
+        .collect();
+    files.sort_by_key(|p| natural_key(&p.file_name().map(|n| n.to_string_lossy().to_lowercase()).unwrap_or_default()));
+    let name = path.file_name()?;
+    let i = files.iter().position(|p| p.file_name() == Some(name))? as i64 + step as i64;
+    (i >= 0).then(|| files.get(i as usize).cloned()).flatten()
+}
+
+/// 名前の中の数字を数として比べる鍵（img2 が img10 より前に来る）。
+fn natural_key(s: &str) -> Vec<(u8, u64, String)> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let mut digits = false;
+    for ch in s.chars().chain(std::iter::once('\0')) {
+        let d = ch.is_ascii_digit();
+        if (d != digits || ch == '\0') && !cur.is_empty() {
+            out.push(if digits { (0, cur.parse().unwrap_or(u64::MAX), cur.clone()) } else { (1, 0, cur.clone()) });
+            cur.clear();
+        }
+        digits = d;
+        if ch != '\0' {
+            cur.push(ch);
+        }
+    }
+    out
 }
 
 /// 形式の自動判定で見る、本文の先頭の大きさ。
@@ -102,6 +149,8 @@ pub fn kind_name(kind: Kind, preview: bool, hex: bool) -> &'static str {
         Kind::Image => "Image",
         Kind::Archive => "Folder",
         Kind::Audio => "Audio",
+        Kind::Video => "Video",
+        Kind::Font => "Font",
         Kind::Nbt => "NBT",
         Kind::Other => "Text",
     }
@@ -115,7 +164,7 @@ pub fn available(path: Option<&Path>) -> Vec<View> {
 
 pub fn available_for(kind: Kind) -> Vec<View> {
     match kind {
-        Kind::Markdown | Kind::Html | Kind::Sheet | Kind::Nbt | Kind::Book | Kind::Doc | Kind::Pdf | Kind::Image | Kind::Audio | Kind::Archive => {
+        Kind::Markdown | Kind::Html | Kind::Sheet | Kind::Nbt | Kind::Book | Kind::Doc | Kind::Pdf | Kind::Image | Kind::Audio | Kind::Video | Kind::Font | Kind::Archive => {
             vec![View::Text, View::Preview, View::Hex]
         }
         Kind::Other => vec![View::Text, View::Hex],
@@ -126,6 +175,22 @@ pub fn available_for(kind: Kind) -> Vec<View> {
 mod tests {
     use super::*;
     use std::path::Path;
+
+    #[test]
+    fn siblings_follow_the_name_order_and_kind() {
+        let dir = std::env::temp_dir().join(format!("neonote_sib_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        for n in ["img10.png", "img2.png", "img1.jpg", "note.txt", "b.mp3"] {
+            std::fs::write(dir.join(n), b"x").unwrap();
+        }
+        let p = dir.join("img2.png");
+        assert_eq!(sibling(&p, -1).unwrap().file_name().unwrap(), "img1.jpg");
+        assert_eq!(sibling(&p, 1).unwrap().file_name().unwrap(), "img10.png");
+        assert!(sibling(&dir.join("img10.png"), 1).is_none(), "端");
+        assert!(sibling(&dir.join("b.mp3"), 1).is_none(), "ほかに音声は無い");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn sniff_guesses_format() {
@@ -145,7 +210,7 @@ mod tests {
         assert_eq!(kind_of(Some(Path::new("a/B.JPG"))), Kind::Image);
         assert_eq!(kind_of(Some(Path::new("x.svg"))), Kind::Other);
         assert_eq!(kind_of(Some(Path::new("a/B.FLAC"))), Kind::Audio);
-        assert_eq!(kind_of(Some(Path::new("x.m4a"))), Kind::Other);
+        assert_eq!(kind_of(Some(Path::new("x.m4a"))), Kind::Audio);
         assert_eq!(kind_of(Some(Path::new("noext"))), Kind::Other);
         assert_eq!(kind_of(None), Kind::Other);
         assert_eq!(kind_of(Some(Path::new("a/B.ZIP"))), Kind::Archive);

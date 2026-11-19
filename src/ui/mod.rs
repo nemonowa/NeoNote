@@ -1,5 +1,6 @@
 pub mod confirm;
 pub mod cushion;
+pub mod fontview;
 pub mod hovermenu;
 pub mod icons;
 pub mod map3d;
@@ -13,6 +14,7 @@ pub mod searchbar;
 pub mod sidepanel;
 pub mod skin;
 pub mod tabs;
+pub mod videoview;
 pub mod theme;
 pub mod toolbar;
 pub mod treemap;

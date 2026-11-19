@@ -7,6 +7,7 @@ fn main() {
         return;
     }
     println!("cargo:rerun-if-changed=vendor/miniaudio/neo_audio.c");
+    println!("cargo:rerun-if-changed=vendor/stb/stb_vorbis.c");
     println!("cargo:rerun-if-changed=vendor/miniaudio/miniaudio.h");
     cc::Build::new()
         .file("vendor/miniaudio/neo_audio.c")

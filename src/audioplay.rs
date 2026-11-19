@@ -2,8 +2,6 @@
 // `core` には入れない（GUI なし・テスト可能な層に、音の出力を持ち込まない）。UI スレッドだけから使う。
 // 鳴らすのは miniaudio のデバイスのコールバック（別スレッド）。Drop でデバイスを止めて解放する。
 // `audio` feature を外したビルドでは、開く時点で「再生は含まれていません」のエラーを返す。
-use std::path::Path;
-
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum State {
     Stopped,
@@ -27,6 +25,9 @@ mod imp {
         fn neo_audio_stop(a: *mut c_void);
         fn neo_audio_poll(a: *mut c_void, pos_sec: *mut f64) -> c_int;
         fn neo_audio_close(a: *mut c_void);
+        fn neo_audio_length(a: *mut c_void) -> f64;
+        fn neo_audio_seek(a: *mut c_void, sec: f64) -> c_int;
+        fn neo_audio_volume(a: *mut c_void, v: f64);
     }
 
     pub struct Player {
@@ -80,6 +81,20 @@ mod imp {
             let s = unsafe { neo_audio_poll(self.p, &mut pos) };
             (match s { 1 => State::Playing, 2 => State::Finished, _ => State::Stopped }, pos)
         }
+
+        /// 長さ（秒）。分からなければ 0。
+        pub fn duration(&self) -> f64 {
+            unsafe { neo_audio_length(self.p) }
+        }
+
+        pub fn seek(&mut self, sec: f64) {
+            unsafe { neo_audio_seek(self.p, sec) };
+        }
+
+        /// 音量（0〜1）。
+        pub fn set_volume(&mut self, v: f64) {
+            unsafe { neo_audio_volume(self.p, v) }
+        }
     }
 
     impl Drop for Player {
@@ -107,17 +122,12 @@ mod imp {
         pub fn poll(&mut self) -> (State, f64) {
             (State::Stopped, 0.0)
         }
+        pub fn duration(&self) -> f64 {
+            0.0
+        }
+        pub fn seek(&mut self, _sec: f64) {}
+        pub fn set_volume(&mut self, _v: f64) {}
     }
 }
 
 pub use imp::Player;
-
-/// このビルドが再生を持っているか（メニューの出し分け用）。
-pub const AVAILABLE: bool = cfg!(feature = "audio");
-
-/// ファイルを開いて再生を始める。
-pub fn start(path: &Path) -> Result<Player, String> {
-    let mut p = Player::open(path)?;
-    p.play()?;
-    Ok(p)
-}

@@ -120,6 +120,11 @@ fn items(b: &[u8]) -> Result<Vec<Item>, String> {
     if b.starts_with(b"icns") { icns_items(b) } else { ico_items(b) }
 }
 
+/// 中で一番大きな画像（png・bmp のバイト列）。面積図の縮めた画像に使う。
+pub fn largest_image(b: &[u8]) -> Option<Vec<u8>> {
+    items(b).ok()?.into_iter().max_by_key(|i| i.data.len()).map(|i| i.data)
+}
+
 pub fn list_bytes(b: &[u8]) -> Result<Vec<Entry>, String> {
     Ok(items(b)?.into_iter().map(|i| Entry { path: i.name, is_dir: false, size: i.data.len() as u64, packed: None }).collect())
 }

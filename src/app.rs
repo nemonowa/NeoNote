@@ -3,7 +3,6 @@
 // 第4段階: ツールバー・右クリックメニュー・Replace / Search / Search In web / Run In CMD・パスのコピー。
 // タブ: 文書ごとの状態は Doc に持ち、Ui は文書の一覧と「いま表示している文書」を持つ。
 // 検索バー（常駐）・タブの並べ替え・セッション復元: 設計書の「検索バー」「タブの並べ替え」「セッション復元」の節を参照。
-use crate::audioplay;
 use crate::neo::{unsaved, archive, backup, datapack, lineops, textcomp, extfs, ipc, audiometa, book, nbt, nbtedit::{self, Seg}, region, doctext, htmlview, imgmeta, peek, imagefile, pdftext, markdown, code, config, document::{self, Mode}, dropped, encoding::Encoding, eol::{self, Eol}, goto, hex, history::{self, History}, indent, json, mcfunction, mcheader, pathlog, zoom, recent, replace, selection, sheet, viewmode, viewstate};
 use crate::ui::{confirm, menu::{self, Action}, nbttree::NbtTree, peekwin, searchbar::{self, FindCmd, SearchBar}, sidepanel::{self, SidePanel}, skin, tabs::{self, TabCmd, TabInfo}, toolbar, treemap};
 use crate::{dev, log, platform, ui::theme::{self, *}};
@@ -52,6 +51,8 @@ const RUN_OUTPUT_LIMIT: usize = 4000;
 const AUTOSAVE_SECS: f64 = 30.0;
 /// 未保存の変更の控え（neo/unsaved.rs）を書き直す間隔（秒）。終了時にも書く。変わっていなければ書かない。
 const UNSAVED_SECS: f64 = 120.0;
+/// 編集してから控えを書くまでの待ち（秒）。
+const UNSAVED_SOON_SECS: f64 = 3.0;
 /// Undo All / Redo All が 1 回で巻き戻す・やり直す最大の回数（無限ループの安全策）。
 const HISTORY_STEP_LIMIT: usize = 100_000;
 /// 検索バーの入力欄の文字の大きさ（本文の拡大縮小には合わせない）。
@@ -272,10 +273,6 @@ struct Doc {
     /// 音声の Preview 用の情報とタグ（None は未取得か取得中）。
     audio: RefCell<Option<Result<AudioData, String>>>,
     audio_busy: Cell<bool>,
-    /// 再生中（または止めてある）プレーヤー。タブを閉じる・読み直す・別のファイルを再生するときに捨てる。
-    player: RefCell<Option<audioplay::Player>>,
-    /// Preview に出している再生位置（秒）。変わったときだけ描き直す。
-    audio_secs: Cell<i64>,
     /// NBT の Preview の木で開いていた項目（Text と行き来しても開いたままにする）。
     tree_open: RefCell<Option<std::collections::HashSet<Vec<Seg>>>>,
 }
@@ -309,6 +306,10 @@ struct Ui {
     editor: TextEditor,
     /// md の Preview 用の表示部品（編集領域と同じ場所に出し入れする。使うまでは隠す）。
     preview: HelpView,
+    /// 動画の再生の画面（Preview の代わりに出す）。
+    video: crate::ui::videoview::VideoView,
+    /// フォントの見本の画面（Preview の代わりに出す）。
+    fontview: crate::ui::fontview::FontView,
     /// NBT の Preview の木（編集領域と同じ場所に出し入れする）。
     nbt_tree: NbtTree,
     /// 編集領域とプレビューを出し入れしたときに並べ直すための、本文を含む縦の列。
@@ -378,10 +379,10 @@ struct Ui {
     side_w: Cell<i32>,
     /// フォルダ・zip を開いたときの見せ方（最後に選んだもの。config.txt の archive_view）。
     map_pref: Cell<sidepanel::MapMode>,
-    /// 続きから（config.txt の resume）。
-    resume: Cell<bool>,
     /// 最後に書いた控えの中身の指紋（同じなら書き直さない）。
     unsaved_sig: Cell<u64>,
+    /// 編集の後、少し待って控えを書く予約がある（落ちた時に失う分を減らす）
+    unsaved_soon: Cell<bool>,
     /// 閉じたファイルのカーソル位置の記憶（neo/viewstate.rs）。同じファイルを開き直したとき、変わっていなければ戻す。
     view_states: RefCell<Vec<viewstate::Entry>>,
     /// 本文の値の小窓（peekwin）: 出している値の (文書, 始まり, 終わり) と、マウスが止まっている (x, y, 回数)。
@@ -403,8 +404,6 @@ struct Ui {
     bar: Flex,
     /// ツールバーの左端の押しピン（ウィンドウを最前面に固定）。
     top_pin: Button,
-    /// 再生位置の更新タイマーが動いているか。
-    audio_timer: Cell<bool>,
     /// タイトルに出しているカーソルの 行・桁。
     pos_shown: Cell<Option<(usize, usize)>>,
     cursor_pending: Cell<bool>,
@@ -438,6 +437,29 @@ struct Ui {
 }
 
 /// 画像ファイルの (幅, 高さ)。FLTK で読めなければ None。
+/// Preview で見せる画像の道筋。FLTK が読めない形式（webp・tiff・tga・dds・psd）は、PNG に直して一時フォルダへ書く。
+fn shown_image(p: &Path) -> PathBuf {
+    if !crate::neo::imgdecode::is_decodable_path(p) {
+        return p.to_path_buf();
+    }
+    let ext = p.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
+    let Some(r) = std::fs::read(p).ok().and_then(|b| crate::neo::imgdecode::decode(&b, &ext)) else { return p.to_path_buf() };
+    let dir = std::env::temp_dir().join("neonote_preview");
+    let _ = std::fs::create_dir_all(&dir);
+    let name = {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        p.hash(&mut h);
+        std::fs::metadata(p).and_then(|m| m.modified()).ok().hash(&mut h);
+        format!("{:016x}.png", h.finish())
+    };
+    let out = dir.join(name);
+    if !out.is_file() && std::fs::write(&out, crate::neo::imgdecode::to_png(&r.data, r.w, r.h)).is_err() {
+        return p.to_path_buf();
+    }
+    out
+}
+
 fn image_size(p: &Path) -> Option<(i32, i32)> {
     use fltk::image::SharedImage;
     let img = SharedImage::load(p).ok()?;
@@ -684,8 +706,6 @@ impl Ui {
             arch_old: RefCell::new(Vec::new()),
             audio: RefCell::new(None),
             audio_busy: Cell::new(false),
-            player: RefCell::new(None),
-            audio_secs: Cell::new(-1),
             tree_open: RefCell::new(None),
         });
         let u = Rc::clone(self);
@@ -726,6 +746,20 @@ impl Ui {
         if self.is_active(&d) {
             self.schedule_recount();
         }
+        self.schedule_unsaved();
+    }
+
+    /// 編集が止まって少ししたら控えを書く（周期の UNSAVED_SECS を待たずに。落ちても直前の編集まで戻せる）。
+    fn schedule_unsaved(self: &Rc<Self>) {
+        if self.unsaved_soon.get() || !self.session_owner {
+            return;
+        }
+        self.unsaved_soon.set(true);
+        let u = Rc::clone(self);
+        app::add_timeout3(UNSAVED_SOON_SECS, move |_| {
+            u.unsaved_soon.set(false);
+            u.backup_unsaved(false);
+        });
     }
 
     /// この文書を表示する。バッファを差し替え、カーソルとハイライトを戻す。
@@ -824,6 +858,9 @@ impl Ui {
             }
         };
         if let Some(d) = self.find(id) {
+            if d.st.borrow().path.is_some() && self.video.path() == d.st.borrow().path {
+                self.video.close();
+            }
             self.remember_view(&d); // 閉じる前に、カーソル位置を覚える（切り替えで動く前の、いまの位置）
             self.save_view_states();
         }
@@ -893,8 +930,8 @@ impl Ui {
 
     /// 未保存のタブを順に確認する。1 つでもキャンセルされたら false（終了しない）。
     fn confirm_quit(&self) -> bool {
-        // 続きからが有効なら聞かない（未保存の変更は控えに書き、次の起動で戻す）
-        if self.resume.get() && self.session_owner && self.config_path.is_some() {
+        // 聞かない（未保存の変更は控えに書き、次の起動で戻す）
+        if self.session_owner && self.config_path.is_some() {
             self.backup_unsaved(true);
             return true;
         }
@@ -1102,7 +1139,9 @@ impl Ui {
         *d.doc_text.borrow_mut() = None; // 文書の文字も読み直す
         *d.archive.borrow_mut() = None;
         *d.audio.borrow_mut() = None; // 音声の情報も取り直す。鳴らしていれば止める
-        *d.player.borrow_mut() = None;
+        if d.st.borrow().path.is_some() && self.video.path() == d.st.borrow().path {
+            self.video.close();
+        }
         if d.preview.get() {
             d.preview.set(false);
             if self.is_active(d) {
@@ -1124,7 +1163,7 @@ impl Ui {
         // フォルダと zip は中身を読まず、一覧だけを取る（zip として読めないファイルは、ふつうに開く）
         let as_archive = forced.is_none() && archive::is_archive_path(&path);
         // 音声は本文を読まない（大きい・バイナリ）。Preview で情報とタグを別に読む。HEX で見たいときだけ読み直す
-        let as_audio = forced.is_none() && !as_archive && viewmode::kind_of(Some(&path)) == viewmode::Kind::Audio;
+        let as_audio = forced.is_none() && !as_archive && matches!(viewmode::kind_of(Some(&path)), viewmode::Kind::Audio | viewmode::Kind::Video | viewmode::Kind::Font);
         thread::spawn(move || {
             if as_audio {
                 let result = std::fs::metadata(&path).map_err(|e| format!("{}\n{e}", path.display())).map(|_| document::Loaded {
@@ -1253,10 +1292,10 @@ impl Ui {
         }
     }
 
-    /// 未保存のタブの本文を控えに書く（続きからが有効で、引数なしで起動したウィンドウだけ）。
+    /// 未保存のタブの本文を控えに書く（引数なしで起動したウィンドウだけ）。
     /// `force` でなければ、前回書いたときから変わっていないと書かない。
     fn backup_unsaved(&self, force: bool) {
-        if !self.resume.get() || !self.session_owner {
+        if !self.session_owner {
             return;
         }
         let Some(dir) = self.unsaved_dir() else { return };
@@ -1294,20 +1333,6 @@ impl Ui {
             u.backup_unsaved(false);
             u.arm_unsaved();
         });
-    }
-
-    fn toggle_resume(&self) {
-        let on = !self.resume.get();
-        self.resume.set(on);
-        menu::set_resume_checked(on);
-        if on {
-            self.backup_unsaved(true);
-        } else if let Some(dir) = self.unsaved_dir() {
-            let _ = unsaved::clear(&dir);
-            self.unsaved_sig.set(0);
-        }
-        self.persist();
-        self.flash(if on { crate::lang::tr("再開: オン", "Resume: on") } else { crate::lang::tr("再開: オフ", "Resume: off") });
     }
 
     /// 本文つきのタブを置く（未保存の変更の復元と、別のウィンドウから移されたタブで共通）。変更ありの状態で入れる。
@@ -1540,9 +1565,6 @@ impl Ui {
     /// 前回の終了時に開いていたタブを開き直す（引数なしで起動したときだけ）。無くなったファイルは飛ばす。
     /// 表示するのは、前回表示していたタブ（無ければ最初のタブ）。
     fn restore_session(self: &Rc<Self>, cfg: &config::Config) {
-        if !cfg.resume {
-            return;
-        }
         let mut ids = Vec::new();
         let mut active = None;
         let mut missing = 0;
@@ -1625,7 +1647,7 @@ impl Ui {
                     self.refresh_find();
                 }
                 // pdf は HEX や文字化けで読むより文字で見たいので、自動判定で開いたときは Preview で始める
-                if loaded.auto && matches!(viewmode::kind_of(Some(&path_for_view)), viewmode::Kind::Book | viewmode::Kind::Doc | viewmode::Kind::Pdf | viewmode::Kind::Image | viewmode::Kind::Audio) {
+                if loaded.auto && matches!(viewmode::kind_of(Some(&path_for_view)), viewmode::Kind::Book | viewmode::Kind::Doc | viewmode::Kind::Pdf | viewmode::Kind::Image | viewmode::Kind::Audio | viewmode::Kind::Video | viewmode::Kind::Font) {
                     self.set_preview_for(&d, true);
                 }
                 // Markdown は、Format が Auto なら Markdown の表示で始める（編集は Format の Text で）
@@ -1838,24 +1860,9 @@ impl Ui {
     /// 開いている画像を Minecraft の地図（map_N.dat）にする。枚数 → 減色 → 番号 → 保存先 の順に聞き、渡すコマンドをクリップボードへ写す。
     fn save_mc_map(self: &Rc<Self>) {
         use crate::neo::mapart;
-        use fltk::image::SharedImage;
         let en = crate::lang::is_en();
         let Some(path) = self.doc().st.borrow().path.clone() else { return };
-        let Some((rgba, w, h)) = SharedImage::load(&path).ok().and_then(|img| {
-            let (w, h) = (img.data_w().max(0) as usize, img.data_h().max(0) as usize);
-            let d = img.to_rgb_data();
-            let ch = if w * h == 0 { 0 } else { d.len() / (w * h) };
-            let px = |i: usize| -> [u8; 4] {
-                let p = &d[i * ch..i * ch + ch];
-                match ch {
-                    1 => [p[0], p[0], p[0], 255],
-                    2 => [p[0], p[0], p[0], p[1]],
-                    3 => [p[0], p[1], p[2], 255],
-                    _ => [p[0], p[1], p[2], p[3]],
-                }
-            };
-            (ch >= 1 && ch <= 4).then(|| ((0..w * h).flat_map(px).collect::<Vec<u8>>(), w, h))
-        }) else {
+        let Some((rgba, w, h)) = std::fs::read(&path).ok().and_then(|b| crate::ui::mapthumb::decode_full(&b)).map(|p| (p.rgba, p.w, p.h)) else {
             confirm::alert(crate::lang::tr("画像を読めませんでした。", "Could not read the image."));
             return;
         };
@@ -2368,6 +2375,12 @@ impl Ui {
 
     /// 開くダイアログ（複数選択可）。選んだファイルをそれぞれタブで開く。今のタブは閉じない。
     fn open_dialog(self: &Rc<Self>) {
+        // Windows は、フォルダも選べる自前の画面（「フォルダを開く」ボタン付き）
+        #[cfg(windows)]
+        if let Some(paths) = crate::winopen::open(self.win.raw_handle(), self.start_dir().as_deref(), crate::lang::tr("開く", "Open"), crate::lang::tr("フォルダを開く", "Open folder")) {
+            self.open_paths(paths);
+            return;
+        }
         let mut dlg = NativeFileChooser::new(FileDialogType::BrowseMultiFile);
         if let Some(d) = self.start_dir() {
             let _ = dlg.set_directory(&d);
@@ -2771,7 +2784,31 @@ impl Ui {
                 *d.tree_open.borrow_mut() = Some(self.nbt_tree.open_paths());
             }
         }
+        let video_path = d.st.borrow().path.clone().filter(|p| d.preview.get() && !nbt_view && matches!(viewmode::kind_of(Some(p)), viewmode::Kind::Video | viewmode::Kind::Audio));
+        if video_path.is_none() && self.video.visible() {
+            self.video.hide();
+        }
+        let font_path = d.st.borrow().path.clone().filter(|p| d.preview.get() && !nbt_view && viewmode::kind_of(Some(p)) == viewmode::Kind::Font);
+        if font_path.is_none() && self.fontview.visible() {
+            self.fontview.hide();
+        }
         if nbt_view {
+        } else if let Some(p) = font_path {
+            self.fontview.open(&p);
+            ed.hide();
+            pv.hide();
+        } else if let Some(p) = video_path {
+            // 先に再生の画面へフォーカスを移してから隠す（先に隠すと、フォーカスが検索欄へ移って検索バーが開く）
+            let audio = viewmode::kind_of(Some(&p)) == viewmode::Kind::Audio;
+            self.video.open(&p, audio);
+            if audio {
+                if d.audio.borrow().is_none() {
+                    self.start_audio_info(d, p.clone());
+                }
+                self.render_preview(d);
+            }
+            ed.hide();
+            pv.hide();
         } else if d.preview.get() {
             self.render_preview(d);
             // 編集領域を隠す前にフォーカスを移す（先に隠すと、フォーカスが検索欄へ移って検索バーが開く）
@@ -2941,18 +2978,23 @@ impl Ui {
             }
         } else if kind == viewmode::Kind::Audio {
             let name = path.as_deref().map(|p| log::file_name(&p.to_string_lossy()).to_string()).unwrap_or_default();
-            match d.audio.borrow().as_ref() {
+            let html = match d.audio.borrow().as_ref() {
                 Some(Ok(a)) => {
-                    let (dim, accent, track) = (hex(color_subtext()), hex(color_accent()), hex(mix(color_main(), color_text(), 15)));
-                    let look = audiometa::PlayerLook { bg: &bg, fg: &fg, dim: &dim, accent: &accent, track: &track };
-                    let state = self.audio_state(d);
-                    let playing = matches!(state, Some((audioplay::State::Playing, _)));
-                    let pos = state.map(|(_, p)| p);
-                    audiometa::page_html(&name, &a.info, &a.items, playing, pos, &self.audio_note(), &look)
+                    let dim = hex(color_subtext());
+                    let look = audiometa::PlayerLook { bg: &bg, fg: &fg, dim: &dim };
+                    // タグを読まない形式（ogg・m4a など）は、読めない理由を出さず名前だけにする
+                    let tagless = path.as_deref().is_some_and(|p| !audiometa::supports(p));
+                    let info = if tagless && a.info.is_err() { Err(String::new()) } else { a.info.clone() };
+                    audiometa::info_html(&name, &info, &a.items, &look)
                 }
                 Some(Err(e)) => pdftext::message_html(e, &bg, &fg),
                 None => pdftext::message_html(crate::lang::tr("読み込み中...", "Loading..."), &bg, &fg),
-            }
+            };
+            // 音声の情報は再生の画面の上に出す（Preview の部品は使わない）
+            self.video.set_info(&html);
+            return;
+        } else if kind == viewmode::Kind::Audio {
+            unreachable!()
         } else if kind == viewmode::Kind::Book {
             match d.book.borrow().as_ref() {
                 Some(Ok(sheets)) => book::to_html(sheets, &bg, &fg, &hex(color_subtext())),
@@ -2974,7 +3016,7 @@ impl Ui {
             let delim = sheet::delimiter_for(path.as_deref(), &text);
             sheet::to_html(&text, delim, &bg, &fg, &hex(color_subtext()))
         } else if kind == viewmode::Kind::Image {
-            match path {
+            match path.map(|p| shown_image(&p)) {
                 Some(p) => imagefile::page_html(&p, image_size(&p), max_w, &bg, &fg),
                 None => pdftext::message_html("", &bg, &fg),
             }
@@ -3031,7 +3073,7 @@ impl Ui {
             let ok = match kind {
                 viewmode::Kind::Nbt => self.is_nbt_doc(d),
                 viewmode::Kind::Markdown | viewmode::Kind::Html | viewmode::Kind::Sheet => !hex,
-                viewmode::Kind::Book | viewmode::Kind::Doc | viewmode::Kind::Pdf | viewmode::Kind::Image | viewmode::Kind::Audio => path.is_some(),
+                viewmode::Kind::Book | viewmode::Kind::Doc | viewmode::Kind::Pdf | viewmode::Kind::Image | viewmode::Kind::Audio | viewmode::Kind::Video | viewmode::Kind::Font => path.is_some(),
                 viewmode::Kind::Archive => d.archive.borrow().is_some(),
                 viewmode::Kind::Other => false,
             };
@@ -3182,78 +3224,16 @@ impl Ui {
         }
     }
 
-    /// 再生の状態と位置。プレーヤーが無ければ None。
-    fn audio_state(&self, d: &Doc) -> Option<(audioplay::State, f64)> {
-        d.player.borrow_mut().as_mut().map(|p| p.poll())
-    }
-
-    /// Preview の上に出す 1 行（再生の状態と、操作の案内）。
-    /// 音楽プレイヤーの表示の案内。
-    fn audio_note(&self) -> String {
-        if !audioplay::AVAILABLE {
-            return crate::lang::tr("この build には再生機能が含まれていません", "Playback is not included in this build").into();
-        }
-        crate::lang::tr("クリックか Space で再生 / 停止", "Click or press Space to play / stop").into()
-    }
-
-    /// 再生 / 停止（表示中の音声の Preview）。別のファイルを鳴らしていれば、そちらは止めて捨てる。
-    fn toggle_audio(self: &Rc<Self>) {
-        let d = self.doc();
-        let path = d.st.borrow().path.clone();
-        let Some(path) = path.filter(|p| viewmode::kind_of(Some(p)) == viewmode::Kind::Audio) else { return };
-        if !audioplay::AVAILABLE {
-            self.flash(crate::lang::tr("この build には再生機能が含まれていません", "Playback is not included in this build"));
-            return;
-        }
-        let state = self.audio_state(&d).map(|(s, _)| s);
-        if state == Some(audioplay::State::Playing) {
-            if let Some(p) = d.player.borrow_mut().as_mut() {
-                p.stop();
-            }
-        } else {
-            self.drop_other_players(&d);
-            let started = if state.is_some() {
-                d.player.borrow_mut().as_mut().map(|p| p.play()).unwrap_or(Ok(()))
-            } else {
-                audioplay::start(&path).map(|p| *d.player.borrow_mut() = Some(p))
-            };
-            if let Err(e) = started {
-                log::warn(TAG, &format!("audio play failed: {}", e.replace('\n', " / ")));
-                *d.player.borrow_mut() = None;
-                confirm::alert(&if crate::lang::is_en() { format!("Could not play.\n\n{e}") } else { format!("再生できませんでした。\n\n{e}") });
-            }
-        }
-        d.audio_secs.set(-1);
-        self.render_preview(&d);
-        self.ensure_audio_timer();
-    }
-
-    /// `keep` 以外の文書のプレーヤーを止めて捨てる（同時に鳴らすのは 1 つだけ）。
-    fn drop_other_players(&self, keep: &Rc<Doc>) {
-        let others: Vec<Rc<Doc>> = self.docs.borrow().iter().filter(|x| x.id != keep.id).cloned().collect();
-        for o in others {
-            if o.player.borrow_mut().take().is_some() && o.preview.get() && self.is_active(&o) {
-                self.render_preview(&o);
-            }
-        }
-    }
-
-    /// すべてのプレーヤーを止めて解放する（終了のとき）。
-    fn stop_all_audio(&self) {
-        let docs: Vec<Rc<Doc>> = self.docs.borrow().iter().cloned().collect();
-        for d in docs {
-            d.player.borrow_mut().take();
-        }
-    }
-
-    /// このパスの音声を鳴らしているプレーヤーを捨てる（ファイルを書き換える前に。Windows では開いたままだと置き換えられない）。
+    /// このパスの音声を鳴らしているなら止めて捨てる（ファイルを書き換える前に。Windows では開いたままだと置き換えられない）。
     fn release_player_for(&self, path: &Path) {
-        let docs: Vec<Rc<Doc>> = self.docs.borrow().iter().cloned().collect();
-        for d in docs {
-            if d.st.borrow().path.as_deref().is_some_and(|p| document::same_file(p, path)) {
-                d.player.borrow_mut().take();
-            }
+        if self.video.path().is_some_and(|p| document::same_file(&p, path)) {
+            self.video.close();
         }
+    }
+
+    /// 再生を止めて捨てる（終了のとき）。
+    fn stop_all_audio(&self) {
+        self.video.close();
     }
 
     /// 音声のタグを書き換えたあと、そのファイルを開いている Preview の情報を取り直し、ディスクの状態も合わせる。
@@ -3273,61 +3253,6 @@ impl Ui {
                 }
             }
         }
-    }
-
-    /// 再生位置を 0.5 秒ごとに見る（鳴らし終えたら止める。表示中の Preview は秒が変わったときだけ描き直す）。
-    fn ensure_audio_timer(self: &Rc<Self>) {
-        if self.audio_timer.get() {
-            return;
-        }
-        self.audio_timer.set(true);
-        let ui = Rc::clone(self);
-        app::add_timeout3(0.5, move |_| {
-            ui.audio_timer.set(false);
-            if ui.poll_audio() {
-                ui.ensure_audio_timer();
-            }
-        });
-    }
-
-    /// 再生中のものがあれば true。
-    fn poll_audio(&self) -> bool {
-        let docs: Vec<Rc<Doc>> = self.docs.borrow().iter().cloned().collect();
-        let mut any = false;
-        for d in docs {
-            let mut changed = false;
-            if let Some(p) = d.player.borrow_mut().as_mut() {
-                let (s, pos) = p.poll();
-                match s {
-                    audioplay::State::Playing => {
-                        any = true;
-                        if d.audio_secs.get() != pos as i64 {
-                            d.audio_secs.set(pos as i64);
-                            changed = true;
-                        }
-                    }
-                    audioplay::State::Finished => {
-                        p.stop();
-                        changed = true;
-                    }
-                    audioplay::State::Stopped => {}
-                }
-            }
-            if changed && d.preview.get() && self.is_active(&d) {
-                self.render_preview(&d);
-            }
-        }
-        any
-    }
-
-    /// 音声の Preview を見ているときの Space（再生 / 停止）。扱ったら true。
-    fn audio_space(self: &Rc<Self>) -> bool {
-        let d = self.doc();
-        let is_audio = d.preview.get() && viewmode::kind_of(d.st.borrow().path.as_deref()) == viewmode::Kind::Audio;
-        if is_audio {
-            self.toggle_audio();
-        }
-        is_audio
     }
 
     /// HEX モードで開き直す（ディスクから読む。ファイルが無ければ何もしない）。
@@ -3502,8 +3427,8 @@ impl Ui {
             rows.push((Pick::ArchiveRename, crate::lang::tr("名前の変更（テキスト）", "Rename (text)").into(), false, true, false));
         }
         // 画像・pdf は、中身を文字として編集する入口を最後に出す
-        if is_audio && in_preview && audioplay::AVAILABLE {
-            let playing = matches!(self.audio_state(&self.doc()), Some((audioplay::State::Playing, _)));
+        if is_audio && in_preview {
+            let playing = self.video.playing();
             rows.push((Pick::Play, String::from(if playing { crate::lang::tr("停止", "Stop") } else { crate::lang::tr("再生", "Play") }), false, true, false));
         }
         if (kind == viewmode::Kind::Image && path.as_deref().is_some_and(imgmeta::supports)) || (is_audio && path.as_deref().is_some_and(audiometa::supports)) {
@@ -3618,7 +3543,7 @@ impl Ui {
             Pick::McMap => self.save_mc_map(),
             Pick::ViewMcMap => self.view_mc_map(),
             Pick::LnkOpen => self.open_lnk_target(),
-            Pick::Play => self.toggle_audio(),
+            Pick::Play => self.video.toggle(),
             Pick::PdfText => self.open_pdf_text(),
             Pick::DocText => self.open_doc_text(),
             Pick::ArchiveRename => self.open_archive_edit(),
@@ -3661,7 +3586,6 @@ impl Ui {
             Action::RunCmd => self.run_cmd(),
             Action::ChangeEncoding => self.encoding_menu(false),
             Action::ChangeView => self.encoding_menu(true),
-            Action::ToggleResume => self.toggle_resume(),
             Action::CopyPath => self.copy_path(),
             Action::ChooseFont => self.choose_font(),
             Action::ResetFont => self.reset_font(),
@@ -4817,7 +4741,6 @@ impl Ui {
             gutter_extra: Some(self.gutter_extra.get()).filter(|w| *w != 0),
             side_w: Some(self.side_w.get()).filter(|w| *w != sidepanel::WIDTH),
             archive_view: self.map_pref.get().config_name().map(str::to_string),
-            resume: self.resume.get(),
             lang: crate::lang::code(crate::lang::current()).to_string(),
             light: theme::is_light(),
             theme: Some(theme::current_name().to_string()),
@@ -4917,15 +4840,6 @@ impl Ui {
             self.side_pinned.set(cfg.side_pin);
             self.side.state.borrow_mut().pinned = cfg.side_pin;
             self.update_side();
-        }
-        if cfg.resume != self.resume.get() {
-            self.resume.set(cfg.resume);
-            menu::set_resume_checked(cfg.resume);
-            if !cfg.resume {
-                if let Some(dir) = self.unsaved_dir() {
-                    let _ = unsaved::clear(&dir);
-                }
-            }
         }
         let ge = cfg.gutter_extra.unwrap_or(0).clamp(0, GUTTER_EXTRA_MAX);
         if ge != self.gutter_extra.get() {
@@ -5446,7 +5360,13 @@ impl Ui {
     }
 
     /// 右端の欄の情報と縮小表示を作り直す。隠れている間と、文書・文字数・未保存・選択が変わっていないときは何もしない。
+    /// 右の欄の情報を作り直し、重ねたツリーを情報の行の下へ置き直す（行の数・欄の幅が変わるとツリーの場所も変わる）。
     fn refresh_side(&self) {
+        self.refresh_side_rows();
+        self.place_side_tree();
+    }
+
+    fn refresh_side_rows(&self) {
         if !self.side.widget.visible() {
             return;
         }
@@ -5526,6 +5446,7 @@ impl Ui {
 
     /// 縮小表示の「見えている範囲」を、本文のスクロールに合わせる（0.1 秒のタイマーから呼ぶ。変わったときだけ描き直す）。
     fn update_side_view(&self) {
+        self.place_side_tree();
         // 窓を出す前は文字の高さがまだ 0 で、xy_to_position が FLTK の中で 0 除算になる
         if !self.side.widget.visible() || !self.editor.visible() || !self.win.shown() {
             return;
@@ -6148,6 +6069,38 @@ impl Ui {
         }
     }
 
+    /// 同じフォルダの同じ種類の前後のファイルを、いまのタブで開き直す。扱ったら true。
+    fn step_sibling(self: &Rc<Self>, next: bool, ctrl: bool) -> bool {
+        let d = self.doc();
+        if !d.preview.get() || d.st.borrow().loading {
+            return false;
+        }
+        let Some(path) = d.st.borrow().path.clone() else { return false };
+        let kind = viewmode::kind_of(Some(&path));
+        if !viewmode::steppable(kind) {
+            return false;
+        }
+        // 動画・音声の ← → は 5 秒の移動（再生の画面が受ける）。ここへ来るのは Ctrl つきだけにする
+        if matches!(kind, viewmode::Kind::Audio | viewmode::Kind::Video) && !ctrl {
+            return false;
+        }
+        if self.would_lose(&d) {
+            self.flash(crate::lang::tr("未保存の変更があるため切り替えません", "Not switching: there are unsaved changes"));
+            return true;
+        }
+        let Some(to) = viewmode::sibling(&path, if next { 1 } else { -1 }) else {
+            self.flash(if next { crate::lang::tr("最後のファイルです", "This is the last file") } else { crate::lang::tr("最初のファイルです", "This is the first file") });
+            return true;
+        };
+        // 別のタブで開いていれば、そのタブへ移る
+        if let Some(other) = self.docs.borrow().iter().find(|x| x.id != d.id && x.st.borrow().path.as_deref().is_some_and(|p| document::same_file(p, &to))).map(|x| x.id) {
+            self.activate(other);
+            return true;
+        }
+        self.load_into(&d, to, None);
+        true
+    }
+
     fn handle(self: &Rc<Self>, ev: Event) -> bool {
         // Alt だけを押して離したら、左右の欄を開く・閉じる（Alt と一緒にほかのキーやクリックがあれば何もしない）
         let alt_key = matches!(app::event_key(), Key::AltL | Key::AltR);
@@ -6159,6 +6112,10 @@ impl Ui {
         }
         if ev == Event::KeyUp && alt_key && self.alt_armed.replace(false) {
             self.toggle_panels();
+            return true;
+        }
+        // Preview で見ている時の ← →（動画・音声は Ctrl+← →）: 同じフォルダの同じ種類の前後のファイルへ
+        if matches!(ev, Event::KeyDown | Event::Shortcut) && matches!(app::event_key(), Key::Left | Key::Right) && !app::is_event_alt() && !app::is_event_shift() && self.step_sibling(app::event_key() == Key::Right, app::is_event_ctrl() || app::is_event_command()) {
             return true;
         }
         if self.dnd_event(ev) {
@@ -6385,6 +6342,8 @@ pub fn run(paths: Vec<String>, new_window: bool) -> Result<(), FltkError> {
     preview.set_text_font(start_font);
     preview.set_text_size(start_size);
     preview.hide();
+    let video = crate::ui::videoview::VideoView::new();
+    let fontview = crate::ui::fontview::FontView::new();
     let nbt_tree = NbtTree::new();
     skin::style_scrollbars(&editor);
     skin::style_scrollbars(&preview);
@@ -6451,6 +6410,8 @@ pub fn run(paths: Vec<String>, new_window: bool) -> Result<(), FltkError> {
         win: win.clone(),
         editor: editor.clone(),
         preview: preview.clone(),
+        video: video.clone(),
+        fontview: fontview.clone(),
         nbt_tree: nbt_tree.clone(),
         col: col.clone(),
         gap,
@@ -6489,8 +6450,8 @@ pub fn run(paths: Vec<String>, new_window: bool) -> Result<(), FltkError> {
         side_pinned: Cell::new(cfg.side_pin),
         side_w: Cell::new(side_w),
         map_pref: Cell::new(sidepanel::MapMode::from_config(cfg.archive_view.as_deref())),
-        resume: Cell::new(cfg.resume),
         unsaved_sig: Cell::new(0),
+        unsaved_soon: Cell::new(false),
         view_states: RefCell::new(config_path.as_deref().and_then(Path::parent).map(viewstate::load).unwrap_or_default()),
         peek_at: Cell::new(None),
         peek_still: Cell::new((i32::MIN, i32::MIN, 0)),
@@ -6502,7 +6463,6 @@ pub fn run(paths: Vec<String>, new_window: bool) -> Result<(), FltkError> {
         pin: pin.clone(),
         bar: bar.clone(),
         top_pin: top_pin.clone(),
-        audio_timer: Cell::new(false),
         pos_shown: Cell::new(None),
         cursor_pending: Cell::new(false),
         autosave_armed: Cell::new(false),
@@ -6551,20 +6511,17 @@ pub fn run(paths: Vec<String>, new_window: bool) -> Result<(), FltkError> {
     ui.poll_mouse();
     ui.refresh_jump_list();
 
-    // 音声の Preview では Space で再生 / 停止（HelpView の既定の処理より先に受ける）
+    // Preview の ← →: 同じフォルダの同じ種類の前後のファイルへ（HelpView の既定の処理より先に受ける）
     {
         let u = Rc::clone(&ui);
         let mut pv = preview.clone();
         pv.super_handle_first(false);
         pv.handle(move |_, ev| {
-            // クリックでも再生 / 停止（音楽プレイヤーの表示）
-            (ev == Event::Push && app::event_mouse_button() == app::MouseButton::Left && u.audio_space())
-                || (ev == Event::KeyDown
-                    && app::event_key() == Key::from_char(' ')
-                    && !app::is_event_command()
-                    && !app::is_event_ctrl()
-                    && !app::is_event_alt()
-                    && u.audio_space())
+            ev == Event::KeyDown
+                && matches!(app::event_key(), Key::Left | Key::Right)
+                && !app::is_event_alt()
+                && !app::is_event_shift()
+                && u.step_sibling(app::event_key() == Key::Right, app::is_event_ctrl() || app::is_event_command())
         });
     }
 
@@ -6700,10 +6657,6 @@ pub fn run(paths: Vec<String>, new_window: bool) -> Result<(), FltkError> {
     win.show();
     ui.start_ipc();
     log::info(TAG, &format!("started {} (build {})", dev::version(), dev::BUILD));
-    if dev::is_dev_user() {
-        log::info("alert", "開発環境のためスキップ");
-    }
-    menu::set_resume_checked(ui.resume.get());
     if ui.session_owner {
         ui.arm_unsaved();
     }

@@ -79,8 +79,11 @@ Keywords: markdown preview, html viewer, csv viewer, xlsx viewer, docx viewer, p
 | xlsx / ods | シートごとの表（数式は計算済みの値） | `src/neo/book.rs` |
 | docx / odt / pptx / odp / epub | 見出し・段落・リスト・表の文字だけの文書（pptx はスライドごと、epub は章ごと） | `src/neo/doctext.rs` |
 | PDF | 文字だけの簡易表示（レイアウト・画像は再現しない。画像だけのスキャンは文字が出ない） | `src/neo/pdftext.rs`（`lopdf`） |
-| 画像 | 表示。画像のパスへマウスを乗せると縮小画像 | `src/neo/imagefile.rs` |
-| 音声 | MP3 / FLAC / WAV の情報表示と簡易再生（`audio` feature、既定で有効） | `src/audioplay.rs`, `vendor/miniaudio/` |
+| 画像 | 表示（png・jpg・gif・bmp・webp・tiff・tga・dds・psd）。画像のパスへマウスを乗せると縮小画像 | `src/neo/imagefile.rs`, `src/neo/imgdecode.rs` |
+| 前後のファイル | Preview で ← →（動画・音声は Ctrl+← →）を押すと、同じフォルダの同じ種類の前後のファイルへ同じタブで切り替える | `src/neo/viewmode.rs` |
+| 音声 | MP3・FLAC・WAV・OGG・M4A・AAC・WMA などの再生（動画と同じ再生の行。位置・音量・Space・← →、別のタブを見ても鳴らしたまま）とタグの表示。Windows は Media Foundation、ほかと OGG は miniaudio（`audio` feature、既定で有効） | `src/ui/videoview.rs`, `src/audioplay.rs`, `vendor/miniaudio/`, `vendor/stb/` |
+| 動画 | mp4・mov・mkv・webm・wmv・avi などをタブの中で再生（再生・一時停止・位置・音量、Space・← →）。Windows のみ | `src/ui/videoview.rs`, `src/winmedia.rs` |
+| フォント | ttf・otf・ttc の名前・見本の文と、入っている文字を Unicode の順に並べた一覧（クリックで写す） | `src/ui/fontview.rs`, `src/neo/fontfile.rs` |
 | フォルダ・zip・tar・gz・ext イメージ | 一覧（次の節） | `src/neo/archive.rs` |
 
 ## フォルダ・アーカイブ・ディスクイメージ Folders, archives, disk images
@@ -98,7 +101,7 @@ Keywords: treemap, disk usage, WizTree, folder size visualization, squarified, �
 
 | 機能 | 内容 | 場所 |
 | --- | --- | --- |
-| 面積図 | 右パネルに、フォルダ・zip・イメージの中身を大きさに比例した四角で表示（WizTree のような表示）。フォルダは入れ子の枠、ファイルは拡張子ごとの色、画像のファイルはその画像を縮めて表示。squarified 配置、小さすぎる四角は描かない | `src/ui/treemap.rs`, `src/ui/sidepanel.rs`, `src/ui/mapthumb.rs` |
+| 面積図 | 右パネルに、フォルダ・zip・イメージの中身を大きさに比例した四角で表示（WizTree のような表示）。フォルダは入れ子の枠、ファイルは拡張子ごとの色、画像（png・jpg・gif・bmp・webp・tiff・tga・dds・psd・svg）・アイコン（ico・cur・icns）・Minecraft の地図（.dat）は絵を縮めて表示。squarified 配置、小さすぎる四角は描かない | `src/ui/treemap.rs`, `src/ui/sidepanel.rs`, `src/ui/mapthumb.rs`, `src/neo/imgdecode.rs` |
 | 高速化 | フォルダの走査は並列。数万件のフォルダでも木づくりは数 ms | `src/neo/archive.rs`, `src/ui/treemap.rs` |
 
 ## HEX・バイナリ Hex & binary

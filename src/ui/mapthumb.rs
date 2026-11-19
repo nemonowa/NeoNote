@@ -63,7 +63,8 @@ pub struct Pixels {
 
 /// 画像として扱うファイルか（名前で見る。中身は読んだ時に確かめる）。
 pub fn is_image_name(rel: &str) -> bool {
-    crate::neo::imagefile::is_image_path(std::path::Path::new(rel))
+    let p = std::path::Path::new(rel);
+    crate::winmedia::is_video_name(rel) || crate::neo::imagefile::is_image_path(p) || p.extension().map(|e| e.to_string_lossy().to_lowercase()).is_some_and(|e| matches!(e.as_str(), "ico" | "cur" | "icns" | "dat" | "webp" | "tif" | "tiff" | "tga" | "dds" | "psd" | "svg" | "svgz"))
 }
 
 /// 面積の平均で縮める（長い辺を `max` まで。もともと小さければそのまま）。
@@ -110,18 +111,75 @@ pub fn fit_rect(iw: usize, ih: usize, (x, y, w, h): (i32, i32, i32, i32)) -> Opt
     Some((x + (w - dw) / 2, y + (h - dh) / 2, dw, dh))
 }
 
-/// 画像のバイト列を解読して縮める（裏のスレッドで呼ぶ）。読めなければ None。
-pub fn decode(bytes: &[u8]) -> Option<Pixels> {
+/// 画像のバイト列を解読して縮める（裏のスレッドで呼ぶ）。`name` の拡張子も見る（印の無い tga・svg のため）。読めなければ None。
+pub fn decode_named(bytes: &[u8], name: &str) -> Option<Pixels> {
+    let ext = name.rsplit_once('.').map_or("", |(_, e)| e).to_ascii_lowercase();
+    let p = if crate::neo::imagefile::sniff(bytes).is_some() {
+        decode_full(bytes)
+    } else if let Some(r) = crate::neo::imgdecode::decode(bytes, &ext) {
+        Some(Pixels { w: r.w, h: r.h, rgba: r.data })
+    } else if ext == "svg" || ext == "svgz" {
+        svg(bytes)
+    } else {
+        decode_other(bytes)
+    }?;
+    Some(downscale(&p.rgba, p.w, p.h, THUMB_MAX))
+}
+
+/// SVG は FLTK（nanosvg）で描いて読む。svgz は gzip を解いてから。
+fn svg(bytes: &[u8]) -> Option<Pixels> {
+    use fltk::prelude::ImageExt;
+    let text = if bytes.starts_with(&[0x1F, 0x8B]) {
+        let (_, raw) = crate::neo::nbt::unpack(bytes).ok()?;
+        String::from_utf8(raw).ok()?
+    } else {
+        String::from_utf8_lossy(bytes).into_owned()
+    };
+    let mut img = fltk::image::SvgImage::from_data(&text).ok()?;
+    let (w, h) = (img.data_w(), img.data_h());
+    if w <= 0 || h <= 0 {
+        return None;
+    }
+    let s = (THUMB_MAX as f64 / w.max(h) as f64).min(4.0);
+    img.scale(((w as f64 * s) as i32).max(1), ((h as f64 * s) as i32).max(1), true, true);
+    img.normalize();
+    decode_rgb(img.to_rgb_data(), img.data_w(), img.data_h(), img.depth() as usize)
+}
+
+fn decode_rgb(data: Vec<u8>, w: i32, h: i32, depth: usize) -> Option<Pixels> {
+    let (w, h) = (w.max(0) as usize, h.max(0) as usize);
+    if w == 0 || h == 0 || !(1..=4).contains(&depth) || data.len() < w * h * depth {
+        return None;
+    }
+    let rgba = data
+        .chunks_exact(depth)
+        .take(w * h)
+        .flat_map(|p| match depth {
+            1 => [p[0], p[0], p[0], 255],
+            2 => [p[0], p[0], p[0], p[1]],
+            3 => [p[0], p[1], p[2], 255],
+            _ => [p[0], p[1], p[2], p[3]],
+        })
+        .collect();
+    Some(Pixels { w, h, rgba })
+}
+
+/// 画像のバイト列を、縮めずに RGBA へ解読する（png・jpg・gif・bmp）。読めなければ None。
+pub fn decode_full(bytes: &[u8]) -> Option<Pixels> {
     use fltk::image::{BmpImage, GifImage, JpegImage, PngImage};
-    type Decoded = Option<(Vec<u8>, i32, i32, usize)>;
-    let img: Box<dyn Fn() -> Decoded> = match crate::neo::imagefile::sniff(bytes)? {
-        "png" => Box::new(|| PngImage::from_data(bytes).ok().map(|i| (i.to_rgb_data(), i.data_w(), i.data_h(), i.depth() as usize))),
-        "jpg" => Box::new(|| JpegImage::from_data(bytes).ok().map(|i| (i.to_rgb_data(), i.data_w(), i.data_h(), i.depth() as usize))),
-        "gif" => Box::new(|| GifImage::from_data(bytes).ok().map(|i| (i.to_rgb_data(), i.data_w(), i.data_h(), i.depth() as usize))),
-        "bmp" => Box::new(|| BmpImage::from_data(bytes).ok().map(|i| (i.to_rgb_data(), i.data_w(), i.data_h(), i.depth() as usize))),
+    use fltk::prelude::ImageExt;
+    fn parts<I: ImageExt>(i: &I) -> (Vec<u8>, i32, i32, usize) {
+        (i.to_rgb_data(), i.data_w(), i.data_h(), i.depth() as usize)
+    }
+    let Some(kind) = crate::neo::imagefile::sniff(bytes) else { return decode_other(bytes) };
+    let (data, w, h, depth) = match kind {
+        "png" => parts(&PngImage::from_data(bytes).ok()?),
+        "jpg" => parts(&JpegImage::from_data(bytes).ok()?),
+        "bmp" => parts(&BmpImage::from_data(bytes).ok()?),
+        // GIF は FLTK では Pixmap（中身は文字列の表）なので、画素の配列として読むと範囲の外を読んで落ちる。RGB に作り直してから読む
+        "gif" => parts(&gif_to_rgb(&GifImage::from_data(bytes).ok()?)?),
         _ => return None,
     };
-    let (data, w, h, depth) = img()?;
     let (w, h) = (w.max(0) as usize, h.max(0) as usize);
     if w == 0 || h == 0 || !(1..=4).contains(&depth) || data.len() < w * h * depth {
         return None;
@@ -136,7 +194,37 @@ pub fn decode(bytes: &[u8]) -> Option<Pixels> {
             _ => [p[0], p[1], p[2], p[3]],
         })
         .collect();
-    Some(downscale(&rgba, w, h, THUMB_MAX))
+    Some(Pixels { w, h, rgba })
+}
+
+/// 画像ではないが絵を持つ物: アイコン（ico・cur・icns の一番大きな絵）と Minecraft の地図（map_N.dat）。
+fn decode_other(bytes: &[u8]) -> Option<Pixels> {
+    if let Some(img) = crate::neo::iconfile::largest_image(bytes) {
+        return crate::neo::imagefile::sniff(&img).and_then(|_| decode_full(&img));
+    }
+    let (_, raw) = crate::neo::nbt::unpack(bytes).ok()?;
+    let (_, root) = crate::neo::nbt::read(&raw).ok()?;
+    let colors = crate::neo::mapart::colors_of(&root)?;
+    decode_full(&crate::neo::mapart::to_png(&colors, 1))
+}
+
+fn gif_to_rgb(gif: &fltk::image::GifImage) -> Option<RgbImage> {
+    use fltk::prelude::ImageExt;
+    let pix = fltk::image::Pixmap::from_dyn_image(gif)?;
+    let rgb = RgbImage::from_pixmap(&pix);
+    // pix は gif と同じ物を指す別の持ち手。落とすと gif と二重に消すので、消さずに手放す
+    std::mem::forget(pix);
+    Some(rgb)
+}
+
+/// 動画は、フォルダの中の物だけ 1 コマを取り出す（OS の解読に道筋を渡すため。zip の中は読まない）。
+fn video_frame(src: &Source, rel: &str) -> Option<Pixels> {
+    let Source::Folder(root) = src else { return None };
+    if !crate::winmedia::is_video_name(rel) {
+        return None;
+    }
+    let f = crate::winmedia::frame(&rel.split('/').fold(root.clone(), |p, c| p.join(c)))?;
+    Some(downscale(&f.rgba, f.w, f.h, THUMB_MAX))
 }
 
 type Request = (u64, Arc<Source>, String);
@@ -195,7 +283,7 @@ impl Thumbs {
                     if g != gen.load(Ordering::SeqCst) {
                         continue;
                     }
-                    let px = src.read(&rel).and_then(|b| decode(&b));
+                    let px = video_frame(&src, &rel).or_else(|| src.read(&rel).and_then(|b| decode_named(&b, &rel)));
                     if dtx.send((g, rel, px)).is_err() {
                         break;
                     }
@@ -318,11 +406,16 @@ mod tests {
         let mut colors = vec![0u8; crate::neo::mapart::SIZE * crate::neo::mapart::SIZE];
         colors[0] = 34; // 左上だけ白、ほかは透明
         let png = crate::neo::mapart::to_png(&colors, 1);
-        let p = decode(&png).unwrap();
+        let p = decode_named(&png, "").unwrap();
         assert_eq!((p.w, p.h), (128, 128));
         assert_eq!(&p.rgba[..4], &[255, 255, 255, 255]);
         assert_eq!(p.rgba[7], 0, "透明はそのまま");
-        assert!(decode(b"not an image").is_none());
+        assert!(decode_named(b"not an image", "").is_none());
+        // 1×1 の赤い GIF（FLTK では Pixmap になる形式）
+        let gif: &[u8] = &[71, 73, 70, 56, 57, 97, 1, 0, 1, 0, 128, 0, 0, 255, 0, 0, 0, 0, 0, 33, 249, 4, 0, 0, 0, 0, 0, 44, 0, 0, 0, 0, 1, 0, 1, 0, 0, 2, 2, 68, 1, 0, 59];
+        let g = decode_named(gif, "").unwrap();
+        assert_eq!((g.w, g.h), (1, 1));
+        assert_eq!(&g.rgba[..3], &[255, 0, 0]);
         assert!(is_image_name("a/b.PNG") && !is_image_name("a/b.txt"));
     }
 
