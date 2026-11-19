@@ -182,6 +182,10 @@ impl Thumbs {
 
     fn worker(&mut self) -> Option<&Sender<Request>> {
         if self.tx.is_none() {
+            // macOS の FLTK は、画像の読み込みの初回に画面を開く。主のスレッドで先に済ませる（裏で初回になると落ちる）
+            if fltk::app::lock().is_ok() {
+                fltk::app::unlock();
+            }
             let (tx, rx) = channel::<Request>();
             let (dtx, drx) = channel::<Done>();
             let gen = Arc::clone(&self.gen);
@@ -309,6 +313,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(target_os = "macos", ignore = "macOS の FLTK は主のスレッド以外で画像を読むと落ちる（テストは主のスレッドで動かない）")]
     fn decodes_a_png_and_ignores_other_files() {
         let mut colors = vec![0u8; crate::neo::mapart::SIZE * crate::neo::mapart::SIZE];
         colors[0] = 34; // 左上だけ白、ほかは透明
