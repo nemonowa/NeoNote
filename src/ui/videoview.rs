@@ -263,7 +263,8 @@ impl VideoView {
                 surface.show();
             }
             self.group.clone().layout();
-            let hwnd = if audio { std::ptr::null_mut() } else { surface.raw_handle() };
+            // Windows は HWND、Linux は X11 の窓の番号（u64）なので型をそろえる
+            let hwnd = if audio { std::ptr::null_mut() } else { surface.raw_handle() as *mut std::ffi::c_void };
             let mut player = Player::new(hwnd, path).map(Media::Mf);
             if player.is_none() && audio {
                 player = Self::mini(path);
